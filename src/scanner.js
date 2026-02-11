@@ -130,7 +130,7 @@ async function scanMarkets() {
     }
   }
 
-  const finalMarkets = Object.values(bestPerCoin).filter(m => m.minutesLeft > 1 && m.minutesLeft <= 20);
+  const finalMarkets = Object.values(bestPerCoin).filter(m => m.minutesLeft >= 3 && m.minutesLeft <= 12);
 
   logger.addActivity('scan_result', {
     message: `Found ${finalMarkets.length} active 15-min Up/Down markets: ${finalMarkets.map(m => `${m.coin} (${m.minutesLeft}min left)`).join(', ') || 'none'}`,

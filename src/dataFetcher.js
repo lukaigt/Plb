@@ -84,11 +84,11 @@ async function getOrderbook(tokenId) {
 async function getPriceHistory(tokenId) {
   try {
     const res = await fetchWithTimeout(
-      `${CLOB_API}/prices-history?market=${tokenId}&interval=1h&fidelity=1`
+      `${CLOB_API}/prices-history?market=${tokenId}&interval=1m&fidelity=1`
     );
     if (!res.ok) {
       const res2 = await fetchWithTimeout(
-        `${CLOB_API}/prices-history?token_id=${tokenId}&interval=1h&fidelity=1`
+        `${CLOB_API}/prices-history?token_id=${tokenId}&interval=1m&fidelity=1`
       );
       if (!res2.ok) return [];
       const data2 = await res2.json();
