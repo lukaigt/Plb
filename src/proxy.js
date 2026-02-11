@@ -1,3 +1,5 @@
+const http = require('http');
+const https = require('https');
 const logger = require('./logger');
 
 let proxyConfigured = false;
@@ -11,16 +13,17 @@ function setupProxy() {
   }
 
   try {
-    const { bootstrap } = require('global-agent');
+    const { HttpsProxyAgent } = require('https-proxy-agent');
+    const { HttpProxyAgent } = require('http-proxy-agent');
 
-    process.env.GLOBAL_AGENT_HTTP_PROXY = proxyUrl;
-    process.env.GLOBAL_AGENT_HTTPS_PROXY = proxyUrl;
-    process.env.GLOBAL_AGENT_FORCE_GLOBAL_AGENT = 'true';
+    const httpsAgent = new HttpsProxyAgent(proxyUrl);
+    const httpAgent = new HttpProxyAgent(proxyUrl);
 
-    bootstrap();
+    http.globalAgent = httpAgent;
+    https.globalAgent = httpsAgent;
 
     const maskedUrl = proxyUrl.replace(/:([^@:]+)@/, ':****@');
-    logger.addActivity('proxy', { message: `global-agent proxy active (forceGlobalAgent=true): ${maskedUrl}` });
+    logger.addActivity('proxy', { message: `Global agents overridden with proxy: ${maskedUrl}` });
     proxyConfigured = true;
     return true;
   } catch (err) {
@@ -35,8 +38,7 @@ function isProxyActive() {
 
 async function testProxy() {
   try {
-    const https = require('https');
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       https.get('https://api.ipify.org?format=json', (res) => {
         let data = '';
         res.on('data', chunk => data += chunk);
@@ -57,15 +59,13 @@ async function testProxy() {
       });
     });
   } catch (err) {
-    logger.addActivity('proxy_test_error', { message: `Proxy test failed: ${err.message}` });
     return { ip: 'unknown', proxyActive: false, error: err.message };
   }
 }
 
 async function testGeoblock() {
   try {
-    const https = require('https');
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       https.get('https://polymarket.com/api/geoblock', (res) => {
         let data = '';
         res.on('data', chunk => data += chunk);
