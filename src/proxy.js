@@ -1,8 +1,42 @@
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 const logger = require('./logger');
 
 let proxyConfigured = false;
+
+function patchClobClient(proxyUrl) {
+  const helpersPath = path.join(
+    path.dirname(require.resolve('@polymarket/clob-client')),
+    'http-helpers',
+    'index.js'
+  );
+
+  let code = fs.readFileSync(helpersPath, 'utf8');
+
+  if (code.includes('__PROXY_PATCHED__')) {
+    console.log('[PROXY] CLOB client already patched');
+    return true;
+  }
+
+  const originalLine = 'return await axios({ method, url: endpoint, headers, data, params });';
+
+  if (!code.includes(originalLine)) {
+    console.error('[PROXY] Could not find axios call in CLOB client to patch');
+    return false;
+  }
+
+  const patchedLine = `// __PROXY_PATCHED__
+    const { HttpsProxyAgent } = await import('https-proxy-agent');
+    const __proxyAgent = new HttpsProxyAgent(${JSON.stringify(proxyUrl)});
+    return await axios({ method, url: endpoint, headers, data, params, httpsAgent: __proxyAgent, httpAgent: __proxyAgent, proxy: false });`;
+
+  code = code.replace(originalLine, patchedLine);
+  fs.writeFileSync(helpersPath, code, 'utf8');
+  console.log('[PROXY] CLOB client http-helpers patched successfully');
+  return true;
+}
 
 function setupProxy() {
   const proxyUrl = process.env.PROXY_URL;
@@ -22,11 +56,17 @@ function setupProxy() {
     http.globalAgent = httpAgent;
     https.globalAgent = httpsAgent;
 
+    const patched = patchClobClient(proxyUrl);
+
     const maskedUrl = proxyUrl.replace(/:([^@:]+)@/, ':****@');
-    logger.addActivity('proxy', { message: `Global agents overridden with proxy: ${maskedUrl}` });
+    console.log(`[PROXY] Global agents overridden: ${maskedUrl}`);
+    console.log(`[PROXY] CLOB client patched: ${patched}`);
+    logger.addActivity('proxy', { message: `Proxy active (CLOB patched=${patched}): ${maskedUrl}` });
     proxyConfigured = true;
     return true;
   } catch (err) {
+    console.error(`[PROXY ERROR] ${err.message}`);
+    console.error(err.stack);
     logger.addActivity('proxy_error', { message: `Failed to configure proxy: ${err.message}` });
     return false;
   }
