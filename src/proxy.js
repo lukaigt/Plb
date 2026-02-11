@@ -6,6 +6,23 @@ const logger = require('./logger');
 
 let proxyConfigured = false;
 
+function installSafeJsonStringify() {
+  const originalStringify = JSON.stringify;
+  JSON.stringify = function(value, replacer, space) {
+    const seen = new WeakSet();
+    const safeReplacer = function(key, val) {
+      if (typeof val === 'object' && val !== null) {
+        if (seen.has(val)) return '[Circular]';
+        seen.add(val);
+      }
+      if (replacer) return replacer.call(this, key, val);
+      return val;
+    };
+    return originalStringify.call(JSON, value, safeReplacer, space);
+  };
+  console.log('[PROXY] Safe JSON.stringify installed (handles circular references)');
+}
+
 function patchClobClient(proxyUrl) {
   const helpersPath = path.join(
     path.dirname(require.resolve('@polymarket/clob-client')),
@@ -51,31 +68,6 @@ function patchClobClient(proxyUrl) {
 
   code = code.replace(originalLine, patchedLine);
 
-  const lines = code.split('\n');
-  let patched = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes('config: err.response') && lines[i].includes('config')) {
-      console.log(`[PROXY] Removing circular-ref config line at line ${i + 1}: ${lines[i].trim()}`);
-      lines[i] = '';
-      patched = true;
-    }
-    if (lines[i].includes('console.error("[CLOB Client] request error", err)')) {
-      lines[i] = lines[i].replace(
-        'console.error("[CLOB Client] request error", err)',
-        'console.error("[CLOB Client] request error", String(err))'
-      );
-      patched = true;
-    }
-    if (lines[i].includes('return { error: err }')) {
-      lines[i] = lines[i].replace('return { error: err }', 'return { error: String(err) }');
-      patched = true;
-    }
-  }
-  code = lines.join('\n');
-  if (patched) {
-    console.log('[PROXY] Error handler patched (removed config, safe stringify)');
-  }
-
   fs.writeFileSync(helpersPath, code, 'utf8');
   console.log('[PROXY] CLOB client http-helpers patched successfully');
   return true;
@@ -90,6 +82,8 @@ function setupProxy() {
   }
 
   try {
+    installSafeJsonStringify();
+
     const { HttpsProxyAgent } = require('https-proxy-agent');
     const { HttpProxyAgent } = require('http-proxy-agent');
 
