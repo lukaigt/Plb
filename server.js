@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const { setupProxy } = require('./src/proxy');
+const { setupProxy, testProxy } = require('./src/proxy');
 const botLoop = require('./src/botLoop');
 const safety = require('./src/safety');
 const logger = require('./src/logger');
@@ -66,6 +66,11 @@ app.post('/api/bot/stop', (req, res) => {
   res.json({ success: true, message: 'Bot stopped' });
 });
 
+app.get('/api/proxy-test', async (req, res) => {
+  const result = await testProxy();
+  res.json(result);
+});
+
 app.post('/api/bot/scan-now', async (req, res) => {
   if (safety.killSwitch) {
     return res.json({ success: false, message: 'Cannot scan: kill switch is ON' });
@@ -94,6 +99,11 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Max Trade Size: $${process.env.MAX_TRADE_SIZE || 5}`);
   console.log(`Daily Loss Limit: $${process.env.DAILY_LOSS_LIMIT || 15}`);
   console.log(`Scan Interval: ${process.env.SCAN_INTERVAL || 120}s`);
+  console.log(`Proxy: ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
+
+  testProxy().then(result => {
+    console.log(`Outgoing IP: ${result.ip} (proxy ${result.proxyActive ? 'ACTIVE' : 'NOT active'})`);
+  });
 
   botLoop.start();
 });
