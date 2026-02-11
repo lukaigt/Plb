@@ -95,7 +95,8 @@ async function placeOrder(tokenId, side, amount, price, privateKey) {
           });
           return { success: true, data: response, orderId: response.orderID };
         } else if (response && typeof response === 'object' && !response.orderID) {
-          const errMsg = response.errorMsg || response.error || JSON.stringify(response).substring(0, 200);
+          let errMsg = response.errorMsg || response.error;
+          if (!errMsg) { try { errMsg = JSON.stringify(response).substring(0, 200); } catch(e) { errMsg = 'Unknown error (response not serializable)'; } }
           logger.addActivity('trade_error', {
             message: `Order rejected (attempt ${attempt}/${maxRetries}): ${errMsg}`
           });

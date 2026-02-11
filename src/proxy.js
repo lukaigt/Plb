@@ -51,10 +51,71 @@ function patchClobClient(proxyUrl) {
 
   code = code.replace(originalLine, patchedLine);
 
-  code = code.replace(
-    /config: err\.response\?\.config,/g,
-    ''
-  );
+  const oldErrorHandler = `const errorHandling = (err) => {
+    if (axios.isAxiosError(err)) {
+        if (err.response) {
+            console.error("[CLOB Client] request error", JSON.stringify({
+                status: err.response?.status,
+                statusText: err.response?.statusText,
+                data: err.response?.data,
+                config: err.response?.config,
+            }));
+            if (err.response?.data) {
+                if (typeof err.response?.data === "string" ||
+                    err.response?.data instanceof String) {
+                    return { error: err.response?.data, status: err.response?.status };
+                }
+                if (!Object.prototype.hasOwnProperty.call(err.response?.data, "error")) {
+                    return { error: err.response?.data, status: err.response?.status };
+                }
+                // in this case the field 'error' is included
+                return { ...err.response?.data, status: err.response?.status };
+            }
+        }
+        if (err.message) {
+            console.error("[CLOB Client] request error", JSON.stringify({
+                error: err.message,
+            }));
+            return { error: err.message };
+        }
+    }
+    console.error("[CLOB Client] request error", err);
+    return { error: err };
+};`;
+
+  const newErrorHandler = `const errorHandling = (err) => {
+    if (axios.isAxiosError(err)) {
+        if (err.response) {
+            try { console.error("[CLOB Client] request error", JSON.stringify({ status: err.response?.status, statusText: err.response?.statusText, data: err.response?.data })); } catch(e) { console.error("[CLOB Client] request error status=" + (err.response?.status || "unknown")); }
+            if (err.response?.data) {
+                if (typeof err.response?.data === "string" || err.response?.data instanceof String) {
+                    return { error: err.response?.data, status: err.response?.status };
+                }
+                if (!Object.prototype.hasOwnProperty.call(err.response?.data, "error")) {
+                    return { error: err.response?.data, status: err.response?.status };
+                }
+                return { ...err.response?.data, status: err.response?.status };
+            }
+        }
+        if (err.message) {
+            console.error("[CLOB Client] request error", JSON.stringify({ error: err.message }));
+            return { error: err.message };
+        }
+    }
+    console.error("[CLOB Client] request error", String(err));
+    return { error: String(err) };
+};`;
+
+  if (code.includes(oldErrorHandler)) {
+    code = code.replace(oldErrorHandler, newErrorHandler);
+    console.log('[PROXY] Error handler patched (removed config from JSON.stringify)');
+  } else {
+    console.warn('[PROXY] Could not find exact errorHandling function to patch - applying fallback');
+    code = code.replace(
+      /config: err\.response\?\.config,/g,
+      ''
+    );
+  }
 
   fs.writeFileSync(helpersPath, code, 'utf8');
   console.log('[PROXY] CLOB client http-helpers patched successfully');
