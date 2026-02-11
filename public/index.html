@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Polymarket AI Trading Bot</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="header">
+    <h1>Polymarket AI Trading Bot</h1>
+    <div class="header-controls">
+      <button class="btn btn-blue" onclick="scanNow()">Scan Now</button>
+      <button class="btn btn-green" id="startBtn" onclick="startBot()">Start Bot</button>
+      <button class="btn btn-red" id="stopBtn" onclick="stopBot()">Stop Bot</button>
+      <button class="btn btn-yellow" id="killBtn" onclick="toggleKillSwitch()">Kill Switch</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div id="safetyBar" class="safety-bar">
+      <div class="safety-item">
+        <span class="s-label">Bot Status</span>
+        <span class="s-value" id="botStatus"><span class="status-dot dot-red"></span>Stopped</span>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Kill Switch</span>
+        <span class="s-value" id="killStatus">OFF</span>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Daily Loss</span>
+        <span class="s-value" id="dailyLoss">$0.00 / $15.00</span>
+        <div class="progress-bar">
+          <div class="progress-fill" id="lossProgress" style="width: 0%; background: #3fb950;"></div>
+        </div>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Remaining Budget</span>
+        <span class="s-value" id="remainingBudget">$15.00</span>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Max Trade</span>
+        <span class="s-value" id="maxTrade">$5.00</span>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Trades Today</span>
+        <span class="s-value" id="tradesToday">0</span>
+      </div>
+    </div>
+
+    <div class="grid-top">
+      <div class="stat-card">
+        <div class="label">Total P&L</div>
+        <div class="value neutral" id="totalPnl">$0.00</div>
+        <div class="sub" id="todayPnl">Today: $0.00</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Win Rate</div>
+        <div class="value" id="winRate">0.0%</div>
+        <div class="sub" id="winLoss">0W / 0L</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Total Trades</div>
+        <div class="value neutral" id="totalTrades">0</div>
+        <div class="sub" id="pendingTrades">Pending: 0</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Last Scan</div>
+        <div class="value neutral" id="lastScan" style="font-size:16px;">Never</div>
+        <div class="sub" id="scanInterval">Interval: --</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:20px;">
+      <div class="panel-header">Per-Coin Performance</div>
+      <div class="panel-body">
+        <div class="coin-stats-grid" id="coinStats">
+          <div class="coin-stat-card">
+            <div class="coin-name">BTC</div>
+            <div class="coin-detail">No trades yet</div>
+          </div>
+          <div class="coin-stat-card">
+            <div class="coin-name">ETH</div>
+            <div class="coin-detail">No trades yet</div>
+          </div>
+          <div class="coin-stat-card">
+            <div class="coin-name">SOL</div>
+            <div class="coin-detail">No trades yet</div>
+          </div>
+          <div class="coin-stat-card">
+            <div class="coin-name">XRP</div>
+            <div class="coin-detail">No trades yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-main">
+      <div class="panel">
+        <div class="panel-header">
+          AI Decisions
+          <span style="font-size:11px;color:#484f58;" id="decisionCount">0 decisions</span>
+        </div>
+        <div class="panel-body" id="decisionsPanel">
+          <div class="empty-state">No AI decisions yet. Waiting for market scan...</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          Live Activity Feed
+          <span style="font-size:11px;color:#484f58;" id="activityCount">0 events</span>
+        </div>
+        <div class="panel-body" id="activityPanel">
+          <div class="empty-state">No activity yet. Bot will start scanning soon...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:20px;">
+      <div class="panel-header">
+        Trade History
+        <span style="font-size:11px;color:#484f58;" id="tradeCount">0 trades</span>
+      </div>
+      <div class="panel-body" style="max-height:500px;">
+        <table class="trade-table" id="tradeTable">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Coin</th>
+              <th>Action</th>
+              <th>Confidence</th>
+              <th>Size</th>
+              <th>Price</th>
+              <th>Result</th>
+              <th>P&L</th>
+              <th>Reasoning</th>
+            </tr>
+          </thead>
+          <tbody id="tradeBody">
+            <tr><td colspan="9" class="empty-state">No trades yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

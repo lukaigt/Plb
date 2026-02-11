@@ -1,15 +1,15 @@
 {
-  "name": "nodejs",
+  "name": "polymarket-ai-bot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "AI-powered Polymarket crypto trading bot",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "@types/node": "^22.13.11"
+    "dotenv": "^16.6.1",
+    "ethers": "^5.7.2",
+    "express": "^4.22.1"
   }
 }
