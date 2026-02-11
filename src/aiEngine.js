@@ -146,25 +146,41 @@ async function getAiPrediction(marketData) {
       return { action: 'SKIP', confidence: 'LOW', reasoning: `API error: ${response.status}` };
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
+    const rawText = await response.text();
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (e) {
+      logger.addActivity('ai_error', { message: `Failed to parse API response: ${rawText.substring(0, 500)}` });
+      return { action: 'SKIP', confidence: 'LOW', reasoning: 'Invalid API response format' };
+    }
 
-    if (!content) {
-      logger.addActivity('ai_error', { message: 'Empty response from AI' });
+    if (data.error) {
+      logger.addActivity('ai_error', { message: `OpenRouter error: ${JSON.stringify(data.error).substring(0, 300)}` });
+      return { action: 'SKIP', confidence: 'LOW', reasoning: `API error: ${data.error.message || 'Unknown'}` };
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+    const reasoningContent = data.choices?.[0]?.message?.reasoning_content;
+
+    if (!content && !reasoningContent) {
+      logger.addActivity('ai_error', { message: `Empty AI response. Full response: ${JSON.stringify(data).substring(0, 500)}` });
       return { action: 'SKIP', confidence: 'LOW', reasoning: 'Empty AI response' };
     }
 
+    const aiText = content || reasoningContent || '';
+
     let decision;
     try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         decision = JSON.parse(jsonMatch[0]);
       } else {
         throw new Error('No JSON found in response');
       }
     } catch (parseErr) {
-      logger.addActivity('ai_error', { message: `Failed to parse AI response: ${content}` });
-      return { action: 'SKIP', confidence: 'LOW', reasoning: `Parse error: ${content.substring(0, 200)}` };
+      logger.addActivity('ai_error', { message: `Failed to parse AI response: ${aiText.substring(0, 300)}` });
+      return { action: 'SKIP', confidence: 'LOW', reasoning: `Parse error: ${aiText.substring(0, 200)}` };
     }
 
     if (decision.action === 'BUY_UP') decision.action = 'BUY_YES';
@@ -195,7 +211,7 @@ async function getAiPrediction(marketData) {
         orderbookRatio: marketData.yesToken.orderbook?.bidAskRatio
       },
       rawPrompt: userPrompt,
-      rawResponse: content
+      rawResponse: aiText
     };
 
     logger.addAiDecision(fullDecision);

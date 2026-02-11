@@ -1,4 +1,4 @@
-const REFRESH_INTERVAL = 3000;
+const REFRESH_INTERVAL = 5000;
 
 async function api(path, method = 'GET', body = null) {
   try {
