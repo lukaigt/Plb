@@ -1,7 +1,7 @@
 const logger = require('./logger');
 
 const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
-const MODEL = 'glm-4-flash';
+const MODEL = 'z-ai/glm-4.7-flash';
 
 const SYSTEM_PROMPT = `You are an expert crypto price analyst and short-term trader. Your ONLY job is to predict whether a cryptocurrency's price will go UP or DOWN in the next 15 minutes based on the data provided to you.
 
