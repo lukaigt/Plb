@@ -65,36 +65,64 @@ async function placeOrder(tokenId, side, amount, price, privateKey) {
       message: `Order params: tokenID=${tokenId.substring(0, 15)}..., price=${roundedPrice}, size=${size}` 
     });
 
-    const response = await client.createAndPostOrder(
-      {
-        tokenID: tokenId,
-        price: roundedPrice,
-        size: size,
-        side: Side.BUY,
-        feeRateBps: 1000,
-        expiration: 0,
-        taker: "0x0000000000000000000000000000000000000000"
-      },
-      {
-        tickSize: tickSize,
-        negRisk: true
-      },
-      OrderType.GTC
-    );
+    let response;
+    let lastError = null;
+    const maxRetries = 3;
 
-    if (response && (response.orderID || response.success !== false)) {
-      logger.addActivity('trade_executed', {
-        message: `Order placed: BUY ${size} shares at $${roundedPrice.toFixed(3)} for $${amount}`,
-        orderId: response.orderID || response.id
-      });
-      return { success: true, data: response, orderId: response.orderID || response.id };
-    } else {
-      const errMsg = response?.errorMsg || response?.error || JSON.stringify(response);
-      logger.addActivity('trade_error', {
-        message: `Order failed: ${errMsg}`
-      });
-      return { success: false, error: errMsg };
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        response = await client.createAndPostOrder(
+          {
+            tokenID: tokenId,
+            price: roundedPrice,
+            size: size,
+            side: Side.BUY,
+            feeRateBps: 1000,
+            expiration: 0,
+            taker: "0x0000000000000000000000000000000000000000"
+          },
+          {
+            tickSize: tickSize,
+            negRisk: true
+          },
+          OrderType.GTC
+        );
+
+        if (response && response.orderID) {
+          logger.addActivity('trade_executed', {
+            message: `Order CONFIRMED: BUY ${size} shares at $${roundedPrice.toFixed(3)} for $${amount} (orderID: ${response.orderID.substring(0, 12)}...)`,
+            orderId: response.orderID
+          });
+          return { success: true, data: response, orderId: response.orderID };
+        } else if (response && typeof response === 'object' && !response.orderID) {
+          const errMsg = response.errorMsg || response.error || JSON.stringify(response).substring(0, 200);
+          logger.addActivity('trade_error', {
+            message: `Order rejected (attempt ${attempt}/${maxRetries}): ${errMsg}`
+          });
+          lastError = errMsg;
+          if (attempt < maxRetries) {
+            await new Promise(r => setTimeout(r, 3000 * attempt));
+          }
+        }
+      } catch (err) {
+        const errStr = err.message || String(err);
+        const isCloudflare = errStr.includes('403') || errStr.includes('Forbidden') || errStr.includes('blocked');
+        lastError = isCloudflare ? 'Cloudflare rate-limited (403)' : errStr;
+        logger.addActivity('trade_error', { 
+          message: `Trade attempt ${attempt}/${maxRetries} failed: ${lastError}` 
+        });
+        if (attempt < maxRetries) {
+          const delay = 5000 * attempt;
+          logger.addActivity('trader', { message: `Waiting ${delay/1000}s before retry...` });
+          await new Promise(r => setTimeout(r, delay));
+        }
+      }
     }
+
+    logger.addActivity('trade_failed', { 
+      message: `Order FAILED after ${maxRetries} attempts: ${lastError}` 
+    });
+    return { success: false, error: lastError };
   } catch (err) {
     logger.addActivity('trade_error', { message: `Trade execution error: ${err.message}` });
     return { success: false, error: err.message };

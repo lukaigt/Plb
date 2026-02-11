@@ -95,7 +95,7 @@ async function runOnce() {
       }
 
       await processMarket(market);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 5000));
     }
 
     logger.addActivity('bot', { message: `--- Scan cycle complete. Processed ${markets.length} markets ---` });
