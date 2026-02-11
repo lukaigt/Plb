@@ -42,10 +42,11 @@ async function generateKeys() {
   try {
     const creds = await client.createOrDeriveApiKey();
 
-    console.log('=== YOUR CLOB API CREDENTIALS ===');
-    console.log(`POLY_API_KEY=${creds.apiKey}`);
-    console.log(`POLY_API_SECRET=${creds.secret}`);
-    console.log(`POLY_PASSPHRASE=${creds.passphrase}`);
+    console.log('Raw response:', JSON.stringify(creds));
+    console.log('\n=== YOUR CLOB API CREDENTIALS ===');
+    console.log(`POLY_API_KEY=${creds.apiKey || creds.key || creds.api_key || 'NOT FOUND'}`);
+    console.log(`POLY_API_SECRET=${creds.secret || creds.apiSecret || creds.api_secret || 'NOT FOUND'}`);
+    console.log(`POLY_PASSPHRASE=${creds.passphrase || creds.apiPassphrase || creds.api_passphrase || 'NOT FOUND'}`);
     console.log('=================================\n');
     console.log('Copy these 3 lines into your .env file, replacing the old values.');
   } catch (err) {
