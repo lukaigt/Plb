@@ -8,6 +8,7 @@
     "dev": "node server.js"
   },
   "dependencies": {
+    "@polymarket/clob-client": "^5.2.1",
     "dotenv": "^16.6.1",
     "ethers": "^5.7.2",
     "express": "^4.22.1"

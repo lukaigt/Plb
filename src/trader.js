@@ -1,125 +1,85 @@
-const { ethers } = require('ethers');
+const { ClobClient, Side } = require('@polymarket/clob-client');
+const { Wallet } = require('ethers');
 const logger = require('./logger');
 
-const CLOB_API = 'https://clob.polymarket.com';
+const CLOB_HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
 
-let apiCredentials = null;
+let clobClient = null;
+let apiCreds = null;
 
-async function deriveApiCredentials(privateKey) {
-  if (apiCredentials) return apiCredentials;
+async function initClient(privateKey) {
+  if (clobClient) return clobClient;
 
   try {
-    const wallet = new ethers.Wallet(privateKey);
-    const address = wallet.address;
+    const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+    const signer = new Wallet(cleanKey);
+    const address = signer.address;
 
     logger.addActivity('trader', { message: `Wallet address: ${address.substring(0, 8)}...${address.substring(address.length - 6)}` });
 
-    const timestamp = Math.floor(Date.now() / 1000);
-    const nonce = 0;
-    const message = `This message attests that I control the given wallet and I want to authorize trading on Polymarket CLOB.\nAddress: ${address.toLowerCase()}\nChain ID: ${CHAIN_ID}\nNonce: ${nonce}\nTimestamp: ${timestamp}`;
-
-    const signature = await wallet.signMessage(message);
+    const tempClient = new ClobClient(CLOB_HOST, CHAIN_ID, signer);
 
     try {
-      const res = await fetch(`${CLOB_API}/auth/derive-api-key`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message,
-          signature,
-          timestamp,
-          nonce
-        })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        apiCredentials = {
-          apiKey: data.apiKey,
-          secret: data.secret,
-          passphrase: data.passphrase
-        };
-        logger.addActivity('trader', { message: 'API credentials derived successfully' });
-        return apiCredentials;
-      } else {
-        const errText = await res.text();
-        logger.addActivity('trader_error', { message: `Failed to derive API credentials: ${errText}` });
+      apiCreds = await tempClient.deriveApiKey();
+      logger.addActivity('trader', { message: 'Derived existing API credentials' });
+    } catch (e) {
+      logger.addActivity('trader', { message: 'No existing credentials, creating new ones...' });
+      try {
+        apiCreds = await tempClient.createApiKey();
+        logger.addActivity('trader', { message: 'Created new API credentials' });
+      } catch (e2) {
+        logger.addActivity('trader_error', { message: `Failed to create API credentials: ${e2.message}` });
+        return null;
       }
-    } catch (err) {
-      logger.addActivity('trader_error', { message: `API credential derivation error: ${err.message}` });
     }
 
-    return null;
+    clobClient = new ClobClient(
+      CLOB_HOST,
+      CHAIN_ID,
+      signer,
+      apiCreds,
+      0
+    );
+
+    logger.addActivity('trader', { message: 'CLOB client initialized successfully' });
+    return clobClient;
   } catch (err) {
-    logger.addActivity('trader_error', { message: `Wallet error: ${err.message}` });
+    logger.addActivity('trader_error', { message: `Client init error: ${err.message}` });
     return null;
   }
-}
-
-function buildHmacSignature(secret, timestamp, method, path, body = '') {
-  const crypto = require('crypto');
-  const message = timestamp + method + path + body;
-  return crypto.createHmac('sha256', Buffer.from(secret, 'base64'))
-    .update(message)
-    .digest('base64');
 }
 
 async function placeOrder(tokenId, side, amount, price, privateKey) {
-  const creds = await deriveApiCredentials(privateKey);
+  const client = await initClient(privateKey);
 
-  if (!creds) {
-    logger.addActivity('trade_error', { message: 'Cannot trade: No API credentials' });
-    return { success: false, error: 'No API credentials' };
+  if (!client) {
+    logger.addActivity('trade_error', { message: 'Cannot trade: CLOB client not initialized' });
+    return { success: false, error: 'CLOB client not initialized' };
   }
 
   try {
-    const wallet = new ethers.Wallet(privateKey);
-    const size = (amount / price).toFixed(2);
+    const size = parseFloat((amount / price).toFixed(2));
 
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    const orderPayload = {
+    const response = await client.createAndPostOrder({
       tokenID: tokenId,
-      price: price.toString(),
+      price: price,
       size: size,
-      side: side,
-      feeRateBps: "0",
-      nonce: Date.now().toString(),
-      expiration: "0",
-      taker: "0x0000000000000000000000000000000000000000"
-    };
-
-    const path = '/order';
-    const body = JSON.stringify(orderPayload);
-    const signature = buildHmacSignature(creds.secret, timestamp, 'POST', path, body);
-
-    const res = await fetch(`${CLOB_API}${path}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'POLY_API_KEY': creds.apiKey,
-        'POLY_SIGNATURE': signature,
-        'POLY_TIMESTAMP': timestamp,
-        'POLY_PASSPHRASE': creds.passphrase
-      },
-      body
+      side: Side.BUY,
     });
 
-    const responseText = await res.text();
-    let responseData;
-    try { responseData = JSON.parse(responseText); } catch { responseData = { raw: responseText }; }
-
-    if (res.ok) {
+    if (response && (response.orderID || response.success !== false)) {
       logger.addActivity('trade_executed', {
-        message: `Order placed: ${side} ${size} shares at $${price} for $${amount}`,
-        orderId: responseData.orderID || responseData.id
+        message: `Order placed: BUY ${size} shares at $${price.toFixed(3)} for $${amount}`,
+        orderId: response.orderID || response.id
       });
-      return { success: true, data: responseData, orderId: responseData.orderID || responseData.id };
+      return { success: true, data: response, orderId: response.orderID || response.id };
     } else {
+      const errMsg = response?.errorMsg || response?.error || JSON.stringify(response);
       logger.addActivity('trade_error', {
-        message: `Order failed: ${res.status} - ${responseText}`
+        message: `Order failed: ${errMsg}`
       });
-      return { success: false, error: responseText };
+      return { success: false, error: errMsg };
     }
   } catch (err) {
     logger.addActivity('trade_error', { message: `Trade execution error: ${err.message}` });
@@ -175,4 +135,4 @@ async function executeTrade(decision, marketData, tradeSize) {
   return trade;
 }
 
-module.exports = { executeTrade, deriveApiCredentials, placeOrder };
+module.exports = { executeTrade, initClient, placeOrder };
