@@ -71,7 +71,7 @@ async function placeOrder(tokenId, side, amount, price, privateKey) {
         price: roundedPrice,
         size: size,
         side: Side.BUY,
-        feeRateBps: 0,
+        feeRateBps: 1000,
         expiration: 0,
         taker: "0x0000000000000000000000000000000000000000"
       },
