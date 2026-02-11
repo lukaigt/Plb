@@ -1,12 +1,13 @@
 require('dotenv').config();
+
+const { setupProxy, testProxy, testGeoblock } = require('./src/proxy');
+setupProxy();
+
 const express = require('express');
 const path = require('path');
-const { setupProxy, testProxy, testGeoblock } = require('./src/proxy');
 const botLoop = require('./src/botLoop');
 const safety = require('./src/safety');
 const logger = require('./src/logger');
-
-setupProxy();
 
 const app = express();
 const PORT = parseInt(process.env.PORT) || 4000;
