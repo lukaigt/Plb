@@ -1,4 +1,4 @@
-const { ClobClient, Side } = require('@polymarket/clob-client');
+const { ClobClient, Side, OrderType } = require('@polymarket/clob-client');
 const { Wallet } = require('ethers');
 const logger = require('./logger');
 
@@ -59,18 +59,34 @@ async function placeOrder(tokenId, side, amount, price, privateKey) {
   }
 
   try {
-    const size = parseFloat((amount / price).toFixed(2));
+    const tickSize = "0.01";
+    const roundedPrice = Math.round(price * 100) / 100;
+    const size = parseFloat((amount / roundedPrice).toFixed(2));
 
-    const response = await client.createAndPostOrder({
-      tokenID: tokenId,
-      price: price,
-      size: size,
-      side: Side.BUY,
+    logger.addActivity('trader', { 
+      message: `Order params: tokenID=${tokenId.substring(0, 15)}..., price=${roundedPrice}, size=${size}, tickSize=${tickSize}` 
     });
+
+    const response = await client.createAndPostOrder(
+      {
+        tokenID: tokenId,
+        price: roundedPrice,
+        size: size,
+        side: Side.BUY,
+        feeRateBps: 0,
+        expiration: 0,
+        taker: "0x0000000000000000000000000000000000000000"
+      },
+      {
+        tickSize: tickSize,
+        negRisk: true
+      },
+      OrderType.GTC
+    );
 
     if (response && (response.orderID || response.success !== false)) {
       logger.addActivity('trade_executed', {
-        message: `Order placed: BUY ${size} shares at $${price.toFixed(3)} for $${amount}`,
+        message: `Order placed: BUY ${size} shares at $${roundedPrice.toFixed(3)} for $${amount}`,
         orderId: response.orderID || response.id
       });
       return { success: true, data: response, orderId: response.orderID || response.id };
