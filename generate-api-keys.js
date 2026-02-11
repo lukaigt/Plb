@@ -1,5 +1,22 @@
 require('dotenv').config();
 
+const _origStringify = JSON.stringify;
+JSON.stringify = function(value, replacer, space) {
+  const seen = new WeakSet();
+  const safeReplacer = function(key, val) {
+    if (typeof val === 'object' && val !== null) {
+      if (seen.has(val)) return '[Circular]';
+      seen.add(val);
+    }
+    if (replacer) return replacer.call(this, key, val);
+    return val;
+  };
+  return _origStringify.call(JSON, value, safeReplacer, space);
+};
+
+const { setupProxy } = require('./src/proxy');
+setupProxy();
+
 const { ClobClient } = require('@polymarket/clob-client');
 const { Wallet } = require('ethers');
 
