@@ -48,7 +48,7 @@ async function initClient(privateKey) {
   }
 }
 
-async function placeOrder(tokenId, side, amount, price, privateKey) {
+async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = true, tickSize = '0.01') {
   const client = await initClient(privateKey);
 
   if (!client) {
@@ -57,7 +57,6 @@ async function placeOrder(tokenId, side, amount, price, privateKey) {
   }
 
   try {
-    const tickSize = "0.01";
     const roundedPrice = Math.round(price * 100) / 100;
     const size = parseFloat((amount / roundedPrice).toFixed(2));
 
@@ -83,7 +82,7 @@ async function placeOrder(tokenId, side, amount, price, privateKey) {
           },
           {
             tickSize: tickSize,
-            negRisk: true
+            negRisk: negRisk
           },
           OrderType.GTC
         );
@@ -146,15 +145,18 @@ async function executeTrade(decision, marketData, tradeSize) {
     return null;
   }
 
+  const negRisk = marketData.market.negRisk !== undefined ? marketData.market.negRisk : true;
+  const tickSize = marketData.market.tickSize || '0.01';
+
   logger.addActivity('trade_attempt', {
-    message: `Attempting to ${decision.action} on ${marketData.market.coin} | Size: $${tradeSize} | Price: $${price.toFixed(3)}`,
+    message: `Attempting to ${decision.action} on ${marketData.market.coin} | Size: $${tradeSize} | Price: $${price.toFixed(3)} | negRisk=${negRisk} | tickSize=${tickSize}`,
     coin: marketData.market.coin,
     action: decision.action,
     size: tradeSize,
     price
   });
 
-  const result = await placeOrder(token.token_id, 'BUY', tradeSize, price, privateKey);
+  const result = await placeOrder(token.token_id, 'BUY', tradeSize, price, privateKey, negRisk, tickSize);
 
   const trade = {
     coin: marketData.market.coin,

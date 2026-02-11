@@ -108,6 +108,8 @@ async function scanMarkets() {
         description: market.description || event.description || '',
         liquidity: parseFloat(market.liquidity || event.liquidity || 0),
         volume: parseFloat(market.volume || event.volume || 0),
+        negRisk: market.negRisk === true || market.negRisk === 'true' || event.negRisk === true,
+        tickSize: market.minimum_tick_size || market.minimumTickSize || '0.01',
         active: true
       };
     } catch (err) {
