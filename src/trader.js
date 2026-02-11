@@ -6,7 +6,6 @@ const CLOB_HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
 
 let clobClient = null;
-let apiCreds = null;
 
 async function initClient(privateKey) {
   if (clobClient) return clobClient;
@@ -18,21 +17,20 @@ async function initClient(privateKey) {
 
     logger.addActivity('trader', { message: `Wallet address: ${address.substring(0, 8)}...${address.substring(address.length - 6)}` });
 
-    const tempClient = new ClobClient(CLOB_HOST, CHAIN_ID, signer);
+    const apiKey = process.env.POLY_API_KEY;
+    const apiSecret = process.env.POLY_API_SECRET;
+    const passphrase = process.env.POLY_PASSPHRASE;
 
-    try {
-      apiCreds = await tempClient.deriveApiKey();
-      logger.addActivity('trader', { message: 'Derived existing API credentials' });
-    } catch (e) {
-      logger.addActivity('trader', { message: 'No existing credentials, creating new ones...' });
-      try {
-        apiCreds = await tempClient.createApiKey();
-        logger.addActivity('trader', { message: 'Created new API credentials' });
-      } catch (e2) {
-        logger.addActivity('trader_error', { message: `Failed to create API credentials: ${e2.message}` });
-        return null;
-      }
+    if (!apiKey || !apiSecret || !passphrase) {
+      logger.addActivity('trader_error', { message: 'Missing POLY_API_KEY, POLY_API_SECRET, or POLY_PASSPHRASE in .env' });
+      return null;
     }
+
+    const apiCreds = {
+      key: apiKey,
+      secret: apiSecret,
+      passphrase: passphrase
+    };
 
     clobClient = new ClobClient(
       CLOB_HOST,
@@ -42,7 +40,7 @@ async function initClient(privateKey) {
       0
     );
 
-    logger.addActivity('trader', { message: 'CLOB client initialized successfully' });
+    logger.addActivity('trader', { message: 'CLOB client initialized with manual API credentials' });
     return clobClient;
   } catch (err) {
     logger.addActivity('trader_error', { message: `Client init error: ${err.message}` });
@@ -54,7 +52,7 @@ async function placeOrder(tokenId, side, amount, price, privateKey) {
   const client = await initClient(privateKey);
 
   if (!client) {
-    logger.addActivity('trade_error', { message: 'Cannot trade: CLOB client not initialized' });
+    logger.addActivity('trade_error', { message: 'Cannot trade: CLOB client not initialized. Check your POLY_API_KEY, POLY_API_SECRET, POLY_PASSPHRASE in .env' });
     return { success: false, error: 'CLOB client not initialized' };
   }
 
@@ -64,7 +62,7 @@ async function placeOrder(tokenId, side, amount, price, privateKey) {
     const size = parseFloat((amount / roundedPrice).toFixed(2));
 
     logger.addActivity('trader', { 
-      message: `Order params: tokenID=${tokenId.substring(0, 15)}..., price=${roundedPrice}, size=${size}, tickSize=${tickSize}` 
+      message: `Order params: tokenID=${tokenId.substring(0, 15)}..., price=${roundedPrice}, size=${size}` 
     });
 
     const response = await client.createAndPostOrder(
