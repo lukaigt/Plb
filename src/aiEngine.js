@@ -136,7 +136,8 @@ async function getAiPrediction(marketData) {
           { role: 'user', content: userPrompt }
         ],
         temperature: 0.3,
-        max_tokens: 500
+        max_tokens: 2000,
+        reasoning: { enabled: false }
       })
     });
 
@@ -161,7 +162,12 @@ async function getAiPrediction(marketData) {
     }
 
     const content = data.choices?.[0]?.message?.content;
-    const reasoningContent = data.choices?.[0]?.message?.reasoning_content;
+    const reasoningContent = data.choices?.[0]?.message?.reasoning_content || data.choices?.[0]?.message?.reasoning;
+    const finishReason = data.choices?.[0]?.finish_reason;
+
+    if (finishReason === 'length') {
+      logger.addActivity('ai_error', { message: `AI response cut off (token limit reached). Reasoning was: ${(reasoningContent || '').substring(0, 200)}` });
+    }
 
     if (!content && !reasoningContent) {
       logger.addActivity('ai_error', { message: `Empty AI response. Full response: ${JSON.stringify(data).substring(0, 500)}` });
