@@ -51,70 +51,29 @@ function patchClobClient(proxyUrl) {
 
   code = code.replace(originalLine, patchedLine);
 
-  const oldErrorHandler = `const errorHandling = (err) => {
-    if (axios.isAxiosError(err)) {
-        if (err.response) {
-            console.error("[CLOB Client] request error", JSON.stringify({
-                status: err.response?.status,
-                statusText: err.response?.statusText,
-                data: err.response?.data,
-                config: err.response?.config,
-            }));
-            if (err.response?.data) {
-                if (typeof err.response?.data === "string" ||
-                    err.response?.data instanceof String) {
-                    return { error: err.response?.data, status: err.response?.status };
-                }
-                if (!Object.prototype.hasOwnProperty.call(err.response?.data, "error")) {
-                    return { error: err.response?.data, status: err.response?.status };
-                }
-                // in this case the field 'error' is included
-                return { ...err.response?.data, status: err.response?.status };
-            }
-        }
-        if (err.message) {
-            console.error("[CLOB Client] request error", JSON.stringify({
-                error: err.message,
-            }));
-            return { error: err.message };
-        }
+  const lines = code.split('\n');
+  let patched = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes('config: err.response') && lines[i].includes('config')) {
+      console.log(`[PROXY] Removing circular-ref config line at line ${i + 1}: ${lines[i].trim()}`);
+      lines[i] = '';
+      patched = true;
     }
-    console.error("[CLOB Client] request error", err);
-    return { error: err };
-};`;
-
-  const newErrorHandler = `const errorHandling = (err) => {
-    if (axios.isAxiosError(err)) {
-        if (err.response) {
-            try { console.error("[CLOB Client] request error", JSON.stringify({ status: err.response?.status, statusText: err.response?.statusText, data: err.response?.data })); } catch(e) { console.error("[CLOB Client] request error status=" + (err.response?.status || "unknown")); }
-            if (err.response?.data) {
-                if (typeof err.response?.data === "string" || err.response?.data instanceof String) {
-                    return { error: err.response?.data, status: err.response?.status };
-                }
-                if (!Object.prototype.hasOwnProperty.call(err.response?.data, "error")) {
-                    return { error: err.response?.data, status: err.response?.status };
-                }
-                return { ...err.response?.data, status: err.response?.status };
-            }
-        }
-        if (err.message) {
-            console.error("[CLOB Client] request error", JSON.stringify({ error: err.message }));
-            return { error: err.message };
-        }
+    if (lines[i].includes('console.error("[CLOB Client] request error", err)')) {
+      lines[i] = lines[i].replace(
+        'console.error("[CLOB Client] request error", err)',
+        'console.error("[CLOB Client] request error", String(err))'
+      );
+      patched = true;
     }
-    console.error("[CLOB Client] request error", String(err));
-    return { error: String(err) };
-};`;
-
-  if (code.includes(oldErrorHandler)) {
-    code = code.replace(oldErrorHandler, newErrorHandler);
-    console.log('[PROXY] Error handler patched (removed config from JSON.stringify)');
-  } else {
-    console.warn('[PROXY] Could not find exact errorHandling function to patch - applying fallback');
-    code = code.replace(
-      /config: err\.response\?\.config,/g,
-      ''
-    );
+    if (lines[i].includes('return { error: err }')) {
+      lines[i] = lines[i].replace('return { error: err }', 'return { error: String(err) }');
+      patched = true;
+    }
+  }
+  code = lines.join('\n');
+  if (patched) {
+    console.log('[PROXY] Error handler patched (removed config, safe stringify)');
   }
 
   fs.writeFileSync(helpersPath, code, 'utf8');
