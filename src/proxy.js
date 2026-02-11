@@ -1,9 +1,6 @@
 const logger = require('./logger');
-const { HttpsProxyAgent } = require('https-proxy-agent');
-const axios = require('axios');
 
 let proxyConfigured = false;
-let proxyAgent = null;
 
 function setupProxy() {
   const proxyUrl = process.env.PROXY_URL;
@@ -14,21 +11,16 @@ function setupProxy() {
   }
 
   try {
-    const { ProxyAgent, setGlobalDispatcher } = require('undici');
-    const undiciAgent = new ProxyAgent(proxyUrl);
-    setGlobalDispatcher(undiciAgent);
+    const { bootstrap } = require('global-agent');
 
-    proxyAgent = new HttpsProxyAgent(proxyUrl);
+    process.env.GLOBAL_AGENT_HTTP_PROXY = proxyUrl;
+    process.env.GLOBAL_AGENT_HTTPS_PROXY = proxyUrl;
+    process.env.GLOBAL_AGENT_FORCE_GLOBAL_AGENT = 'true';
 
-    axios.defaults.httpsAgent = proxyAgent;
-    axios.defaults.httpAgent = proxyAgent;
-    axios.defaults.proxy = false;
-
-    process.env.HTTP_PROXY = proxyUrl;
-    process.env.HTTPS_PROXY = proxyUrl;
+    bootstrap();
 
     const maskedUrl = proxyUrl.replace(/:([^@:]+)@/, ':****@');
-    logger.addActivity('proxy', { message: `Proxy configured for ALL requests: ${maskedUrl}` });
+    logger.addActivity('proxy', { message: `global-agent proxy active (forceGlobalAgent=true): ${maskedUrl}` });
     proxyConfigured = true;
     return true;
   } catch (err) {
@@ -37,27 +29,64 @@ function setupProxy() {
   }
 }
 
-function getProxyAgent() {
-  return proxyAgent;
-}
-
 function isProxyActive() {
   return proxyConfigured;
 }
 
 async function testProxy() {
   try {
-    const res = await fetch('https://api.ipify.org?format=json');
-    const data = await res.json();
-    const ip = data.ip;
-    logger.addActivity('proxy_test', { 
-      message: `Outgoing IP: ${ip} (proxy ${proxyConfigured ? 'ACTIVE' : 'NOT active'})` 
+    const https = require('https');
+    return new Promise((resolve, reject) => {
+      https.get('https://api.ipify.org?format=json', (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            logger.addActivity('proxy_test', {
+              message: `Outgoing IP: ${parsed.ip} (proxy ${proxyConfigured ? 'ACTIVE' : 'NOT active'})`
+            });
+            resolve({ ip: parsed.ip, proxyActive: proxyConfigured });
+          } catch (e) {
+            resolve({ ip: 'unknown', proxyActive: proxyConfigured, error: 'Failed to parse IP response' });
+          }
+        });
+      }).on('error', (err) => {
+        logger.addActivity('proxy_test_error', { message: `Proxy test failed: ${err.message}` });
+        resolve({ ip: 'unknown', proxyActive: false, error: err.message });
+      });
     });
-    return { ip, proxyActive: proxyConfigured };
   } catch (err) {
     logger.addActivity('proxy_test_error', { message: `Proxy test failed: ${err.message}` });
     return { ip: 'unknown', proxyActive: false, error: err.message };
   }
 }
 
-module.exports = { setupProxy, isProxyActive, getProxyAgent, testProxy };
+async function testGeoblock() {
+  try {
+    const https = require('https');
+    return new Promise((resolve, reject) => {
+      https.get('https://polymarket.com/api/geoblock', (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            logger.addActivity('geoblock_test', {
+              message: `Geoblock check: blocked=${parsed.blocked}, country=${parsed.country}, ip=${parsed.ip}`
+            });
+            resolve(parsed);
+          } catch (e) {
+            resolve({ blocked: true, error: 'Failed to parse geoblock response' });
+          }
+        });
+      }).on('error', (err) => {
+        resolve({ blocked: true, error: err.message });
+      });
+    });
+  } catch (err) {
+    return { blocked: true, error: err.message };
+  }
+}
+
+module.exports = { setupProxy, isProxyActive, testProxy, testGeoblock };
