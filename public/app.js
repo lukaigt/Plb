@@ -204,13 +204,69 @@ async function scanNow() {
   refreshAll();
 }
 
+function getRedeemStatusBadge(status) {
+  const map = {
+    waiting: '<span class="badge badge-pending">WAITING</span>',
+    redeeming: '<span class="badge badge-pending">REDEEMING</span>',
+    redeemed: '<span class="badge badge-win">COLLECTED</span>',
+    no_payout: '<span class="badge badge-loss">LOST</span>',
+    error: '<span class="badge badge-failed">ERROR</span>'
+  };
+  return map[status] || `<span class="badge">${status}</span>`;
+}
+
+async function updateRedemptions() {
+  const data = await api('/redemptions');
+  if (!data) return;
+
+  const total = data.pending.length + data.history.length;
+  document.getElementById('redeemCount').textContent =
+    `${data.pending.length} pending | ${data.totalRedeemed} collected | ${data.totalLost} lost`;
+
+  const panel = document.getElementById('redeemPanel');
+
+  if (total === 0) {
+    panel.innerHTML = '<div class="empty-state">No positions tracked yet. Trades will appear here for auto-redemption.</div>';
+    return;
+  }
+
+  let html = '';
+
+  if (data.safeAddress) {
+    html += `<div class="activity-item" style="border-left:2px solid #58a6ff;"><div class="activity-type type-bot">safe</div> Proxy wallet: ${data.safeAddress}</div>`;
+  }
+
+  for (const p of data.pending) {
+    const timeLeft = p.marketEndTime ? new Date(p.marketEndTime) : null;
+    const timeStr = timeLeft ? formatTime(p.marketEndTime) : '?';
+    html += `<div class="activity-item">
+      <div class="activity-time">${formatTime(p.addedAt)}</div>
+      ${getRedeemStatusBadge(p.status)}
+      <span style="margin-left:6px;">${p.question || 'BTC trade'}</span>
+      <span style="color:#484f58;font-size:11px;margin-left:auto;">$${p.size?.toFixed(2) || '?'} ${p.side || ''} | ends ${timeStr}</span>
+    </div>`;
+  }
+
+  for (const h of data.history) {
+    html += `<div class="activity-item">
+      <div class="activity-time">${formatTime(h.redeemedAt)}</div>
+      ${getRedeemStatusBadge(h.status)}
+      <span style="margin-left:6px;">${h.question || 'BTC trade'}</span>
+      <span style="color:#484f58;font-size:11px;margin-left:auto;">$${h.size?.toFixed(2) || '?'} ${h.side || ''}${h.txHash ? ' | TX: ' + h.txHash.substring(0, 12) + '...' : ''}</span>
+    </div>`;
+  }
+
+  panel.innerHTML = html;
+}
+
 async function refreshAll() {
   await Promise.all([
     updateStatus(),
     updateStats(),
     updateDecisions(),
     updateActivities(),
-    updateTrades()
+    updateTrades(),
+    updateRedemptions()
   ]);
 }
 

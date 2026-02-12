@@ -22,6 +22,7 @@ const path = require('path');
 const botLoop = require('./src/botLoop');
 const safety = require('./src/safety');
 const logger = require('./src/logger');
+const redeemer = require('./src/redeemer');
 
 const app = express();
 const PORT = parseInt(process.env.PORT) || 4000;
@@ -84,6 +85,10 @@ app.post('/api/bot/stop', (req, res) => {
 app.get('/api/proxy-test', async (req, res) => {
   const result = await testProxy();
   res.json(result);
+});
+
+app.get('/api/redemptions', (req, res) => {
+  res.json(redeemer.getRedemptionStatus());
 });
 
 app.post('/api/bot/scan-now', async (req, res) => {

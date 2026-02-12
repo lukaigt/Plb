@@ -4,6 +4,7 @@ const { getAiPrediction } = require('./aiEngine');
 const { executeTrade } = require('./trader');
 const safety = require('./safety');
 const logger = require('./logger');
+const redeemer = require('./redeemer');
 
 let isRunning = false;
 let loopInterval = null;
@@ -75,11 +76,29 @@ async function runOnce() {
         message: `TRADE PLACED: ${decision.action} on BTC for $${tradeSize} | Pattern: ${decision.pattern} | Price: $${trade.price?.toFixed(3)}`,
         coin: 'BTC'
       });
+
+      redeemer.addPendingRedemption({
+        tokenId: trade.tokenId,
+        conditionId: market.id,
+        negRisk: market.negRisk,
+        marketEndTime: market.endTime,
+        action: trade.action,
+        side: trade.side,
+        size: trade.size,
+        price: trade.price,
+        question: market.question
+      });
     }
 
     logger.addActivity('bot', { message: '--- Scan complete. ---' });
   } catch (err) {
     logger.addActivity('error', { message: `Bot error: ${err.message}` });
+  }
+
+  try {
+    await redeemer.checkAndRedeem();
+  } catch (err) {
+    logger.addActivity('redeemer_error', { message: `Redeem check error: ${err.message}` });
   }
 }
 

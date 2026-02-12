@@ -42,6 +42,7 @@ src/
   trader.js         - Places orders on Polymarket via CLOB API with HMAC signing
   safety.js         - Loss-based stop (6 losses), money limit, window dedup, kill switch
   botLoop.js        - Scans BTC market, gets AI decision, executes if clear pattern
+  redeemer.js       - Auto-redeems winning positions from resolved markets via Safe wallet
   logger.js         - Logs everything for dashboard display
   proxy.js          - FlashProxy residential proxy setup
 public/
@@ -61,6 +62,7 @@ All config via `.env` file:
 - `PORT` - Dashboard port (default 5000 on Replit)
 - `SCAN_INTERVAL` - Seconds between scans (default 120)
 - `PROXY_URL` - FlashProxy SOCKS5 proxy URL
+- `POLYGON_RPC_URL` - Polygon RPC URL for contract calls (default: https://polygon-rpc.com)
 
 ## Key Technical Details
 - BTC ONLY — removed ETH, SOL, XRP for better focus
@@ -74,6 +76,13 @@ All config via `.env` file:
 - signatureType=0 for EOA/MetaMask wallets
 
 ## Recent Changes (Feb 12, 2026)
+- **Auto-redeem**: Bot now auto-redeems winning positions from resolved markets via Gnosis Safe wallet
+  - Discovers Safe proxy wallet from EOA using Safe Factory contract
+  - Calls redeemPositions on CTF contract through Safe's execTransaction
+  - Falls back to direct EOA redemption if no Safe found
+  - Dashboard shows redemption status: pending, collected, lost
+  - Uses POLYGON_RPC_URL (default: polygon-rpc.com) for on-chain calls
+  - Checks every scan cycle, 2 min after market end time
 - AI rewritten to candle structure analysis (overbought/oversold, momentum, support/resistance)
 - Scanner catches markets immediately (1-14 min window, was 3-12)
 - Scan interval reduced to 30 seconds (was 120s) — catches markets within seconds of opening
