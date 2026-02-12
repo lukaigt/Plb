@@ -8,168 +8,78 @@ const logger = require('./logger');
 let isRunning = false;
 let loopInterval = null;
 let lastScanTime = null;
-let tradedThisCycle = false;
-
-async function scoreOpportunity(marketData, decision) {
-  if (decision.action === 'SKIP') return -1;
-
-  let score = 0;
-
-  if (decision.confidence === 'HIGH') score += 3;
-  else if (decision.confidence === 'MEDIUM') score += 1;
-
-  const upBids = parseFloat(marketData.yesToken.orderbook?.totalBidVolume) || 0;
-  const downBids = parseFloat(marketData.noToken.orderbook?.totalBidVolume) || 0;
-  const totalBids = upBids + downBids;
-  if (totalBids > 0) {
-    const imbalance = Math.abs(upBids - downBids) / totalBids;
-    score += imbalance * 5;
-  }
-
-  if (marketData.priceTrend.momentum === 'decelerating') score += 2;
-  if (marketData.priceTrend.momentum === 'accelerating') score -= 2;
-
-  const yesPrice = marketData.yesToken.price?.mid || 0.5;
-  const distFromCenter = Math.abs(yesPrice - 0.5);
-  if (distFromCenter > 0.15) score += 1;
-  if (distFromCenter > 0.25) score += 1;
-
-  return score;
-}
-
-async function processMarket(market) {
-  try {
-    const windowKey = safety.getWindowKey(market.endTime);
-    if (safety.hasTraded(market.coin, windowKey)) {
-      logger.addActivity('skip', {
-        message: `Skipping ${market.coin} — already traded this 15-min window`,
-        coin: market.coin
-      });
-      return null;
-    }
-
-    const marketData = await fetchFullMarketData(market);
-
-    if (!marketData.yesToken.price?.mid && !marketData.noToken.price?.mid) {
-      logger.addActivity('skip', {
-        message: `Skipping ${market.coin} - no price data available`,
-        coin: market.coin
-      });
-      return null;
-    }
-
-    const canTrade = safety.canTrade();
-    if (!canTrade.allowed) {
-      logger.addActivity('safety_block', {
-        message: `Cannot trade ${market.coin}: ${canTrade.reason}`,
-        coin: market.coin
-      });
-      return null;
-    }
-
-    const decision = await getAiPrediction(marketData);
-
-    if (decision.action === 'SKIP') {
-      logger.addActivity('ai_skip', {
-        message: `AI skipped ${market.coin}: ${decision.reasoning}`,
-        coin: market.coin
-      });
-      return null;
-    }
-
-    const score = await scoreOpportunity(marketData, decision);
-
-    return {
-      market,
-      marketData,
-      decision,
-      score
-    };
-  } catch (err) {
-    logger.addActivity('error', {
-      message: `Error processing ${market.coin}: ${err.message}`,
-      coin: market.coin
-    });
-    return null;
-  }
-}
 
 async function runOnce() {
   if (!isRunning) return;
 
   lastScanTime = new Date().toISOString();
-  tradedThisCycle = false;
-  logger.addActivity('bot', { message: '--- Starting market scan cycle ---' });
+  logger.addActivity('bot', { message: '--- Starting BTC scan ---' });
 
   try {
-    const markets = await scanMarkets();
-
-    if (markets.length === 0) {
-      logger.addActivity('bot', { message: 'No active 15-min crypto markets found this cycle' });
-      return;
-    }
-
     const canTrade = safety.canTrade();
     if (!canTrade.allowed) {
       logger.addActivity('safety_block', { message: `Bot stopped: ${canTrade.reason}` });
       return;
     }
 
-    const opportunities = [];
+    const markets = await scanMarkets();
 
-    for (const market of markets) {
-      if (!isRunning) break;
-
-      const canStillTrade = safety.canTrade();
-      if (!canStillTrade.allowed) {
-        logger.addActivity('safety_block', { message: `Stopping mid-cycle: ${canStillTrade.reason}` });
-        break;
-      }
-
-      const opportunity = await processMarket(market);
-      if (opportunity) {
-        opportunities.push(opportunity);
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 3000));
-    }
-
-    if (opportunities.length === 0) {
-      logger.addActivity('bot', { message: `--- Scan cycle complete. No trade opportunities found. ---` });
+    if (markets.length === 0) {
+      logger.addActivity('bot', { message: 'No BTC market in 3-12 min window. Waiting...' });
       return;
     }
 
-    opportunities.sort((a, b) => b.score - a.score);
-    const best = opportunities[0];
+    const market = markets[0];
 
-    logger.addActivity('bot', {
-      message: `Best opportunity: ${best.market.coin} (score: ${best.score.toFixed(1)}) — ${best.decision.action} (${best.decision.confidence})`
-    });
+    const windowKey = safety.getWindowKey(market.endTime);
+    if (safety.hasTraded('BTC', windowKey)) {
+      logger.addActivity('skip', { message: `Already traded BTC in this 15-min window. Waiting for next window.` });
+      return;
+    }
 
-    const tradeSize = safety.getTradeSize(best.decision.confidence);
-    if (tradeSize <= 0) {
-      logger.addActivity('safety_block', {
-        message: `Trade size too small for ${best.market.coin} after safety checks`,
-        coin: best.market.coin
+    const marketData = await fetchFullMarketData(market);
+
+    if (!marketData.yesToken.price?.mid && !marketData.noToken.price?.mid) {
+      logger.addActivity('skip', { message: 'No price data available for BTC market' });
+      return;
+    }
+
+    const decision = await getAiPrediction(marketData);
+
+    if (decision.action === 'SKIP') {
+      logger.addActivity('ai_skip', {
+        message: `AI SKIPPED | Pattern: ${decision.pattern || 'none'} | ${decision.reasoning}`,
+        coin: 'BTC'
       });
+      logger.addActivity('bot', { message: '--- Scan complete. No trade. ---' });
       return;
     }
 
-    const trade = await executeTrade(best.decision, best.marketData, tradeSize);
+    const canStillTrade = safety.canTrade();
+    if (!canStillTrade.allowed) {
+      logger.addActivity('safety_block', { message: `Cannot trade: ${canStillTrade.reason}` });
+      return;
+    }
+
+    const tradeSize = safety.getTradeSize(decision.confidence);
+    if (tradeSize <= 0) {
+      logger.addActivity('safety_block', { message: 'Trade size too small after safety checks' });
+      return;
+    }
+
+    const trade = await executeTrade(decision, marketData, tradeSize);
     if (trade && trade.success) {
       safety.recordTrade(tradeSize);
-      const windowKey = safety.getWindowKey(best.market.endTime);
-      safety.markTraded(best.market.coin, windowKey);
-      tradedThisCycle = true;
+      safety.markTraded('BTC', windowKey);
       logger.addActivity('trade_success', {
-        message: `Trade executed: ${best.decision.action} on ${best.market.coin} for $${tradeSize} (best of ${opportunities.length} opportunities)`,
-        coin: best.market.coin
+        message: `TRADE PLACED: ${decision.action} on BTC for $${tradeSize} | Pattern: ${decision.pattern} | Price: $${trade.price?.toFixed(3)}`,
+        coin: 'BTC'
       });
     }
 
-    logger.addActivity('bot', { message: `--- Scan cycle complete. ${opportunities.length} opportunities evaluated, ${tradedThisCycle ? '1 trade placed' : 'no trade placed'}. ---` });
+    logger.addActivity('bot', { message: '--- Scan complete. ---' });
   } catch (err) {
-    logger.addActivity('error', { message: `Bot loop error: ${err.message}` });
+    logger.addActivity('error', { message: `Bot error: ${err.message}` });
   }
 }
 
@@ -185,7 +95,7 @@ function start() {
   const interval = (parseInt(process.env.SCAN_INTERVAL) || 120) * 1000;
 
   logger.addActivity('bot', {
-    message: `Bot started. Scanning every ${interval / 1000}s. Daily loss limit: $${safety.dailyLossLimit}, Max trade: $${safety.maxTradeSize}. Strategy: Mean reversion + orderbook analysis. Max 1 trade per scan cycle, 1 per coin per window.`
+    message: `Bot started — BTC ONLY. Scanning every ${interval / 1000}s. Max trade: $${safety.maxTradeSize}. Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost. Strategy: Price structure pattern analysis.`
   });
 
   runOnce();

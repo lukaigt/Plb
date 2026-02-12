@@ -59,15 +59,17 @@ async function updateStatus() {
     document.getElementById('killStatus').innerHTML = safety.killSwitch
       ? '<span class="negative">ON</span>'
       : '<span class="positive">OFF</span>';
+
+    document.getElementById('todayRecord').textContent = `${safety.dailyWinCount || 0}W / ${safety.dailyLossCount || 0}L`;
+    document.getElementById('dailyLosses').textContent = `${safety.dailyLossCount || 0} / ${safety.maxDailyLosses || 6}`;
     document.getElementById('dailyLoss').textContent = `$${safety.dailyLoss} / $${safety.dailyLossLimit}`;
-    document.getElementById('remainingBudget').textContent = `$${safety.remainingBudget}`;
-    document.getElementById('maxTrade').textContent = `$${safety.maxTradeSize}`;
+    document.getElementById('dailySpent').textContent = `$${safety.dailySpent || '0.00'}`;
     document.getElementById('tradesToday').textContent = safety.dailyTradeCount;
 
-    const pct = parseFloat(safety.dailyLossPercent);
+    const lossPct = safety.maxDailyLosses > 0 ? ((safety.dailyLossCount || 0) / safety.maxDailyLosses * 100) : 0;
     const bar = document.getElementById('lossProgress');
-    bar.style.width = `${Math.min(100, pct)}%`;
-    bar.style.background = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#3fb950';
+    bar.style.width = `${Math.min(100, lossPct)}%`;
+    bar.style.background = lossPct > 80 ? '#f85149' : lossPct > 50 ? '#d29922' : '#3fb950';
 
     const safetyBar = document.getElementById('safetyBar');
     if (safety.killSwitch) {
@@ -96,22 +98,6 @@ async function updateStats() {
   document.getElementById('winLoss').textContent = `${stats.wins}W / ${stats.losses}L`;
   document.getElementById('totalTrades').textContent = stats.totalTrades;
   document.getElementById('pendingTrades').textContent = `Pending: ${stats.pendingTrades}`;
-
-  if (stats.coinStats) {
-    const container = document.getElementById('coinStats');
-    container.innerHTML = ['BTC', 'ETH', 'SOL', 'XRP'].map(coin => {
-      const s = stats.coinStats[coin];
-      const pnlVal = parseFloat(s.pnl);
-      return `<div class="coin-stat-card">
-        <div class="coin-name">${coin}</div>
-        <div class="coin-detail">${s.totalTrades} trades | ${s.winRate}% WR</div>
-        <div class="coin-detail">${s.wins}W / ${s.losses}L</div>
-        <div class="coin-detail ${pnlVal > 0 ? 'positive' : pnlVal < 0 ? 'negative' : ''}">
-          P&L: $${s.pnl}
-        </div>
-      </div>`;
-    }).join('');
-  }
 }
 
 async function updateDecisions() {
@@ -121,23 +107,34 @@ async function updateDecisions() {
   document.getElementById('decisionCount').textContent = `${decisions.length} decisions`;
   const panel = document.getElementById('decisionsPanel');
 
-  panel.innerHTML = decisions.map(d => `
+  panel.innerHTML = decisions.map(d => {
+    const actionClass = getActionClass(d.action);
+    const priceSeq = d.priceSequence || 'N/A';
+    const obSignal = d.orderbookSignal || 'N/A';
+
+    return `
     <div class="decision-card">
       <div class="decision-header">
-        <span class="decision-coin">${d.coin || 'N/A'}</span>
-        <span class="decision-action ${getActionClass(d.action)}">${d.action}</span>
+        <span class="decision-coin">BTC</span>
+        <span class="decision-action ${actionClass}">${d.action}</span>
+        <span style="font-size:11px;color:#484f58;">${formatTime(d.timestamp)}</span>
       </div>
       <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">${d.question || ''}</div>
+      ${d.pattern && d.pattern !== 'none' && d.pattern !== 'not identified' ? `<div class="pattern-tag">Pattern: ${d.pattern}</div>` : ''}
       <div class="decision-reasoning">${d.reasoning || 'No reasoning provided'}</div>
+      <div class="price-structure">
+        <div class="structure-label">Price Structure:</div>
+        <div class="structure-data">${priceSeq}</div>
+      </div>
       <div class="decision-meta">
         <span>Confidence: <strong>${d.confidence}</strong></span>
-        <span>YES: ${d.yesPrice?.toFixed(3) || 'N/A'}</span>
-        <span>Trend: ${d.trendDirection || 'N/A'}</span>
-        <span>Momentum: ${d.momentum || 'N/A'}</span>
-        <span>${formatTime(d.timestamp)}</span>
+        <span>UP: $${d.yesPrice?.toFixed(3) || 'N/A'}</span>
+        <span>DOWN: $${d.noPrice?.toFixed(3) || 'N/A'}</span>
+        <span>Orderbook: ${obSignal}</span>
+        <span>${d.minutesLeft || '?'}min left</span>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 }
 
 async function updateActivities() {
@@ -167,14 +164,13 @@ async function updateTrades() {
     const pnl = t.pnl || 0;
     return `<tr>
       <td>${formatTime(t.timestamp)}</td>
-      <td><strong>${t.coin || 'N/A'}</strong></td>
       <td><span class="decision-action ${getActionClass(t.action)}">${t.action}</span></td>
+      <td>${t.pattern || 'N/A'}</td>
       <td>${t.confidence || 'N/A'}</td>
       <td>$${t.size?.toFixed(2) || '0.00'}</td>
       <td>$${t.price?.toFixed(3) || '0.000'}</td>
       <td>${getResultBadge(t.result)}</td>
-      <td class="${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : ''}">$${pnl.toFixed(2)}</td>
-      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(t.reasoning || '').replace(/"/g, '&quot;')}">${t.reasoning || 'N/A'}</td>
+      <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(t.reasoning || '').replace(/"/g, '&quot;')}">${t.reasoning || 'N/A'}</td>
     </tr>`;
   }).join('');
 }

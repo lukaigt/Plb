@@ -159,10 +159,11 @@ async function executeTrade(decision, marketData, tradeSize) {
   const result = await placeOrder(token.token_id, 'BUY', tradeSize, price, privateKey, negRisk, tickSize);
 
   const trade = {
-    coin: marketData.market.coin,
+    coin: 'BTC',
     question: marketData.market.question,
     action: decision.action,
     confidence: decision.confidence,
+    pattern: decision.pattern || 'unknown',
     reasoning: decision.reasoning,
     tokenId: token.token_id,
     side: isYes ? 'YES' : 'NO',

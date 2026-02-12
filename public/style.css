@@ -23,7 +23,7 @@ body {
 .header h1 {
   font-size: 20px;
   font-weight: 600;
-  color: #58a6ff;
+  color: #f0883e;
 }
 
 .header-controls {
@@ -43,49 +43,15 @@ body {
   transition: all 0.2s;
 }
 
-.btn:hover {
-  background: #30363d;
-}
-
-.btn-green {
-  background: #238636;
-  border-color: #2ea043;
-  color: #fff;
-}
-
-.btn-green:hover {
-  background: #2ea043;
-}
-
-.btn-red {
-  background: #da3633;
-  border-color: #f85149;
-  color: #fff;
-}
-
-.btn-red:hover {
-  background: #f85149;
-}
-
-.btn-blue {
-  background: #1f6feb;
-  border-color: #388bfd;
-  color: #fff;
-}
-
-.btn-blue:hover {
-  background: #388bfd;
-}
-
-.btn-yellow {
-  background: #9e6a03;
-  border-color: #d29922;
-  color: #fff;
-}
-
-.btn-yellow:hover {
-  background: #d29922;
-}
+.btn:hover { background: #30363d; }
+.btn-green { background: #238636; border-color: #2ea043; color: #fff; }
+.btn-green:hover { background: #2ea043; }
+.btn-red { background: #da3633; border-color: #f85149; color: #fff; }
+.btn-red:hover { background: #f85149; }
+.btn-blue { background: #1f6feb; border-color: #388bfd; color: #fff; }
+.btn-blue:hover { background: #388bfd; }
+.btn-yellow { background: #9e6a03; border-color: #d29922; color: #fff; }
+.btn-yellow:hover { background: #d29922; }
 
 .container {
   max-width: 1400px;
@@ -160,22 +126,9 @@ body {
   overflow-y: auto;
 }
 
-.panel-body::-webkit-scrollbar {
-  width: 6px;
-}
-
-.panel-body::-webkit-scrollbar-track {
-  background: #0d1117;
-}
-
-.panel-body::-webkit-scrollbar-thumb {
-  background: #30363d;
-  border-radius: 3px;
-}
-
-.full-width {
-  grid-column: 1 / -1;
-}
+.panel-body::-webkit-scrollbar { width: 6px; }
+.panel-body::-webkit-scrollbar-track { background: #0d1117; }
+.panel-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 
 .safety-bar {
   background: #161b22;
@@ -208,7 +161,7 @@ body {
 }
 
 .progress-bar {
-  width: 200px;
+  width: 120px;
   height: 8px;
   background: #21262d;
   border-radius: 4px;
@@ -227,9 +180,7 @@ body {
   font-size: 13px;
 }
 
-.activity-item:last-child {
-  border-bottom: none;
-}
+.activity-item:last-child { border-bottom: none; }
 
 .activity-time {
   color: #484f58;
@@ -258,8 +209,8 @@ body {
   background: #0d1117;
   border: 1px solid #21262d;
   border-radius: 6px;
-  padding: 12px;
-  margin-bottom: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
 }
 
 .decision-header {
@@ -271,7 +222,8 @@ body {
 
 .decision-coin {
   font-weight: 700;
-  font-size: 16px;
+  font-size: 18px;
+  color: #f0883e;
 }
 
 .decision-action {
@@ -285,11 +237,45 @@ body {
 .action-buy-no { background: #da363333; color: #f85149; }
 .action-skip { background: #21262d; color: #8b949e; }
 
+.pattern-tag {
+  display: inline-block;
+  background: #8957e533;
+  color: #bc8cff;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
 .decision-reasoning {
   font-size: 13px;
   color: #c9d1d9;
   margin: 8px 0;
   line-height: 1.5;
+}
+
+.price-structure {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  font-family: 'Courier New', monospace;
+}
+
+.structure-label {
+  font-size: 11px;
+  color: #8b949e;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.structure-data {
+  font-size: 13px;
+  color: #58a6ff;
+  word-break: break-all;
+  line-height: 1.6;
 }
 
 .decision-meta {
@@ -298,6 +284,7 @@ body {
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
+  margin-top: 8px;
 }
 
 .trade-table {
@@ -320,35 +307,7 @@ body {
   border-bottom: 1px solid #21262d;
 }
 
-.trade-table tr:hover {
-  background: #1c2128;
-}
-
-.coin-stats-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
-  gap: 12px;
-}
-
-.coin-stat-card {
-  background: #0d1117;
-  border: 1px solid #21262d;
-  border-radius: 6px;
-  padding: 12px;
-  text-align: center;
-}
-
-.coin-stat-card .coin-name {
-  font-weight: 700;
-  font-size: 18px;
-  margin-bottom: 8px;
-}
-
-.coin-stat-card .coin-detail {
-  font-size: 12px;
-  color: #8b949e;
-  margin: 4px 0;
-}
+.trade-table tr:hover { background: #1c2128; }
 
 .status-dot {
   display: inline-block;
@@ -390,11 +349,9 @@ body {
 @media (max-width: 1200px) {
   .grid-top { grid-template-columns: 1fr 1fr; }
   .grid-main { grid-template-columns: 1fr; }
-  .coin-stats-grid { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 600px) {
   .grid-top { grid-template-columns: 1fr; }
-  .coin-stats-grid { grid-template-columns: 1fr; }
   .header { flex-direction: column; gap: 10px; }
 }

@@ -83,19 +83,6 @@ class Logger extends EventEmitter {
     const todayTrades = trades.filter(t => new Date(t.timestamp) >= todayStart);
     const todayPnL = todayTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
 
-    const coinStats = {};
-    for (const coin of ['BTC', 'ETH', 'SOL', 'XRP']) {
-      const coinTrades = trades.filter(t => t.coin === coin);
-      const coinWins = coinTrades.filter(t => t.result === 'win');
-      coinStats[coin] = {
-        totalTrades: coinTrades.length,
-        wins: coinWins.length,
-        losses: coinTrades.length - coinWins.length,
-        winRate: coinTrades.length > 0 ? ((coinWins.length / coinTrades.length) * 100).toFixed(1) : '0.0',
-        pnl: coinTrades.reduce((sum, t) => sum + (t.pnl || 0), 0).toFixed(2)
-      };
-    }
-
     return {
       totalTrades: trades.length,
       wins: wins.length,
@@ -104,8 +91,7 @@ class Logger extends EventEmitter {
       totalPnL: totalPnL.toFixed(2),
       todayPnL: todayPnL.toFixed(2),
       todayTrades: todayTrades.length,
-      pendingTrades: this.tradeHistory.filter(t => t.result === 'pending').length,
-      coinStats
+      pendingTrades: this.tradeHistory.filter(t => t.result === 'pending').length
     };
   }
 }

@@ -2,8 +2,8 @@ const logger = require('./logger');
 
 const GAMMA_API = 'https://gamma-api.polymarket.com';
 
-const COINS = ['btc', 'eth', 'sol', 'xrp'];
-const COIN_NAMES = { btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP' };
+const COINS = ['btc'];
+const COIN_NAMES = { btc: 'BTC' };
 
 async function fetchWithTimeout(url, options = {}, timeout = 15000) {
   const controller = new AbortController();
@@ -39,7 +39,7 @@ function get15MinSlotTimestamps() {
 }
 
 async function scanMarkets() {
-  logger.addActivity('scan', { message: 'Scanning Polymarket for 15-min crypto Up/Down markets...' });
+  logger.addActivity('scan', { message: 'Scanning for BTC 15-min Up/Down market...' });
 
   const markets = [];
   const timestamps = get15MinSlotTimestamps();
@@ -133,16 +133,10 @@ async function scanMarkets() {
   const finalMarkets = Object.values(bestPerCoin).filter(m => m.minutesLeft >= 3 && m.minutesLeft <= 12);
 
   logger.addActivity('scan_result', {
-    message: `Found ${finalMarkets.length} active 15-min Up/Down markets: ${finalMarkets.map(m => `${m.coin} (${m.minutesLeft}min left)`).join(', ') || 'none'}`,
-    count: finalMarkets.length,
-    coins: finalMarkets.map(m => m.coin),
-    details: finalMarkets.map(m => ({
-      coin: m.coin,
-      question: m.question,
-      minutesLeft: m.minutesLeft,
-      upPrice: m.outcomePrices?.[0],
-      downPrice: m.outcomePrices?.[1]
-    }))
+    message: finalMarkets.length > 0
+      ? `Found BTC market: ${finalMarkets[0].question} (${finalMarkets[0].minutesLeft}min left)`
+      : 'No active BTC 15-min market in the 3-12 minute window',
+    count: finalMarkets.length
   });
 
   return finalMarkets;
