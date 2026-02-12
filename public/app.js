@@ -110,7 +110,7 @@ async function updateDecisions() {
   panel.innerHTML = decisions.map(d => {
     const actionClass = getActionClass(d.action);
     const priceSeq = d.priceSequence || 'N/A';
-    const obSignal = d.orderbookSignal || 'N/A';
+    const structureSignal = d.orderbookSignal || 'N/A';
 
     return `
     <div class="decision-card">
@@ -120,17 +120,17 @@ async function updateDecisions() {
         <span style="font-size:11px;color:#484f58;">${formatTime(d.timestamp)}</span>
       </div>
       <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">${d.question || ''}</div>
-      ${d.pattern && d.pattern !== 'none' && d.pattern !== 'not identified' ? `<div class="pattern-tag">Pattern: ${d.pattern}</div>` : ''}
+      ${d.pattern && d.pattern !== 'none' && d.pattern !== 'not identified' ? `<div class="pattern-tag">${d.pattern}</div>` : ''}
       <div class="decision-reasoning">${d.reasoning || 'No reasoning provided'}</div>
       <div class="price-structure">
-        <div class="structure-label">Price Structure:</div>
+        <div class="structure-label">Candle Structure:</div>
         <div class="structure-data">${priceSeq}</div>
       </div>
       <div class="decision-meta">
         <span>Confidence: <strong>${d.confidence}</strong></span>
-        <span>UP: $${d.yesPrice?.toFixed(3) || 'N/A'}</span>
-        <span>DOWN: $${d.noPrice?.toFixed(3) || 'N/A'}</span>
-        <span>Orderbook: ${obSignal}</span>
+        <span>Candles: ${d.candleCount || '?'}</span>
+        <span>Move: ${d.totalMove || '?'}</span>
+        <span>Signal: ${structureSignal}</span>
         <span>${d.minutesLeft || '?'}min left</span>
       </div>
     </div>`;

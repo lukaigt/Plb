@@ -130,12 +130,12 @@ async function scanMarkets() {
     }
   }
 
-  const finalMarkets = Object.values(bestPerCoin).filter(m => m.minutesLeft >= 3 && m.minutesLeft <= 12);
+  const finalMarkets = Object.values(bestPerCoin).filter(m => m.minutesLeft >= 1 && m.minutesLeft <= 14);
 
   logger.addActivity('scan_result', {
     message: finalMarkets.length > 0
       ? `Found BTC market: ${finalMarkets[0].question} (${finalMarkets[0].minutesLeft}min left)`
-      : 'No active BTC 15-min market in the 3-12 minute window',
+      : 'No active BTC 15-min market found',
     count: finalMarkets.length
   });
 

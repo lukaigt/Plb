@@ -12,15 +12,17 @@ AI-powered trading bot for Polymarket BTC 15-minute price prediction markets. Us
 - **Trade execution** via CLOB API with wallet-derived API credentials
 - **Proxy support** via FlashProxy Brazil residential proxy for Cloudflare bypass
 
-## AI Strategy (Price Structure Pattern Recognition)
-- **Pattern reading**: AI reads minute-by-minute price sequence as a chart shape
-- **Bullish patterns**: steady staircase up, higher lows, V-recovery, breakout from flat
-- **Bearish patterns**: steady staircase down, lower highs, inverted V, breakdown from flat
-- **Skip patterns**: choppy/noise, flat/dead, exhausted move (>0.65 or <0.35), contradicting
-- **Orderbook confirmation**: pattern must be supported by bid volume imbalance
+## AI Strategy (Candle Structure Analysis)
+- **Candle reading**: AI reads minute-by-minute candles like a trader — direction, size, momentum
+- **Overbought/Oversold**: Price moved too far too fast from 0.50? Likely to snap back
+- **Momentum exhaustion**: Candles getting smaller = move is dying, reversal coming
+- **Support/Resistance**: Price levels where it tends to bounce or get rejected
+- **Trend strength**: Consistent candles in one direction = healthy trend, ride it
+- **Reversal signals**: Big move + stall + opposite candle = reversal starting
+- **Early market**: Can decide with 1-2 candles if structure is clear
 - **Value entries only**: only trade when entry price is 0.40-0.60
-- **SKIP is default**: AI instructed to skip 60-70% of opportunities
-- **Temperature 0.2**: Low randomness for consistent pattern recognition
+- **SKIP is default**: AI skips unclear/flat/choppy structures
+- **Temperature 0.2**: Low randomness for consistent decisions
 
 ## Safety Controls
 - **Max 1 trade per scan cycle** — BTC only
@@ -72,12 +74,13 @@ All config via `.env` file:
 - signatureType=0 for EOA/MetaMask wallets
 
 ## Recent Changes (Feb 12, 2026)
-- Complete AI rewrite: from mean reversion to price structure pattern recognition
+- AI rewritten to candle structure analysis (overbought/oversold, momentum, support/resistance)
+- Scanner catches markets immediately (1-14 min window, was 3-12)
+- Scan interval reduced to 30 seconds (was 120s) — catches markets within seconds of opening
+- AI can decide with 1-2 candles, doesn't need 4+ data points anymore
 - BTC ONLY: removed ETH, SOL, XRP
-- Safety fix: stops after 6 LOSING trades (was 6 total trades before)
-- Dashboard redesign: shows price sequence, pattern identified, orderbook signal, full reasoning
-- AI prompt teaches specific chart patterns with exact number examples
-- Added structure summary (start/middle/current, peak/low, up/down move counts)
+- Safety fix: stops after 6 LOSING trades (keeps going if winning)
+- Dashboard shows candle structure, pattern, momentum state, full reasoning
 
 ## User Preferences
 - BTC only for better quality decisions

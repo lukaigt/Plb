@@ -25,7 +25,7 @@ async function runOnce() {
     const markets = await scanMarkets();
 
     if (markets.length === 0) {
-      logger.addActivity('bot', { message: 'No BTC market in 3-12 min window. Waiting...' });
+      logger.addActivity('bot', { message: 'No BTC market available. Waiting...' });
       return;
     }
 
@@ -92,10 +92,10 @@ function start() {
   isRunning = true;
   safety.reload();
 
-  const interval = (parseInt(process.env.SCAN_INTERVAL) || 120) * 1000;
+  const interval = (parseInt(process.env.SCAN_INTERVAL) || 30) * 1000;
 
   logger.addActivity('bot', {
-    message: `Bot started — BTC ONLY. Scanning every ${interval / 1000}s. Max trade: $${safety.maxTradeSize}. Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost. Strategy: Price structure pattern analysis.`
+    message: `Bot started — BTC ONLY. Scanning every ${interval / 1000}s. Max trade: $${safety.maxTradeSize}. Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost. Strategy: Candle structure analysis.`
   });
 
   runOnce();
