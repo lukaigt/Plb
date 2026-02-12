@@ -83,26 +83,35 @@ async function getOrderbook(tokenId) {
 
 async function getPriceHistory(tokenId) {
   try {
-    const res = await fetchWithTimeout(
-      `${CLOB_API}/prices-history?market=${tokenId}&interval=1m&fidelity=1`
-    );
+    const url = `${CLOB_API}/prices-history?market=${tokenId}&interval=1h&fidelity=1`;
+    logger.addActivity('data_debug', { message: `Fetching price history: ${url.substring(0, 120)}...` });
+
+    const res = await fetchWithTimeout(url);
     if (!res.ok) {
-      const res2 = await fetchWithTimeout(
-        `${CLOB_API}/prices-history?token_id=${tokenId}&interval=1m&fidelity=1`
-      );
-      if (!res2.ok) return [];
+      logger.addActivity('data_debug', { message: `Price history primary failed (${res.status}), trying fallback...` });
+      const url2 = `${CLOB_API}/prices-history?token_id=${tokenId}&interval=1h&fidelity=1`;
+      const res2 = await fetchWithTimeout(url2);
+      if (!res2.ok) {
+        logger.addActivity('data_error', { message: `Price history fallback also failed (${res2.status})` });
+        return [];
+      }
       const data2 = await res2.json();
-      return (data2.history || data2 || []).map(p => ({
+      const history2 = data2.history || data2 || [];
+      logger.addActivity('data_debug', { message: `Price history fallback returned ${history2.length} candles` });
+      return history2.map(p => ({
         time: p.t,
         price: parseFloat(p.p)
       }));
     }
     const data = await res.json();
-    return (data.history || data || []).map(p => ({
+    const history = data.history || data || [];
+    logger.addActivity('data_debug', { message: `Price history returned ${history.length} candles` });
+    return history.map(p => ({
       time: p.t,
       price: parseFloat(p.p)
     }));
   } catch (err) {
+    logger.addActivity('data_error', { message: `Price history fetch error: ${err.message}` });
     return [];
   }
 }

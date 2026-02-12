@@ -113,6 +113,7 @@ async function scanMarkets() {
         active: true
       };
     } catch (err) {
+      logger.addActivity('scan_debug', { message: `Slug ${slug} fetch error: ${err.message}` });
       return null;
     }
   });
