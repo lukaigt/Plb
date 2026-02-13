@@ -107,9 +107,26 @@ async function scanExistingPositions() {
     }
 
     let allPositions = [];
-    for (const addr of walletsToCheck) {
-      const positions = await fetchPositions(addr);
-      allPositions = allPositions.concat(positions);
+    const seenAssets = new Set();
+
+    const eoaPositions = await fetchPositions(eoaAddress);
+    for (const pos of eoaPositions) {
+      const key = pos.asset || pos.conditionId || JSON.stringify(pos);
+      if (!seenAssets.has(key)) {
+        seenAssets.add(key);
+        allPositions.push(pos);
+      }
+    }
+
+    if (proxyWallet) {
+      const proxyPositions = await fetchPositions(proxyWallet);
+      for (const pos of proxyPositions) {
+        const key = pos.asset || pos.conditionId || JSON.stringify(pos);
+        if (!seenAssets.has(key)) {
+          seenAssets.add(key);
+          allPositions.push(pos);
+        }
+      }
     }
 
     if (allPositions.length === 0) {
