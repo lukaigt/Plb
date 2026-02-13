@@ -403,10 +403,18 @@ async function checkAndRedeem() {
           continue;
         }
 
-        const walletToCheck = safAddr || wallet.address;
-        const hasBalance = await hasTokenBalance(ctf, walletToCheck, redemption.tokenId);
+        const eoaHasBalance = await hasTokenBalance(ctf, wallet.address, redemption.tokenId);
+        const safeHasBalance = safAddr ? await hasTokenBalance(ctf, safAddr, redemption.tokenId) : false;
 
-        if (!hasBalance) {
+        if (!eoaHasBalance && !safeHasBalance) {
+          const retryCount = redemption.balanceRetryCount || 0;
+          if (retryCount < 2) {
+            redemption.balanceRetryCount = retryCount + 1;
+            logger.addActivity('redeemer', {
+              message: `No token balance yet (retry ${retryCount + 1}/2): ${redemption.question || 'BTC trade'}`
+            });
+            continue;
+          }
           redemption.status = 'no_payout';
           redemption.redeemedAt = new Date().toISOString();
           redemptionHistory.push({ ...redemption });
@@ -414,15 +422,19 @@ async function checkAndRedeem() {
             logger.updateTrade(redemption.tradeId, { result: 'loss', pnl: -(redemption.size || 0) });
           }
           logger.addActivity('redeemer', {
-            message: `No token balance (lost): ${redemption.question || 'BTC trade'}`
+            message: `No token balance on EOA or Safe (lost): ${redemption.question || 'BTC trade'}`
           });
           continue;
         }
 
-        redemption.status = 'redeeming';
+        const redeemFromEOA = eoaHasBalance;
+        const redeemFromSafe = !eoaHasBalance && safeHasBalance;
+
         logger.addActivity('redeemer', {
-          message: `Market resolved! Redeeming: ${redemption.question || 'BTC trade'}`
+          message: `Market resolved! Tokens on ${redeemFromEOA ? 'EOA' : 'Safe'}. Redeeming: ${redemption.question || 'BTC trade'}`
         });
+
+        redemption.status = 'redeeming';
 
         let redeemed = false;
         let lastError = null;
@@ -439,11 +451,11 @@ async function checkAndRedeem() {
 
           try {
             logger.addActivity('redeemer', {
-              message: `Trying ${attempt.label} for: ${redemption.question || 'BTC trade'}`
+              message: `Trying ${attempt.label} via ${redeemFromEOA ? 'EOA' : 'Safe'} for: ${redemption.question || 'BTC trade'}`
             });
 
             let tx;
-            if (safAddr) {
+            if (redeemFromSafe && safAddr) {
               tx = await redeemViaSafe(wallet, conditionId, attempt.negRisk, safAddr, provider, wrappedCollateral);
             } else {
               tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider, wrappedCollateral);
@@ -451,7 +463,7 @@ async function checkAndRedeem() {
 
             const receipt = await tx.wait();
 
-            const internalSuccess = verifyRedemptionReceipt(receipt, safAddr);
+            const internalSuccess = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null);
 
             if (!internalSuccess) {
               logger.addActivity('redeemer', {

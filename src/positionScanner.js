@@ -12,6 +12,28 @@ const KNOWN_PROXY_WALLET = '0x94eAb3d7352aEb36A7378bc635b97E2968112e7E';
 let hasScannedOnStartup = false;
 let lastScanResult = null;
 
+async function lookupCorrectConditionId(tokenId) {
+  try {
+    const url = `https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}&closed=true`;
+    const res = await fetchWithTimeout(url, 10000);
+    if (!res.ok) return null;
+    const markets = await res.json();
+    if (Array.isArray(markets) && markets.length > 0 && markets[0].conditionId) {
+      const market = markets[0];
+      let clobIds = market.clobTokenIds;
+      if (typeof clobIds === 'string') {
+        try { clobIds = JSON.parse(clobIds); } catch { clobIds = []; }
+      }
+      if (Array.isArray(clobIds) && clobIds.includes(tokenId)) {
+        return market.conditionId;
+      }
+      return market.conditionId;
+    }
+  } catch (err) {}
+
+  return null;
+}
+
 async function fetchWithTimeout(url, timeout = 15000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -179,10 +201,21 @@ async function scanExistingPositions() {
         continue;
       }
 
+      let correctConditionId = conditionId;
+      if (tokenId) {
+        const gammaConditionId = await lookupCorrectConditionId(tokenId);
+        if (gammaConditionId && gammaConditionId !== conditionId) {
+          logger.addActivity('position_scanner', {
+            message: `Fixed conditionId for ${title}: Data API differs from Gamma API`
+          });
+          correctConditionId = gammaConditionId;
+        }
+      }
+
       queuedCount++;
 
       queuedPositions.push({
-        conditionId,
+        conditionId: correctConditionId,
         tokenId,
         title,
         outcome,
@@ -192,7 +225,7 @@ async function scanExistingPositions() {
       });
 
       redeemer.addPendingRedemption({
-        conditionId: conditionId,
+        conditionId: correctConditionId,
         tokenId: tokenId,
         negRisk: negRisk,
         marketEndTime: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
