@@ -79,6 +79,7 @@ async function runOnce() {
       });
 
       redeemer.addPendingRedemption({
+        tradeId: trade.tradeId,
         tokenId: trade.tokenId,
         conditionId: market.id,
         negRisk: market.negRisk,

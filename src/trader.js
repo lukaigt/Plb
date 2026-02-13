@@ -177,7 +177,8 @@ async function executeTrade(decision, marketData, tradeSize) {
     marketEndTime: marketData.market.endTime
   };
 
-  logger.addTrade(trade);
+  const logged = logger.addTrade(trade);
+  trade.tradeId = logged.id;
   return trade;
 }
 

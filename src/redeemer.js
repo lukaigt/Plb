@@ -410,8 +410,11 @@ async function checkAndRedeem() {
           redemption.status = 'no_payout';
           redemption.redeemedAt = new Date().toISOString();
           redemptionHistory.push({ ...redemption });
+          if (redemption.tradeId) {
+            logger.updateTrade(redemption.tradeId, { result: 'loss', pnl: -(redemption.size || 0) });
+          }
           logger.addActivity('redeemer', {
-            message: `No token balance (likely lost): ${redemption.question || 'BTC trade'}`
+            message: `No token balance (lost): ${redemption.question || 'BTC trade'}`
           });
           continue;
         }
@@ -424,15 +427,12 @@ async function checkAndRedeem() {
         let redeemed = false;
         let lastError = null;
 
-        const attempts = [];
+        const attempts = [
+          { negRisk: false, label: 'CTF' }
+        ];
         if (wrappedCollateral) {
           attempts.push({ negRisk: true, label: 'NegRiskAdapter' });
-        } else {
-          logger.addActivity('redeemer', {
-            message: `Skipping NegRiskAdapter (no wrapped collateral) — trying CTF only`
-          });
         }
-        attempts.push({ negRisk: false, label: 'CTF' });
 
         for (const attempt of attempts) {
           if (redeemed) break;
@@ -467,8 +467,15 @@ async function checkAndRedeem() {
             redemptionHistory.push({ ...redemption });
             redeemed = true;
 
+            if (redemption.tradeId) {
+              logger.updateTrade(redemption.tradeId, {
+                result: 'win',
+                pnl: (redemption.size || 0) * ((1 / (redemption.price || 0.5)) - 1)
+              });
+            }
+
             logger.addActivity('redeem_success', {
-              message: `Redeemed via ${attempt.label}! TX: ${receipt.transactionHash.substring(0, 20)}... | ${redemption.question || 'BTC trade'}`
+              message: `COLLECTED via ${attempt.label}! TX: ${receipt.transactionHash.substring(0, 20)}... | ${redemption.question || 'BTC trade'}`
             });
           } catch (err) {
             const errMsg = err.message || String(err);
@@ -481,22 +488,31 @@ async function checkAndRedeem() {
         }
 
         if (!redeemed) {
-          const errMsg = lastError || 'Both NegRiskAdapter and CTF failed';
+          const errMsg = lastError || 'CTF and NegRiskAdapter both failed';
           if (errMsg.includes('payout is zero') || errMsg.includes('result is empty')) {
             redemption.status = 'no_payout';
             redemption.redeemedAt = new Date().toISOString();
             redemptionHistory.push({ ...redemption });
+            if (redemption.tradeId) {
+              logger.updateTrade(redemption.tradeId, { result: 'loss', pnl: -(redemption.size || 0) });
+            }
             logger.addActivity('redeemer', {
               message: `No payout (lost): ${redemption.question || 'BTC trade'}`
             });
           } else {
             redemption.status = 'error';
             redemption.error = errMsg.substring(0, 100);
-            redemption.redeemedAt = new Date().toISOString();
-            redemptionHistory.push({ ...redemption });
-            logger.addActivity('redeemer_error', {
-              message: `Redeem failed (both contracts tried): ${errMsg.substring(0, 80)}`
-            });
+            redemption.retryCount = (redemption.retryCount || 0) + 1;
+            if (redemption.retryCount >= 3) {
+              redemptionHistory.push({ ...redemption });
+              logger.addActivity('redeemer_error', {
+                message: `Redeem failed after 3 retries: ${errMsg.substring(0, 80)}`
+              });
+            } else {
+              logger.addActivity('redeemer_error', {
+                message: `Redeem failed (attempt ${redemption.retryCount}/3, will retry): ${errMsg.substring(0, 60)}`
+              });
+            }
           }
         }
       } catch (err) {
@@ -509,7 +525,7 @@ async function checkAndRedeem() {
     }
 
     const completed = pendingRedemptions.filter(r =>
-      r.status === 'redeemed' || r.status === 'no_payout' || r.status === 'error'
+      r.status === 'redeemed' || r.status === 'no_payout' || (r.status === 'error' && r.retryCount >= 3)
     );
     for (const done of completed) {
       const idx = pendingRedemptions.indexOf(done);
