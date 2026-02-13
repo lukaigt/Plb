@@ -310,30 +310,54 @@ async function checkAndRedeem() {
 
         redemption.status = 'redeeming';
         logger.addActivity('redeemer', {
-          message: `Market resolved! Redeeming: ${redemption.question || 'BTC trade'} (negRisk=${redemption.negRisk})`
+          message: `Market resolved! Redeeming: ${redemption.question || 'BTC trade'}`
         });
 
-        let tx;
-        try {
-          if (safAddr) {
-            tx = await redeemViaSafe(wallet, conditionId, redemption.negRisk, safAddr, provider);
-          } else {
-            tx = await redeemViaEOA(wallet, conditionId, redemption.negRisk, provider);
+        let redeemed = false;
+        let lastError = null;
+
+        const attempts = [
+          { negRisk: true, label: 'NegRiskAdapter' },
+          { negRisk: false, label: 'CTF' }
+        ];
+
+        for (const attempt of attempts) {
+          if (redeemed) break;
+
+          try {
+            logger.addActivity('redeemer', {
+              message: `Trying ${attempt.label} for: ${redemption.question || 'BTC trade'}`
+            });
+
+            let tx;
+            if (safAddr) {
+              tx = await redeemViaSafe(wallet, conditionId, attempt.negRisk, safAddr, provider);
+            } else {
+              tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider);
+            }
+
+            const receipt = await tx.wait();
+            redemption.status = 'redeemed';
+            redemption.txHash = receipt.transactionHash;
+            redemption.redeemedAt = new Date().toISOString();
+            redemptionHistory.push({ ...redemption });
+            redeemed = true;
+
+            logger.addActivity('redeem_success', {
+              message: `Redeemed via ${attempt.label}! TX: ${receipt.transactionHash.substring(0, 20)}... | ${redemption.question || 'BTC trade'}`
+            });
+          } catch (err) {
+            const errMsg = err.message || String(err);
+            lastError = errMsg;
+
+            logger.addActivity('redeemer', {
+              message: `${attempt.label} failed: ${errMsg.substring(0, 60)}... trying next`
+            });
           }
+        }
 
-          const receipt = await tx.wait();
-          redemption.status = 'redeemed';
-          redemption.txHash = receipt.transactionHash;
-          redemption.redeemedAt = new Date().toISOString();
-
-          redemptionHistory.push({ ...redemption });
-
-          logger.addActivity('redeem_success', {
-            message: `Redeemed! TX: ${receipt.transactionHash.substring(0, 20)}... | ${redemption.question || 'BTC trade'}`
-          });
-        } catch (err) {
-          const errMsg = err.message || String(err);
-
+        if (!redeemed) {
+          const errMsg = lastError || 'Both NegRiskAdapter and CTF failed';
           if (errMsg.includes('payout is zero') || errMsg.includes('result is empty')) {
             redemption.status = 'no_payout';
             redemption.redeemedAt = new Date().toISOString();
@@ -341,45 +365,13 @@ async function checkAndRedeem() {
             logger.addActivity('redeemer', {
               message: `No payout (lost): ${redemption.question || 'BTC trade'}`
             });
-          } else if (redemption.negRisk && !errMsg.includes('execution reverted')) {
-            logger.addActivity('redeemer', {
-              message: `NegRisk redeem failed, trying CTF directly: ${errMsg.substring(0, 50)}`
-            });
-            try {
-              const fallbackTx = safAddr
-                ? await redeemViaSafe(wallet, conditionId, false, safAddr, provider)
-                : await redeemViaEOA(wallet, conditionId, false, provider);
-
-              const receipt = await fallbackTx.wait();
-              redemption.status = 'redeemed';
-              redemption.txHash = receipt.transactionHash;
-              redemption.redeemedAt = new Date().toISOString();
-              redemptionHistory.push({ ...redemption });
-              logger.addActivity('redeem_success', {
-                message: `Redeemed via CTF fallback! TX: ${receipt.transactionHash.substring(0, 20)}...`
-              });
-            } catch (fallbackErr) {
-              const fbMsg = fallbackErr.message || String(fallbackErr);
-              if (fbMsg.includes('payout is zero') || fbMsg.includes('result is empty')) {
-                redemption.status = 'no_payout';
-                redemption.redeemedAt = new Date().toISOString();
-                redemptionHistory.push({ ...redemption });
-                logger.addActivity('redeemer', {
-                  message: `No payout (lost): ${redemption.question || 'BTC trade'}`
-                });
-              } else {
-                redemption.status = 'error';
-                redemption.error = fbMsg.substring(0, 100);
-                logger.addActivity('redeemer_error', {
-                  message: `Redeem failed (both paths): ${fbMsg.substring(0, 80)}`
-                });
-              }
-            }
           } else {
             redemption.status = 'error';
             redemption.error = errMsg.substring(0, 100);
+            redemption.redeemedAt = new Date().toISOString();
+            redemptionHistory.push({ ...redemption });
             logger.addActivity('redeemer_error', {
-              message: `Redeem failed: ${errMsg.substring(0, 80)}`
+              message: `Redeem failed (both contracts tried): ${errMsg.substring(0, 80)}`
             });
           }
         }
