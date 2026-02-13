@@ -7,6 +7,7 @@ const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
 const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
 
 const DEFAULT_RPC = 'https://polygon-rpc.com';
+const KNOWN_PROXY_WALLET = '0x94eAb3d7352aEb36A7378bc635b97E2968112e7E';
 
 const CTF_ABI = [
   'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
@@ -81,6 +82,16 @@ async function discoverSafeAddress(wallet, provider) {
     const code = await provider.getCode(computed);
 
     if (code === '0x') {
+      if (KNOWN_PROXY_WALLET) {
+        const proxyCode = await provider.getCode(KNOWN_PROXY_WALLET);
+        if (proxyCode !== '0x') {
+          logger.addActivity('redeemer', {
+            message: `Factory lookup failed — using known proxy wallet: ${KNOWN_PROXY_WALLET.substring(0, 10)}...`
+          });
+          safeAddress = KNOWN_PROXY_WALLET;
+          return safeAddress;
+        }
+      }
       logger.addActivity('redeemer', {
         message: `No deployed Safe found for ${wallet.address.substring(0, 10)}... — will try direct EOA redemption`
       });
