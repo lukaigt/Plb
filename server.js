@@ -23,6 +23,7 @@ const botLoop = require('./src/botLoop');
 const safety = require('./src/safety');
 const logger = require('./src/logger');
 const redeemer = require('./src/redeemer');
+const positionScanner = require('./src/positionScanner');
 
 const app = express();
 const PORT = parseInt(process.env.PORT) || 4000;
@@ -89,6 +90,23 @@ app.get('/api/proxy-test', async (req, res) => {
 
 app.get('/api/redemptions', (req, res) => {
   res.json(redeemer.getRedemptionStatus());
+});
+
+app.get('/api/positions', (req, res) => {
+  res.json(positionScanner.getScanResult());
+});
+
+app.post('/api/scan-positions', async (req, res) => {
+  try {
+    logger.addActivity('bot', { message: 'Manual position scan triggered from dashboard...' });
+    const result = await positionScanner.scanExistingPositions();
+    if (result.redeemable > 0) {
+      await redeemer.checkAndRedeem();
+    }
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
 });
 
 app.post('/api/bot/scan-now', async (req, res) => {

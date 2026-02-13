@@ -43,6 +43,7 @@ src/
   safety.js         - Loss-based stop (6 losses), money limit, window dedup, kill switch
   botLoop.js        - Scans BTC market, gets AI decision, executes if clear pattern
   redeemer.js       - Auto-redeems winning positions from resolved markets via Safe wallet
+  positionScanner.js - Scans wallet for existing unredeemed positions (old stuck funds)
   logger.js         - Logs everything for dashboard display
   proxy.js          - FlashProxy residential proxy setup
 public/
@@ -78,11 +79,16 @@ All config via `.env` file:
 ## Recent Changes (Feb 12, 2026)
 - **Auto-redeem**: Bot now auto-redeems winning positions from resolved markets via Gnosis Safe wallet
   - Discovers Safe proxy wallet from EOA using Safe Factory contract
-  - Calls redeemPositions on CTF contract through Safe's execTransaction
+  - Calls redeemPositions on CTF contract (or NegRiskAdapter for negRisk markets) through Safe's execTransaction
   - Falls back to direct EOA redemption if no Safe found
   - Dashboard shows redemption status: pending, collected, lost
   - Uses POLYGON_RPC_URL (default: polygon-rpc.com) for on-chain calls
   - Checks every scan cycle, 2 min after market end time
+- **Wallet position scanner**: On startup, scans wallet for ALL existing unredeemed positions (old stuck funds)
+  - Uses Polymarket Data API to find all positions on both EOA and proxy (Safe) wallets
+  - Filters for redeemable positions and adds them to redemption queue
+  - "Scan Wallet" button on dashboard for manual re-scan anytime
+  - Handles both old positions and future bot-placed trades
 - AI rewritten to candle structure analysis (overbought/oversold, momentum, support/resistance)
 - Scanner catches markets immediately (1-14 min window, was 3-12)
 - Scan interval reduced to 30 seconds (was 120s) — catches markets within seconds of opening

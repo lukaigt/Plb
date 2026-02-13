@@ -5,6 +5,7 @@ const { executeTrade } = require('./trader');
 const safety = require('./safety');
 const logger = require('./logger');
 const redeemer = require('./redeemer');
+const positionScanner = require('./positionScanner');
 
 let isRunning = false;
 let loopInterval = null;
@@ -102,7 +103,7 @@ async function runOnce() {
   }
 }
 
-function start() {
+async function start() {
   if (isRunning) {
     logger.addActivity('bot', { message: 'Bot is already running' });
     return;
@@ -116,6 +117,21 @@ function start() {
   logger.addActivity('bot', {
     message: `Bot started — BTC ONLY. Scanning every ${interval / 1000}s. Max trade: $${safety.maxTradeSize}. Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost. Strategy: Candle structure analysis.`
   });
+
+  if (!positionScanner.hasScanned()) {
+    try {
+      logger.addActivity('bot', { message: 'Scanning wallet for existing unredeemed positions...' });
+      const result = await positionScanner.scanExistingPositions();
+      if (result.redeemable > 0) {
+        logger.addActivity('bot', {
+          message: `Found ${result.redeemable} redeemable position(s) from old trades! Will attempt redemption...`
+        });
+        await redeemer.checkAndRedeem();
+      }
+    } catch (err) {
+      logger.addActivity('bot', { message: `Position scan error (non-fatal): ${err.message}` });
+    }
+  }
 
   runOnce();
   loopInterval = setInterval(runOnce, interval);

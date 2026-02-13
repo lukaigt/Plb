@@ -204,6 +204,25 @@ async function scanNow() {
   refreshAll();
 }
 
+async function scanWallet() {
+  const btn = document.querySelector('.btn-purple');
+  btn.textContent = 'Scanning Wallet...';
+  btn.disabled = true;
+  const res = await api('/scan-positions', 'POST');
+  if (res) {
+    if (res.redeemable > 0) {
+      alert(`Found ${res.found} position(s), ${res.redeemable} redeemable! Redeeming now...`);
+    } else if (res.found > 0) {
+      alert(`Found ${res.found} position(s), but none are redeemable right now.`);
+    } else {
+      alert(res.error ? `Scan failed: ${res.error}` : 'No positions found on wallet.');
+    }
+  }
+  btn.textContent = 'Scan Wallet';
+  btn.disabled = false;
+  refreshAll();
+}
+
 function getRedeemStatusBadge(status) {
   const map = {
     waiting: '<span class="badge badge-pending">WAITING</span>',
