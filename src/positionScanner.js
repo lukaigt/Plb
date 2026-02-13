@@ -116,8 +116,9 @@ async function scanExistingPositions() {
       message: `Found ${allPositions.length} total position(s) across wallet(s)`
     });
 
-    let redeemableCount = 0;
-    const redeemablePositions = [];
+    let queuedCount = 0;
+    let skippedActive = 0;
+    const queuedPositions = [];
 
     for (const pos of allPositions) {
       const conditionId = pos.conditionId;
@@ -125,64 +126,77 @@ async function scanExistingPositions() {
       const size = parseFloat(pos.size || 0);
       const title = pos.title || pos.slug || 'Unknown market';
       const outcome = pos.outcome || 'Unknown';
-      const redeemable = pos.redeemable === true || pos.redeemable === 'true';
       const curPrice = parseFloat(pos.curPrice || 0);
       const negRisk = pos.negRisk === true || pos.negRisk === 'true' || false;
+      const resolved = curPrice === 0 || curPrice === 1 || pos.redeemable === true || pos.redeemable === 'true';
 
       if (size <= 0) continue;
 
-      if (redeemable) {
-        if (!conditionId || !conditionId.startsWith('0x')) {
-          logger.addActivity('position_scanner', {
-            message: `Skipping position (invalid conditionId): ${title} | conditionId=${conditionId || 'missing'}`
-          });
-          continue;
-        }
-
-        redeemableCount++;
-
-        redeemablePositions.push({
-          conditionId,
-          tokenId,
-          title,
-          outcome,
-          size,
-          curPrice,
-          negRisk
-        });
-
-        redeemer.addPendingRedemption({
-          conditionId: conditionId,
-          tokenId: tokenId,
-          negRisk: negRisk,
-          marketEndTime: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-          action: 'EXISTING_POSITION',
-          side: outcome,
-          size: size,
-          price: curPrice,
-          question: `[OLD] ${title} (${outcome})`
-        });
-
+      if (!conditionId && !tokenId) {
         logger.addActivity('position_scanner', {
-          message: `REDEEMABLE: ${title} | ${outcome} | ${size.toFixed(2)} shares | negRisk=${negRisk} | conditionId: ${conditionId.substring(0, 15)}...`
+          message: `Skipping (no conditionId or tokenId): ${title}`
         });
+        continue;
       }
+
+      if (!resolved) {
+        skippedActive++;
+        logger.addActivity('position_scanner', {
+          message: `Active market (not resolved): ${title} | ${outcome} | price=${curPrice.toFixed(3)}`
+        });
+        continue;
+      }
+
+      if (curPrice === 0) {
+        logger.addActivity('position_scanner', {
+          message: `Lost position (price=0): ${title} | ${outcome} | ${size.toFixed(2)} shares — skipping`
+        });
+        continue;
+      }
+
+      queuedCount++;
+
+      queuedPositions.push({
+        conditionId,
+        tokenId,
+        title,
+        outcome,
+        size,
+        curPrice,
+        negRisk
+      });
+
+      redeemer.addPendingRedemption({
+        conditionId: conditionId,
+        tokenId: tokenId,
+        negRisk: negRisk,
+        marketEndTime: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        action: 'EXISTING_POSITION',
+        side: outcome,
+        size: size,
+        price: curPrice,
+        question: `[OLD] ${title} (${outcome})`
+      });
+
+      logger.addActivity('position_scanner', {
+        message: `QUEUED FOR REDEMPTION: ${title} | ${outcome} | ${size.toFixed(2)} shares | price=${curPrice} | negRisk=${negRisk} | conditionId: ${conditionId.substring(0, 15)}...`
+      });
     }
 
-    if (redeemableCount > 0) {
+    if (queuedCount > 0) {
       logger.addActivity('position_scanner', {
-        message: `Found ${redeemableCount} redeemable position(s)! Adding to redemption queue...`
+        message: `Queued ${queuedCount} position(s) for redemption! (${skippedActive} still active)`
       });
     } else {
       logger.addActivity('position_scanner', {
-        message: `Found ${allPositions.length} position(s) but none are currently redeemable`
+        message: `Found ${allPositions.length} position(s): ${skippedActive} active, 0 to redeem`
       });
     }
 
     lastScanResult = {
       found: allPositions.length,
-      redeemable: redeemableCount,
-      positions: redeemablePositions,
+      redeemable: queuedCount,
+      positions: queuedPositions,
       scannedAt: new Date().toISOString(),
       walletsChecked: walletsToCheck.map(w => w.substring(0, 10) + '...')
     };
