@@ -6,7 +6,12 @@ const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
 const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
 
-const DEFAULT_RPC = 'https://polygon-rpc.com';
+const POLYGON_RPCS = [
+  'https://polygon-rpc.com',
+  'https://rpc-mainnet.matic.quiknode.pro',
+  'https://polygon.llamarpc.com',
+  'https://polygon-mainnet.public.blastapi.io'
+];
 const KNOWN_PROXY_WALLET = '0x94eAb3d7352aEb36A7378bc635b97E2968112e7E';
 
 const CTF_ABI = [
@@ -69,8 +74,27 @@ function addPendingRedemption(trade) {
 }
 
 function getProvider() {
-  const rpcUrl = process.env.POLYGON_RPC_URL || DEFAULT_RPC;
-  return new ethers.providers.JsonRpcProvider(rpcUrl);
+  const customRpc = process.env.POLYGON_RPC_URL;
+  if (customRpc) {
+    return new ethers.providers.JsonRpcProvider(customRpc);
+  }
+  return new ethers.providers.JsonRpcProvider(POLYGON_RPCS[0]);
+}
+
+async function getWorkingProvider() {
+  const customRpc = process.env.POLYGON_RPC_URL;
+  const rpcsToTry = customRpc ? [customRpc, ...POLYGON_RPCS] : POLYGON_RPCS;
+
+  for (const rpc of rpcsToTry) {
+    try {
+      const provider = new ethers.providers.JsonRpcProvider(rpc);
+      await provider.getNetwork();
+      return provider;
+    } catch {
+      continue;
+    }
+  }
+  return new ethers.providers.JsonRpcProvider(POLYGON_RPCS[0]);
 }
 
 async function discoverSafeAddress(wallet, provider) {
@@ -135,6 +159,13 @@ async function discoverSafeAddress(wallet, provider) {
     logger.addActivity('redeemer_error', {
       message: `Safe discovery error: ${err.message.substring(0, 80)}`
     });
+    if (KNOWN_PROXY_WALLET) {
+      logger.addActivity('redeemer', {
+        message: `Network error — falling back to known proxy wallet: ${KNOWN_PROXY_WALLET.substring(0, 10)}...`
+      });
+      safeAddress = KNOWN_PROXY_WALLET;
+      return safeAddress;
+    }
     return null;
   }
 }
@@ -250,7 +281,7 @@ async function checkAndRedeem() {
   isChecking = true;
 
   try {
-    const provider = getProvider();
+    const provider = await getWorkingProvider();
     const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
     const wallet = new ethers.Wallet(cleanKey, provider);
 
@@ -286,7 +317,15 @@ async function checkAndRedeem() {
           continue;
         }
 
-        const payoutDenom = await ctf.payoutDenominator(conditionId);
+        let payoutDenom;
+        try {
+          payoutDenom = await ctf.payoutDenominator(conditionId);
+        } catch (rpcErr) {
+          logger.addActivity('redeemer', {
+            message: `RPC error checking payout for ${redemption.question || 'trade'} — will retry next cycle`
+          });
+          continue;
+        }
 
         if (payoutDenom.eq(0)) {
           logger.addActivity('redeemer', {
