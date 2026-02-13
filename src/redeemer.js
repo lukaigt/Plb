@@ -256,6 +256,30 @@ async function getWrappedCollateral(provider) {
   }
 }
 
+async function lookupOutcomeIndex(conditionId, tokenId) {
+  try {
+    const url = `https://gamma-api.polymarket.com/markets?conditionId=${conditionId}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const markets = await res.json();
+    if (!Array.isArray(markets) || markets.length === 0) return null;
+    const market = markets[0];
+    let clobIds = market.clobTokenIds;
+    if (typeof clobIds === 'string') {
+      try { clobIds = JSON.parse(clobIds); } catch { return null; }
+    }
+    if (!Array.isArray(clobIds)) return null;
+    const idx = clobIds.indexOf(tokenId);
+    if (idx >= 0) return { index: idx, total: clobIds.length };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedCollateral, tokenId) {
   const gasPrice = await provider.getGasPrice();
 
@@ -272,11 +296,20 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
       throw new Error('No token balance for NegRiskAdapter redemption');
     }
 
-    logger.addActivity('redeemer', {
-      message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens`
-    });
-
-    const amounts = [balance];
+    let outcomeInfo = await lookupOutcomeIndex(conditionId, tokenId);
+    let amounts;
+    if (outcomeInfo) {
+      amounts = new Array(outcomeInfo.total).fill(ethers.BigNumber.from(0));
+      amounts[outcomeInfo.index] = balance;
+      logger.addActivity('redeemer', {
+        message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens (outcome ${outcomeInfo.index} of ${outcomeInfo.total})`
+      });
+    } else {
+      amounts = [balance, ethers.BigNumber.from(0)];
+      logger.addActivity('redeemer', {
+        message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens (defaulting to outcome 0)`
+      });
+    }
 
     const tx = await contract.redeemPositions(
       conditionId,
@@ -309,7 +342,13 @@ async function redeemViaSafe(wallet, conditionId, negRisk, safAddr, provider, wr
     if (balance.eq(0)) {
       throw new Error('No token balance on Safe for NegRiskAdapter redemption');
     }
-    amounts = [balance];
+    let outcomeInfo = await lookupOutcomeIndex(conditionId, tokenId);
+    if (outcomeInfo) {
+      amounts = new Array(outcomeInfo.total).fill(ethers.BigNumber.from(0));
+      amounts[outcomeInfo.index] = balance;
+    } else {
+      amounts = [balance, ethers.BigNumber.from(0)];
+    }
   }
 
   const redeemData = encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts);
