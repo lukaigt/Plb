@@ -37,14 +37,15 @@ let safeVerified = false;
 let isChecking = false;
 
 function addPendingRedemption(trade) {
-  if (!trade || !trade.conditionId) {
+  if (!trade || (!trade.conditionId && !trade.tokenId)) {
     logger.addActivity('redeemer', {
-      message: `Cannot track trade for redemption: missing conditionId`
+      message: `Cannot track trade for redemption: missing conditionId and tokenId`
     });
     return;
   }
 
-  const existing = pendingRedemptions.find(r => r.conditionId === trade.conditionId);
+  const key = trade.conditionId || trade.tokenId;
+  const existing = pendingRedemptions.find(r => (r.conditionId && r.conditionId === trade.conditionId) || (r.tokenId && r.tokenId === trade.tokenId));
   if (existing) return;
 
   pendingRedemptions.push({

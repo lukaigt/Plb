@@ -127,7 +127,7 @@ async function scanExistingPositions() {
       const title = pos.title || pos.slug || 'Unknown market';
       const outcome = pos.outcome || 'Unknown';
       const curPrice = parseFloat(pos.curPrice || 0);
-      const negRisk = pos.negRisk === true || pos.negRisk === 'true' || false;
+      const negRisk = pos.negativeRisk === true || pos.negativeRisk === 'true' || pos.negRisk === true || false;
       const resolved = curPrice === 0 || curPrice === 1 || pos.redeemable === true || pos.redeemable === 'true';
 
       if (size <= 0) continue;
