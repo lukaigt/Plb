@@ -21,7 +21,8 @@ const CTF_ABI = [
 ];
 
 const NEG_RISK_ABI = [
-  'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)'
+  'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
+  'function wcol() view returns (address)'
 ];
 
 const SAFE_FACTORY_ABI = [
@@ -194,15 +195,24 @@ function formatConditionId(rawConditionId) {
   }
 }
 
-function encodeRedeemCall(conditionId, negRisk) {
-  const abi = negRisk ? NEG_RISK_ABI : CTF_ABI;
-  const iface = new ethers.utils.Interface(abi);
-  return iface.encodeFunctionData('redeemPositions', [
-    USDC_ADDRESS,
-    ethers.constants.HashZero,
-    conditionId,
-    [1, 2]
-  ]);
+function encodeRedeemCall(conditionId, negRisk, wrappedCollateral) {
+  if (negRisk && wrappedCollateral) {
+    const iface = new ethers.utils.Interface(NEG_RISK_ABI);
+    return iface.encodeFunctionData('redeemPositions', [
+      wrappedCollateral,
+      ethers.constants.HashZero,
+      conditionId,
+      [1, 2]
+    ]);
+  } else {
+    const iface = new ethers.utils.Interface(CTF_ABI);
+    return iface.encodeFunctionData('redeemPositions', [
+      USDC_ADDRESS,
+      ethers.constants.HashZero,
+      conditionId,
+      [1, 2]
+    ]);
+  }
 }
 
 async function signAndExecSafe(wallet, safeContract, to, data, provider) {
@@ -235,14 +245,28 @@ async function signAndExecSafe(wallet, safeContract, to, data, provider) {
   return tx;
 }
 
-async function redeemViaEOA(wallet, conditionId, negRisk, provider) {
+async function getWrappedCollateral(provider) {
+  try {
+    const adapter = new ethers.Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, provider);
+    const wcol = await adapter.wcol();
+    return wcol;
+  } catch (err) {
+    logger.addActivity('redeemer', {
+      message: `Could not fetch wrapped collateral: ${err.message.substring(0, 50)}`
+    });
+    return null;
+  }
+}
+
+async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedCollateral) {
   const targetAddress = negRisk ? NEG_RISK_ADAPTER : CTF_ADDRESS;
   const targetAbi = negRisk ? NEG_RISK_ABI : CTF_ABI;
   const contract = new ethers.Contract(targetAddress, targetAbi, wallet);
   const gasPrice = await provider.getGasPrice();
 
+  const collateral = negRisk ? wrappedCollateral : USDC_ADDRESS;
   const tx = await contract.redeemPositions(
-    USDC_ADDRESS,
+    collateral,
     ethers.constants.HashZero,
     conditionId,
     [1, 2],
@@ -252,10 +276,10 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider) {
   return tx;
 }
 
-async function redeemViaSafe(wallet, conditionId, negRisk, safAddr, provider) {
+async function redeemViaSafe(wallet, conditionId, negRisk, safAddr, provider, wrappedCollateral) {
   const safeContract = new ethers.Contract(safAddr, SAFE_ABI, wallet);
   const targetAddress = negRisk ? NEG_RISK_ADAPTER : CTF_ADDRESS;
-  const redeemData = encodeRedeemCall(conditionId, negRisk);
+  const redeemData = encodeRedeemCall(conditionId, negRisk, wrappedCollateral);
 
   const tx = await signAndExecSafe(wallet, safeContract, targetAddress, redeemData, provider);
   return tx;
@@ -269,6 +293,50 @@ async function hasTokenBalance(ctf, walletAddress, tokenId) {
   } catch {
     return true;
   }
+}
+
+const EXECUTION_SUCCESS_TOPIC = ethers.utils.id('ExecutionSuccess(bytes32,uint256)');
+const EXECUTION_FAILURE_TOPIC = ethers.utils.id('ExecutionFailure(bytes32,uint256)');
+const USDC_TRANSFER_TOPIC = ethers.utils.id('Transfer(address,address,uint256)');
+
+function verifyRedemptionReceipt(receipt, safAddr) {
+  if (!safAddr) {
+    return receipt.status === 1;
+  }
+
+  const safeLower = safAddr.toLowerCase();
+
+  let hasExecutionSuccess = false;
+  let hasExecutionFailure = false;
+  let hasUSDCTransfer = false;
+
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() === safeLower) {
+      if (log.topics[0] === EXECUTION_SUCCESS_TOPIC) {
+        hasExecutionSuccess = true;
+      } else if (log.topics[0] === EXECUTION_FAILURE_TOPIC) {
+        hasExecutionFailure = true;
+      }
+    }
+
+    if (log.address.toLowerCase() === USDC_ADDRESS.toLowerCase() && log.topics[0] === USDC_TRANSFER_TOPIC) {
+      hasUSDCTransfer = true;
+    }
+  }
+
+  if (hasExecutionFailure) {
+    return false;
+  }
+
+  if (hasExecutionSuccess && hasUSDCTransfer) {
+    return true;
+  }
+
+  if (hasExecutionSuccess) {
+    return true;
+  }
+
+  return false;
 }
 
 async function checkAndRedeem() {
@@ -287,6 +355,7 @@ async function checkAndRedeem() {
 
     const safAddr = await discoverSafeAddress(wallet, provider);
     const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const wrappedCollateral = await getWrappedCollateral(provider);
 
     const now = new Date();
     const ready = pendingRedemptions.filter(r => {
@@ -355,10 +424,15 @@ async function checkAndRedeem() {
         let redeemed = false;
         let lastError = null;
 
-        const attempts = [
-          { negRisk: true, label: 'NegRiskAdapter' },
-          { negRisk: false, label: 'CTF' }
-        ];
+        const attempts = [];
+        if (wrappedCollateral) {
+          attempts.push({ negRisk: true, label: 'NegRiskAdapter' });
+        } else {
+          logger.addActivity('redeemer', {
+            message: `Skipping NegRiskAdapter (no wrapped collateral) — trying CTF only`
+          });
+        }
+        attempts.push({ negRisk: false, label: 'CTF' });
 
         for (const attempt of attempts) {
           if (redeemed) break;
@@ -370,12 +444,23 @@ async function checkAndRedeem() {
 
             let tx;
             if (safAddr) {
-              tx = await redeemViaSafe(wallet, conditionId, attempt.negRisk, safAddr, provider);
+              tx = await redeemViaSafe(wallet, conditionId, attempt.negRisk, safAddr, provider, wrappedCollateral);
             } else {
-              tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider);
+              tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider, wrappedCollateral);
             }
 
             const receipt = await tx.wait();
+
+            const internalSuccess = verifyRedemptionReceipt(receipt, safAddr);
+
+            if (!internalSuccess) {
+              logger.addActivity('redeemer', {
+                message: `${attempt.label} tx mined but internal call FAILED (Safe ExecutionFailure) — trying next`
+              });
+              lastError = 'Safe internal call failed (ExecutionFailure event)';
+              continue;
+            }
+
             redemption.status = 'redeemed';
             redemption.txHash = receipt.transactionHash;
             redemption.redeemedAt = new Date().toISOString();
