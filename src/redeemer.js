@@ -21,7 +21,7 @@ const CTF_ABI = [
 ];
 
 const NEG_RISK_ABI = [
-  'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
+  'function redeemPositions(bytes32 conditionId, uint256[] amounts)',
   'function wcol() view returns (address)'
 ];
 
@@ -195,14 +195,12 @@ function formatConditionId(rawConditionId) {
   }
 }
 
-function encodeRedeemCall(conditionId, negRisk, wrappedCollateral) {
-  if (negRisk && wrappedCollateral) {
+function encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts) {
+  if (negRisk) {
     const iface = new ethers.utils.Interface(NEG_RISK_ABI);
     return iface.encodeFunctionData('redeemPositions', [
-      wrappedCollateral,
-      ethers.constants.HashZero,
       conditionId,
-      [1, 2]
+      amounts || [1]
     ]);
   } else {
     const iface = new ethers.utils.Interface(CTF_ABI);
@@ -258,28 +256,63 @@ async function getWrappedCollateral(provider) {
   }
 }
 
-async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedCollateral) {
-  const targetAddress = negRisk ? NEG_RISK_ADAPTER : CTF_ADDRESS;
-  const targetAbi = negRisk ? NEG_RISK_ABI : CTF_ABI;
-  const contract = new ethers.Contract(targetAddress, targetAbi, wallet);
+async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedCollateral, tokenId) {
   const gasPrice = await provider.getGasPrice();
 
-  const collateral = negRisk ? wrappedCollateral : USDC_ADDRESS;
-  const tx = await contract.redeemPositions(
-    collateral,
-    ethers.constants.HashZero,
-    conditionId,
-    [1, 2],
-    { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
-  );
+  if (negRisk) {
+    const contract = new ethers.Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, wallet);
+    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
 
-  return tx;
+    let balance = ethers.BigNumber.from(0);
+    if (tokenId) {
+      balance = await ctf.balanceOf(wallet.address, tokenId);
+    }
+
+    if (balance.eq(0)) {
+      throw new Error('No token balance for NegRiskAdapter redemption');
+    }
+
+    logger.addActivity('redeemer', {
+      message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens`
+    });
+
+    const amounts = [balance];
+
+    const tx = await contract.redeemPositions(
+      conditionId,
+      amounts,
+      { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
+    );
+
+    return tx;
+  } else {
+    const contract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
+    const tx = await contract.redeemPositions(
+      USDC_ADDRESS,
+      ethers.constants.HashZero,
+      conditionId,
+      [1, 2],
+      { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
+    );
+    return tx;
+  }
 }
 
-async function redeemViaSafe(wallet, conditionId, negRisk, safAddr, provider, wrappedCollateral) {
+async function redeemViaSafe(wallet, conditionId, negRisk, safAddr, provider, wrappedCollateral, tokenId) {
   const safeContract = new ethers.Contract(safAddr, SAFE_ABI, wallet);
   const targetAddress = negRisk ? NEG_RISK_ADAPTER : CTF_ADDRESS;
-  const redeemData = encodeRedeemCall(conditionId, negRisk, wrappedCollateral);
+
+  let amounts = null;
+  if (negRisk && tokenId) {
+    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const balance = await ctf.balanceOf(safAddr, tokenId);
+    if (balance.eq(0)) {
+      throw new Error('No token balance on Safe for NegRiskAdapter redemption');
+    }
+    amounts = [balance];
+  }
+
+  const redeemData = encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts);
 
   const tx = await signAndExecSafe(wallet, safeContract, targetAddress, redeemData, provider);
   return tx;
@@ -456,9 +489,9 @@ async function checkAndRedeem() {
 
             let tx;
             if (redeemFromSafe && safAddr) {
-              tx = await redeemViaSafe(wallet, conditionId, attempt.negRisk, safAddr, provider, wrappedCollateral);
+              tx = await redeemViaSafe(wallet, conditionId, attempt.negRisk, safAddr, provider, wrappedCollateral, redemption.tokenId);
             } else {
-              tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider, wrappedCollateral);
+              tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider, wrappedCollateral, redemption.tokenId);
             }
 
             const receipt = await tx.wait();
