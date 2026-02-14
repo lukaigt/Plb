@@ -1,4 +1,4 @@
-const REFRESH_INTERVAL = 5000;
+const REFRESH_INTERVAL = 3000;
 
 async function api(path, method = 'GET', body = null) {
   try {
@@ -22,11 +22,14 @@ function formatTime(iso) {
 }
 
 function getTypeClass(type) {
+  if (type.includes('kraken')) return 'type-kraken';
+  if (type.includes('price_block')) return 'type-price-block';
   if (type.includes('scan')) return 'type-scan';
   if (type.includes('ai') || type.includes('decision')) return 'type-ai';
   if (type.includes('trade')) return 'type-trade';
   if (type.includes('error')) return 'type-error';
-  if (type.includes('safety')) return 'type-safety';
+  if (type.includes('safety') || type.includes('skip')) return 'type-safety';
+  if (type.includes('redeem')) return 'type-redeem';
   return 'type-bot';
 }
 
@@ -41,6 +44,65 @@ function getResultBadge(result) {
   if (result === 'loss') return '<span class="badge badge-loss">LOSS</span>';
   if (result === 'pending') return '<span class="badge badge-pending">PENDING</span>';
   return '<span class="badge badge-failed">FAILED</span>';
+}
+
+function formatChangeVal(change) {
+  if (!change) return '--';
+  const pct = parseFloat(change.percent);
+  const dollars = change.dollars;
+  const cls = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
+  return `<span class="${cls}">${pct > 0 ? '+' : ''}${dollars}</span>`;
+}
+
+function directionBadge(dir) {
+  if (dir === 'RISING') return '<span class="dir-badge dir-up">RISING</span>';
+  if (dir === 'FALLING') return '<span class="dir-badge dir-down">FALLING</span>';
+  return '<span class="dir-badge dir-flat">FLAT</span>';
+}
+
+function momentumBadge(mom) {
+  if (mom === 'ACCELERATING') return '<span class="mom-badge mom-accel">ACCELERATING</span>';
+  if (mom === 'DECELERATING') return '<span class="mom-badge mom-decel">DECELERATING</span>';
+  return '<span class="mom-badge mom-stable">STABLE</span>';
+}
+
+async function updateBtcTicker() {
+  const data = await api('/btc-price');
+  if (!data) return;
+
+  const dot = document.getElementById('krakenDot');
+  const text = document.getElementById('krakenText');
+
+  if (!data.available) {
+    document.getElementById('btcPrice').textContent = '--';
+    document.getElementById('btcDirection').innerHTML = '<span class="dir-badge dir-flat">NO DATA</span>';
+    document.getElementById('btcMomentum').innerHTML = '';
+    dot.className = 'kraken-dot dot-red';
+    text.textContent = data.connected ? 'Waiting...' : 'Disconnected';
+    return;
+  }
+
+  document.getElementById('btcPrice').textContent = '$' + data.currentPrice.toLocaleString();
+  document.getElementById('btcDirection').innerHTML = directionBadge(data.direction);
+  document.getElementById('btcMomentum').innerHTML = momentumBadge(data.momentum);
+
+  document.getElementById('btcChange1m').innerHTML = formatChangeVal(data.change1m);
+  document.getElementById('btcChange3m').innerHTML = formatChangeVal(data.change3m);
+  document.getElementById('btcChange5m').innerHTML = formatChangeVal(data.change5m);
+  document.getElementById('btcChange10m').innerHTML = formatChangeVal(data.change10m);
+  document.getElementById('btcVolatility').textContent = data.recentVolatility ? '$' + data.recentVolatility : '--';
+
+  dot.className = 'kraken-dot dot-green';
+  text.textContent = 'Kraken Live';
+
+  const ticker = document.getElementById('btcTicker');
+  if (data.direction === 'RISING') {
+    ticker.className = 'btc-ticker btc-ticker-up';
+  } else if (data.direction === 'FALLING') {
+    ticker.className = 'btc-ticker btc-ticker-down';
+  } else {
+    ticker.className = 'btc-ticker';
+  }
 }
 
 async function updateStatus() {
@@ -112,18 +174,40 @@ async function updateDecisions() {
     const priceSeq = d.priceSequence || 'N/A';
     const structureSignal = d.orderbookSignal || 'N/A';
 
+    let btcInfo = '';
+    if (d.btcPrice) {
+      const dirBadge = directionBadge(d.btcDirection || 'FLAT');
+      const momBadge = momentumBadge(d.btcMomentum || 'STABLE');
+      btcInfo = `
+      <div class="btc-context-bar">
+        <span class="btc-ctx-label">BTC at decision:</span>
+        <span class="btc-ctx-price">$${d.btcPrice.toLocaleString()}</span>
+        ${dirBadge}
+        ${momBadge}
+      </div>`;
+    }
+
+    let entryInfo = '';
+    if (d.action === 'BUY_YES' && d.yesPrice) {
+      entryInfo = `<span class="entry-price">Entry: $${d.yesPrice.toFixed(3)} ${d.yesPrice <= 0.20 ? '(5-10x)' : d.yesPrice <= 0.35 ? '(3-5x)' : d.yesPrice <= 0.45 ? '(2-3x)' : '(blocked)'}</span>`;
+    } else if (d.action === 'BUY_NO' && d.noPrice) {
+      entryInfo = `<span class="entry-price">Entry: $${d.noPrice.toFixed(3)} ${d.noPrice <= 0.20 ? '(5-10x)' : d.noPrice <= 0.35 ? '(3-5x)' : d.noPrice <= 0.45 ? '(2-3x)' : '(blocked)'}</span>`;
+    }
+
     return `
     <div class="decision-card">
       <div class="decision-header">
         <span class="decision-coin">BTC</span>
         <span class="decision-action ${actionClass}">${d.action}</span>
+        ${entryInfo}
         <span style="font-size:11px;color:#484f58;">${formatTime(d.timestamp)}</span>
       </div>
       <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">${d.question || ''}</div>
+      ${btcInfo}
       ${d.pattern && d.pattern !== 'none' && d.pattern !== 'not identified' ? `<div class="pattern-tag">${d.pattern}</div>` : ''}
       <div class="decision-reasoning">${d.reasoning || 'No reasoning provided'}</div>
       <div class="price-structure">
-        <div class="structure-label">Candle Structure:</div>
+        <div class="structure-label">Probability Candles:</div>
         <div class="structure-data">${priceSeq}</div>
       </div>
       <div class="decision-meta">
@@ -132,13 +216,14 @@ async function updateDecisions() {
         <span>Move: ${d.totalMove || '?'}</span>
         <span>Signal: ${structureSignal}</span>
         <span>${d.minutesLeft || '?'}min left</span>
+        <span>UP: $${d.yesPrice?.toFixed(3) || '?'} | DOWN: $${d.noPrice?.toFixed(3) || '?'}</span>
       </div>
     </div>`;
   }).join('');
 }
 
 async function updateActivities() {
-  const activities = await api('/activities?limit=40');
+  const activities = await api('/activities?limit=60');
   if (!activities || activities.length === 0) return;
 
   document.getElementById('activityCount').textContent = `${activities.length} events`;
@@ -161,7 +246,6 @@ async function updateTrades() {
   const tbody = document.getElementById('tradeBody');
 
   tbody.innerHTML = trades.map(t => {
-    const pnl = t.pnl || 0;
     return `<tr>
       <td>${formatTime(t.timestamp)}</td>
       <td><span class="decision-action ${getActionClass(t.action)}">${t.action}</span></td>
@@ -238,12 +322,12 @@ async function updateRedemptions() {
   const data = await api('/redemptions');
   if (!data) return;
 
-  const total = data.pending.length + data.history.length;
   document.getElementById('redeemCount').textContent =
     `${data.pending.length} pending | ${data.totalRedeemed} collected | ${data.totalLost} lost`;
 
   const panel = document.getElementById('redeemPanel');
 
+  const total = data.pending.length + data.history.length;
   if (total === 0) {
     panel.innerHTML = '<div class="empty-state">No positions tracked yet. Trades will appear here for auto-redemption.</div>';
     return;
@@ -256,8 +340,7 @@ async function updateRedemptions() {
   }
 
   for (const p of data.pending) {
-    const timeLeft = p.marketEndTime ? new Date(p.marketEndTime) : null;
-    const timeStr = timeLeft ? formatTime(p.marketEndTime) : '?';
+    const timeStr = p.marketEndTime ? formatTime(p.marketEndTime) : '?';
     html += `<div class="activity-item">
       <div class="activity-time">${formatTime(p.addedAt)}</div>
       ${getRedeemStatusBadge(p.status)}
@@ -280,6 +363,7 @@ async function updateRedemptions() {
 
 async function refreshAll() {
   await Promise.all([
+    updateBtcTicker(),
     updateStatus(),
     updateStats(),
     updateDecisions(),

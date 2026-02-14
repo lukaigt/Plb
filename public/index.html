@@ -19,6 +19,41 @@
   </div>
 
   <div class="container">
+    <div id="btcTicker" class="btc-ticker">
+      <div class="btc-ticker-left">
+        <span class="btc-label">BTC/USD</span>
+        <span class="btc-price" id="btcPrice">--</span>
+        <span class="btc-direction" id="btcDirection">--</span>
+        <span class="btc-momentum" id="btcMomentum">--</span>
+      </div>
+      <div class="btc-ticker-right">
+        <div class="btc-change-group">
+          <span class="btc-change-label">1m</span>
+          <span class="btc-change-val" id="btcChange1m">--</span>
+        </div>
+        <div class="btc-change-group">
+          <span class="btc-change-label">3m</span>
+          <span class="btc-change-val" id="btcChange3m">--</span>
+        </div>
+        <div class="btc-change-group">
+          <span class="btc-change-label">5m</span>
+          <span class="btc-change-val" id="btcChange5m">--</span>
+        </div>
+        <div class="btc-change-group">
+          <span class="btc-change-label">10m</span>
+          <span class="btc-change-val" id="btcChange10m">--</span>
+        </div>
+        <div class="btc-change-group">
+          <span class="btc-change-label">Vol</span>
+          <span class="btc-change-val" id="btcVolatility">--</span>
+        </div>
+        <div class="kraken-status" id="krakenStatus">
+          <span class="kraken-dot" id="krakenDot"></span>
+          <span id="krakenText">Kraken</span>
+        </div>
+      </div>
+    </div>
+
     <div id="safetyBar" class="safety-bar">
       <div class="safety-item">
         <span class="s-label">Bot Status</span>
@@ -27,6 +62,14 @@
       <div class="safety-item">
         <span class="s-label">Kill Switch</span>
         <span class="s-value" id="killStatus">OFF</span>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Strategy</span>
+        <span class="s-value" style="font-size:12px;color:#bc8cff;">Value-Based</span>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Max Entry</span>
+        <span class="s-value" style="font-size:14px;color:#d29922;">$0.45</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Today's Record</span>
@@ -78,7 +121,7 @@
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        AI Analysis — Full Decision Log
+        AI Analysis — Value Detection Log
         <span style="font-size:11px;color:#484f58;" id="decisionCount">0 decisions</span>
       </div>
       <div class="panel-body" id="decisionsPanel" style="max-height:600px;">
