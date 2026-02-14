@@ -52,8 +52,9 @@ DECISION RULES:
 - BUY_NO = you think price will be BELOW the starting price at market end (BTC goes DOWN)
 - SKIP = no clear signal, choppy, flat, or conflicting structure
 
-- ONLY enter when price is between 0.40 and 0.60 (good risk/reward)
-- If price is already past 0.65 or below 0.35 and the move looks exhausted = too late, SKIP
+- You can trade at ANY price level. Low prices (0.05-0.20) can be incredible value if the structure supports a last-second reversal.
+- Extreme prices (above 0.80 or below 0.20) are NOT automatic skips. If the candle structure shows exhaustion or reversal at an extreme, that's a HIGH confidence trade because the payout is massive.
+- The CHEAPER the entry, the BETTER the risk/reward. A winning 0.10 trade pays 10x. A winning 0.50 trade pays 2x.
 - SKIP is still your default for unclear structures
 - You can decide with as few as 1-2 candles IF the structure is clear
 - Don't follow the crowd. The buy/sell prices reflect what people THINK. The candles show what ACTUALLY happened. Trust the candles.
