@@ -6,6 +6,9 @@ const safety = require('./safety');
 const logger = require('./logger');
 const redeemer = require('./redeemer');
 const positionScanner = require('./positionScanner');
+const krakenFeed = require('./krakenFeed');
+
+const MAX_ENTRY_PRICE = 0.45;
 
 let isRunning = false;
 let loopInterval = null;
@@ -54,6 +57,22 @@ async function runOnce() {
         coin: 'BTC'
       });
       logger.addActivity('bot', { message: '--- Scan complete. No trade. ---' });
+      return;
+    }
+
+    let entryPrice = null;
+    if (decision.action === 'BUY_YES') {
+      entryPrice = marketData.yesToken.price?.mid;
+    } else if (decision.action === 'BUY_NO') {
+      entryPrice = marketData.noToken.price?.mid;
+    }
+
+    if (entryPrice && entryPrice > MAX_ENTRY_PRICE) {
+      logger.addActivity('price_block', {
+        message: `BLOCKED: Entry price $${entryPrice.toFixed(3)} exceeds max $${MAX_ENTRY_PRICE}. No value at this price.`,
+        coin: 'BTC'
+      });
+      logger.addActivity('bot', { message: '--- Scan complete. Price too high. ---' });
       return;
     }
 

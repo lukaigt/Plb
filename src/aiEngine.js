@@ -1,66 +1,58 @@
 const logger = require('./logger');
+const krakenFeed = require('./krakenFeed');
 
 const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
 const MODEL = 'z-ai/glm-4.7-flash';
 
-const SYSTEM_PROMPT = `You are an expert short-term crypto candle structure analyst. You trade BTC 15-minute prediction markets on Polymarket.
+const SYSTEM_PROMPT = `You are an expert short-term crypto value analyst. You trade BTC 15-minute prediction markets on Polymarket.
 
 YOUR JOB:
-You receive the minute-by-minute candle data for BTC's UP probability in a 15-minute window. Starting price is always around 0.50. You analyze the candle structure to predict where price goes in the remaining time.
+You receive TWO data sources:
+1. REAL BTC PRICE from Kraken — the actual BTC/USD price, direction, and momentum right now
+2. POLYMARKET PROBABILITY CANDLES — minute-by-minute UP probability in this 15-min prediction window
 
-HOW TO READ THE DATA:
-Each "candle" is one minute. You see the price at each minute. From this you can calculate:
-- Direction of each candle (up or down from previous)
-- Size of each candle (how much it moved)
-- Whether candles are getting BIGGER (momentum accelerating) or SMALLER (momentum exhausting)
-- How far price has moved from the 0.50 starting point
+Your job is to find UNDERPRICED outcomes. The market probability often lags behind real BTC movement. When BTC is clearly moving UP but the UP probability is still cheap (0.10-0.40), that's a value buy. Same for DOWN.
 
-KEY CONCEPTS YOU MUST USE:
+HOW TO ANALYZE:
 
-1. OVERBOUGHT / OVERSOLD
-   - Price moved from 0.50 to 0.62+ in a few minutes = OVERBOUGHT. Likely to pull back. Consider BUY_NO.
-   - Price moved from 0.50 to 0.38- in a few minutes = OVERSOLD. Likely to bounce. Consider BUY_YES.
-   - The faster the move, the more likely a reversal.
+1. CHECK REAL BTC DIRECTION (most important)
+   - Is BTC rising, falling, or flat in the last 1-5 minutes?
+   - How strong is the move? $10 move = noise. $50+ move = real direction.
+   - Is momentum accelerating or fading?
 
-2. MOMENTUM EXHAUSTION
-   - Candles getting SMALLER = the move is dying. Example: +0.05, +0.03, +0.01 = buyers are running out of steam.
-   - Candles getting BIGGER = the move is accelerating. Don't fight it, ride it.
-   - If the last 2-3 candles are tiny after a big move = the move is done, expect reversal.
+2. COMPARE WITH MARKET PROBABILITY
+   - If BTC is clearly RISING but UP price is below 0.40 = UNDERPRICED, consider BUY_YES
+   - If BTC is clearly FALLING but DOWN price is below 0.40 = UNDERPRICED, consider BUY_NO
+   - If market probability MATCHES BTC direction and is already expensive (>0.60) = NO VALUE, SKIP
+   - If BTC is flat/choppy = no edge, SKIP
 
-3. SUPPORT / RESISTANCE
-   - If price dropped to a level and bounced before, that's SUPPORT. Likely to bounce again.
-   - If price rose to a level and got rejected before, that's RESISTANCE. Likely to get rejected again.
-   - Round numbers (0.40, 0.45, 0.50, 0.55, 0.60) often act as support/resistance.
+3. VALUE ASSESSMENT
+   - Entry at 0.10-0.20 = incredible value (5-10x payout). Only need slight edge.
+   - Entry at 0.20-0.35 = good value (3-5x payout). Need moderate confidence.
+   - Entry at 0.35-0.45 = fair value (2-3x payout). Need high confidence.
+   - Entry above 0.45 = TOO EXPENSIVE. Always SKIP. The bot will block this anyway.
 
-4. TREND STRENGTH
-   - Consistent candles of similar size in one direction = healthy trend, ride it.
-   - Example: +0.02, +0.02, +0.03, +0.02 = steady buying pressure, trend likely continues. BUY_YES.
-   - Example: -0.03, -0.02, -0.03, -0.02 = steady selling, trend continues down. BUY_NO.
+4. TIME REMAINING CONTEXT
+   - More time left = more chance for trend to play out
+   - Less time left = current BTC direction more likely to be final result
+   - Under 3 minutes: only trade if BTC direction is STRONG and clear
 
-5. REVERSAL SIGNALS
-   - Big move in one direction + stall (tiny candles) + one candle in opposite direction = REVERSAL starting.
-   - V-shape: sharp drop then sharp recovery = strong reversal, buy the bounce.
-   - Inverted V: sharp rise then sharp drop = failed rally, sell the top.
+5. PROBABILITY CANDLE CONFIRMATION
+   - If probability candles are moving in SAME direction as BTC = market is catching up, still value if entry is cheap
+   - If probability candles are moving OPPOSITE to BTC = market disagrees, could be extra value OR a warning
+   - If probability is flat while BTC moves = market hasn't noticed yet, best value opportunity
 
-6. EARLY MARKET (only 1-2 candles available)
-   - If price already moved from 0.50 to 0.53+ = early buyers are strong. Trend likely continues if the move is steady.
-   - If price barely moved from 0.50 = no signal yet. SKIP.
-   - One big candle from 0.50 to 0.56 = could be a spike that reverses. Be cautious, wait for confirmation or SKIP.
-
-DECISION RULES:
-- BUY_YES = you think price will be ABOVE the starting price at market end (BTC goes UP)
-- BUY_NO = you think price will be BELOW the starting price at market end (BTC goes DOWN)
-- SKIP = no clear signal, choppy, flat, or conflicting structure
-
-- You can trade at ANY price level. Low prices (0.05-0.20) can be incredible value if the structure supports a last-second reversal.
-- Extreme prices (above 0.80 or below 0.20) are NOT automatic skips. If the candle structure shows exhaustion or reversal at an extreme, that's a HIGH confidence trade because the payout is massive.
-- The CHEAPER the entry, the BETTER the risk/reward. A winning 0.10 trade pays 10x. A winning 0.50 trade pays 2x.
-- SKIP is still your default for unclear structures
-- You can decide with as few as 1-2 candles IF the structure is clear
-- Don't follow the crowd. The buy/sell prices reflect what people THINK. The candles show what ACTUALLY happened. Trust the candles.
+CRITICAL RULES:
+- BUY_YES = you think BTC will be ABOVE its starting price at market end (UP wins)
+- BUY_NO = you think BTC will be BELOW its starting price at market end (DOWN wins)
+- SKIP = no clear value, BTC is flat, or entry price is too high
+- SKIP is your DEFAULT. Only trade when real BTC movement creates clear value.
+- The cheaper the entry, the better. A 0.15 entry that wins pays 6.7x.
+- Without Kraken data, you can still analyze probability candles but be MORE cautious.
+- Never chase expensive outcomes. If the market already prices it correctly, there's no edge.
 
 RESPOND IN THIS EXACT JSON FORMAT:
-{"action": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": "LOW" or "MEDIUM" or "HIGH", "pattern": "describe what you see (e.g. oversold bounce, momentum exhaustion, steady uptrend, etc.)", "reasoning": "2-3 sentences explaining the candle structure analysis"}`;
+{"action": "BUY_YES" or "BUY_NO" or "SKIP", "confidence": "LOW" or "MEDIUM" or "HIGH", "pattern": "describe what you see (e.g. BTC rising + UP underpriced, momentum divergence, etc.)", "reasoning": "2-3 sentences explaining why this outcome is underpriced or why you're skipping"}`;
 
 function buildCandleData(priceHistory) {
   if (!priceHistory || priceHistory.length === 0) {
@@ -119,13 +111,13 @@ function buildCandleData(priceHistory) {
   else if (last <= 0.38) positionState = 'OVERSOLD — price far below 0.50';
   else if (last <= 0.44) positionState = 'SLIGHTLY OVERSOLD';
 
-  let text = 'CANDLE-BY-CANDLE DATA:\n';
+  let text = 'PROBABILITY CANDLE DATA (Polymarket UP probability):\n';
   candles.forEach(c => {
     const arrow = c.direction === 'UP' ? '^' : c.direction === 'DOWN' ? 'v' : '-';
     text += `  Min ${c.minute}: ${c.price.toFixed(4)} [${arrow} ${c.change >= 0 ? '+' : ''}${c.change.toFixed(4)}]\n`;
   });
 
-  text += `\nSTRUCTURE SUMMARY:`;
+  text += `\nPROBABILITY STRUCTURE:`;
   text += `\n  Start: ${first.toFixed(4)} → Current: ${last.toFixed(4)} | Total move: ${totalMove >= 0 ? '+' : ''}${totalMove.toFixed(4)}`;
   text += `\n  Peak: ${peak.toFixed(4)} | Low: ${low.toFixed(4)}`;
   text += `\n  Position: ${positionState}`;
@@ -144,7 +136,7 @@ function buildCandleData(priceHistory) {
 }
 
 function buildUserPrompt(marketData) {
-  const { market, yesToken, noToken, priceTrend, priceHistory } = marketData;
+  const { market, yesToken, noToken, priceHistory } = marketData;
 
   let minutesLeft = market.minutesLeft || 0;
   if (market.endTime) {
@@ -159,13 +151,17 @@ function buildUserPrompt(marketData) {
   const upPrice = yesToken.price?.mid?.toFixed(3) || '0.500';
   const downPrice = noToken.price?.mid?.toFixed(3) || '0.500';
 
+  const btcPriceText = krakenFeed.buildPriceText();
+
   return `MARKET: "${market.question}"
 TIME REMAINING: ${minutesLeft} minutes
-CURRENT PRICES: UP=$${upPrice} | DOWN=$${downPrice}
+ENTRY PRICES: UP=$${upPrice} | DOWN=$${downPrice}
+
+${btcPriceText}
 
 ${candleData.text}
 
-Analyze the candle structure. Is it overbought/oversold? Is momentum exhausting or accelerating? Any support/resistance levels? What does the structure tell you about where price goes next?`;
+Compare the real BTC price movement with the market probability. Is one side UNDERPRICED given what BTC is actually doing? Only recommend a trade if the entry price offers real value (under $0.45). SKIP if BTC is flat, direction is unclear, or the market already prices it correctly.`;
 }
 
 async function getAiPrediction(marketData) {
@@ -177,8 +173,11 @@ async function getAiPrediction(marketData) {
 
   const userPrompt = buildUserPrompt(marketData);
 
+  const btcCtx = krakenFeed.getPriceContext();
+  const btcStatus = btcCtx.available ? `BTC $${btcCtx.currentPrice?.toLocaleString()} ${btcCtx.direction}` : 'No BTC data';
+
   logger.addActivity('ai_thinking', {
-    message: `AI analyzing BTC candle structure...`,
+    message: `AI analyzing value opportunity... ${btcStatus}`,
     coin: 'BTC'
   });
 
@@ -264,6 +263,9 @@ async function getAiPrediction(marketData) {
       totalMove: candleData.summary?.totalMove?.toFixed(4) || '0',
       positionState: candleData.summary?.positionState || 'unknown',
       momentumState: candleData.summary?.momentumState || 'unknown',
+      btcPrice: btcCtx.available ? btcCtx.currentPrice : null,
+      btcDirection: btcCtx.available ? btcCtx.direction : 'unknown',
+      btcMomentum: btcCtx.available ? btcCtx.momentum : 'unknown',
       rawPrompt: userPrompt,
       rawResponse: content
     };
@@ -271,7 +273,7 @@ async function getAiPrediction(marketData) {
     logger.addAiDecision(fullDecision);
 
     logger.addActivity('ai_decision', {
-      message: `AI: ${decision.action} (${decision.confidence}) | ${decision.pattern} | ${decision.reasoning}`,
+      message: `AI: ${decision.action} (${decision.confidence}) | ${decision.pattern} | BTC: ${btcStatus} | ${decision.reasoning}`,
       coin: 'BTC',
       action: decision.action,
       confidence: decision.confidence,

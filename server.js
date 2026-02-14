@@ -24,6 +24,7 @@ const safety = require('./src/safety');
 const logger = require('./src/logger');
 const redeemer = require('./src/redeemer');
 const positionScanner = require('./src/positionScanner');
+const krakenFeed = require('./src/krakenFeed');
 
 const app = express();
 const PORT = parseInt(process.env.PORT) || 4000;
@@ -109,6 +110,10 @@ app.post('/api/scan-positions', async (req, res) => {
   }
 });
 
+app.get('/api/btc-price', (req, res) => {
+  res.json(krakenFeed.getPriceContext());
+});
+
 app.post('/api/bot/scan-now', async (req, res) => {
   if (safety.killSwitch) {
     return res.json({ success: false, message: 'Cannot scan: kill switch is ON' });
@@ -142,6 +147,9 @@ app.listen(PORT, '0.0.0.0', () => {
   testProxy().then(result => {
     console.log(`Outgoing IP: ${result.ip} (proxy ${result.proxyActive ? 'ACTIVE' : 'NOT active'})`);
   });
+
+  krakenFeed.connect();
+  console.log('Kraken BTC/USD feed starting...');
 
   botLoop.start();
 });
