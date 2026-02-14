@@ -1,26 +1,25 @@
-# Polymarket AI Trading Bot — BTC Only
+# Polymarket Spike Detection Trading Bot — BTC Only
 
 ## Overview
-AI-powered trading bot for Polymarket BTC 15-minute price prediction markets. Uses GLM-4.7-Flash via OpenRouter with a **price structure pattern recognition** strategy. Bot reads minute-by-minute UP probability like a chart, identifies specific patterns (staircases, V-recoveries, breakouts, breakdowns), and only trades when the pattern is clear + orderbook confirms + entry price has value. SKIP is the default answer (60-70% skip rate). Stops after 6 LOSING trades or $15 lost.
+Spike detection trading bot for Polymarket BTC 15-minute price prediction markets. Watches real-time BTC price via Kraken WebSocket and trades immediately when BTC makes a $30+ move in 60 seconds. No AI prediction — pure reactive trading based on clear price momentum. Stops after 6 LOSING trades or $15 lost.
 
 ## Architecture
 - **Node.js + Express** backend serving dashboard on port 5000
-- **Bot loop** scans BTC market, evaluates with AI, trades only clear patterns
-- **Web dashboard** shows full AI analysis: price structure, pattern identified, orderbook signal, reasoning
+- **Bot loop** watches for BTC spikes, trades winning direction instantly
+- **Web dashboard** shows spike detection status, BTC movements, trade triggers, full activity log
 - **Market discovery** via Polymarket Gamma API using slug pattern `btc-updown-15m-{timestamp}`
 - **Data fetching** via Polymarket CLOB API (free, no auth needed for reads) — minute-level price history
 - **Trade execution** via CLOB API with wallet-derived API credentials
 - **Proxy support** via FlashProxy Brazil residential proxy for Cloudflare bypass
 
-## AI Strategy (Value-Based with Real BTC Price)
+## Spike Detection Strategy (replaces AI prediction)
 - **Kraken WebSocket**: Real-time BTC/USD price feed (direction, momentum, volatility)
-- **Value detection**: AI compares real BTC movement with Polymarket probability to find underpriced outcomes
+- **Spike detection**: BTC moves $30+ in 60s → immediate trade in spike direction
 - **Hard max entry**: 0.45 max entry price enforced — ensures minimum 2.2x payout
-- **Sweet spot**: Entries at 0.10-0.20 (5-10x), 0.20-0.35 (3-5x), 0.35-0.45 (2-3x)
-- **BTC direction is king**: If BTC is clearly moving one way but market hasn't priced it in = trade
-- **Probability candles**: Used as confirmation — do they match or lag behind real BTC?
+- **Multi-window analysis**: Checks 1m, 3m, 5m windows, picks strongest signal
+- **Speed-based confidence**: $60+/min speed = HIGH, $30+/min = HIGH, below = MEDIUM
 - **SKIP is default**: Only trade when real BTC movement creates clear value
-- **Temperature 0.2**: Low randomness for consistent decisions
+- **AI demoted**: AI no longer makes trade decisions, spike detection does
 
 ## Safety Controls
 - **Max 1 trade per scan cycle** — BTC only
@@ -36,10 +35,11 @@ server.js           - Express server + starts bot loop
 src/
   scanner.js        - Discovers BTC 15-min Up/Down market (3-12 min remaining only)
   dataFetcher.js    - Pulls prices, orderbook, minute-level history from CLOB API
-  aiEngine.js       - Price structure pattern analysis via GLM-4.7-Flash
+  spikeDetector.js  - Detects BTC $30+ moves in 60s, triggers trades
+  aiEngine.js       - Demoted: no longer decides trades (kept for potential safety filter)
   trader.js         - Places orders on Polymarket via CLOB API with HMAC signing
   safety.js         - Loss-based stop (6 losses), money limit, window dedup, kill switch
-  botLoop.js        - Scans BTC market, gets AI decision, executes if clear pattern
+  botLoop.js        - Watches for spikes, trades winning direction instantly
   redeemer.js       - Auto-redeems winning positions from resolved markets via Safe wallet
   positionScanner.js - Scans wallet for existing unredeemed positions (old stuck funds)
   logger.js         - Logs everything for dashboard display

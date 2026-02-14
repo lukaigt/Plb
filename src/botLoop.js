@@ -1,24 +1,24 @@
 const { scanMarkets } = require('./scanner');
 const { fetchFullMarketData } = require('./dataFetcher');
-const { getAiPrediction } = require('./aiEngine');
 const { executeTrade } = require('./trader');
 const safety = require('./safety');
 const logger = require('./logger');
 const redeemer = require('./redeemer');
 const positionScanner = require('./positionScanner');
 const krakenFeed = require('./krakenFeed');
+const spikeDetector = require('./spikeDetector');
 
 const MAX_ENTRY_PRICE = 0.45;
 
 let isRunning = false;
 let loopInterval = null;
 let lastScanTime = null;
+let lastSpikeStatus = null;
 
 async function runOnce() {
   if (!isRunning) return;
 
   lastScanTime = new Date().toISOString();
-  logger.addActivity('bot', { message: '--- Starting BTC scan ---' });
 
   try {
     const canTrade = safety.canTrade();
@@ -27,10 +27,27 @@ async function runOnce() {
       return;
     }
 
+    const spike = spikeDetector.detect();
+    lastSpikeStatus = spike;
+
+    if (!spike.detected) {
+      logger.addActivity('spike_watch', {
+        message: `Watching BTC: $${spike.btcPrice?.toLocaleString() || '?'} | ${spike.direction || 'N/A'} | ${spike.reason}`,
+        coin: 'BTC'
+      });
+
+      try {
+        await redeemer.checkAndRedeem();
+      } catch (err) {
+        logger.addActivity('redeemer_error', { message: `Redeem check error: ${err.message}` });
+      }
+      return;
+    }
+
     const markets = await scanMarkets();
 
     if (markets.length === 0) {
-      logger.addActivity('bot', { message: 'No BTC market available. Waiting...' });
+      logger.addActivity('bot', { message: 'Spike detected but no BTC market available. Waiting...' });
       return;
     }
 
@@ -38,41 +55,35 @@ async function runOnce() {
 
     const windowKey = safety.getWindowKey(market.endTime);
     if (safety.hasTraded('BTC', windowKey)) {
-      logger.addActivity('skip', { message: `Already traded BTC in this 15-min window. Waiting for next window.` });
+      logger.addActivity('skip', { message: `Spike detected but already traded this 15-min window.` });
       return;
     }
 
     const marketData = await fetchFullMarketData(market);
 
     if (!marketData.yesToken.price?.mid && !marketData.noToken.price?.mid) {
-      logger.addActivity('skip', { message: 'No price data available for BTC market' });
+      logger.addActivity('skip', { message: 'Spike detected but no price data for market' });
       return;
     }
 
-    const decision = await getAiPrediction(marketData);
-
-    if (decision.action === 'SKIP') {
-      logger.addActivity('ai_skip', {
-        message: `AI SKIPPED | Pattern: ${decision.pattern || 'none'} | ${decision.reasoning}`,
-        coin: 'BTC'
-      });
-      logger.addActivity('bot', { message: '--- Scan complete. No trade. ---' });
-      return;
-    }
-
+    const action = spike.action;
     let entryPrice = null;
-    if (decision.action === 'BUY_YES') {
+    if (action === 'BUY_YES') {
       entryPrice = marketData.yesToken.price?.mid;
-    } else if (decision.action === 'BUY_NO') {
+    } else if (action === 'BUY_NO') {
       entryPrice = marketData.noToken.price?.mid;
     }
 
     if (entryPrice && entryPrice > MAX_ENTRY_PRICE) {
       logger.addActivity('price_block', {
-        message: `BLOCKED: Entry price $${entryPrice.toFixed(3)} exceeds max $${MAX_ENTRY_PRICE}. No value at this price.`,
+        message: `BLOCKED: ${action} entry $${entryPrice.toFixed(3)} > max $${MAX_ENTRY_PRICE}. Market already priced in.`,
         coin: 'BTC'
       });
-      logger.addActivity('bot', { message: '--- Scan complete. Price too high. ---' });
+      return;
+    }
+
+    if (!entryPrice) {
+      logger.addActivity('skip', { message: 'No entry price available for trade' });
       return;
     }
 
@@ -82,18 +93,31 @@ async function runOnce() {
       return;
     }
 
-    const tradeSize = safety.getTradeSize(decision.confidence);
+    const confidence = spike.confidence || 'MEDIUM';
+    const tradeSize = safety.getTradeSize(confidence);
     if (tradeSize <= 0) {
       logger.addActivity('safety_block', { message: 'Trade size too small after safety checks' });
       return;
     }
+
+    const decision = {
+      action: action,
+      confidence: confidence,
+      pattern: `Spike ${spike.direction}: $${spike.magnitude?.toFixed(0)} in ${spike.window}`,
+      reasoning: spike.reason
+    };
+
+    logger.addActivity('spike_trade', {
+      message: `TRADING on spike: ${action} at $${entryPrice.toFixed(3)} | BTC $${spike.btcPrice?.toLocaleString()} ${spike.direction} | $${spike.magnitude?.toFixed(0)} move in ${spike.window} | Speed: $${spike.speed?.toFixed(0)}/min`,
+      coin: 'BTC'
+    });
 
     const trade = await executeTrade(decision, marketData, tradeSize);
     if (trade && trade.success) {
       safety.recordTrade(tradeSize);
       safety.markTraded('BTC', windowKey);
       logger.addActivity('trade_success', {
-        message: `TRADE PLACED: ${decision.action} on BTC for $${tradeSize} | Pattern: ${decision.pattern} | Price: $${trade.price?.toFixed(3)}`,
+        message: `TRADE PLACED: ${action} on BTC for $${tradeSize} at $${trade.price?.toFixed(3)} | Spike: ${spike.direction} $${spike.magnitude?.toFixed(0)} | Speed: $${spike.speed?.toFixed(0)}/min`,
         coin: 'BTC'
       });
 
@@ -110,8 +134,6 @@ async function runOnce() {
         question: market.question
       });
     }
-
-    logger.addActivity('bot', { message: '--- Scan complete. ---' });
   } catch (err) {
     logger.addActivity('error', { message: `Bot error: ${err.message}` });
   }
@@ -132,10 +154,11 @@ async function start() {
   isRunning = true;
   safety.reload();
 
-  const interval = (parseInt(process.env.SCAN_INTERVAL) || 30) * 1000;
+  const interval = (parseInt(process.env.SCAN_INTERVAL) || 10) * 1000;
+  const spikeConfig = spikeDetector.getConfig();
 
   logger.addActivity('bot', {
-    message: `Bot started — BTC ONLY. Scanning every ${interval / 1000}s. Max trade: $${safety.maxTradeSize}. Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost. Strategy: Candle structure analysis.`
+    message: `Bot started — SPIKE DETECTION MODE. Scanning every ${interval / 1000}s. Spike threshold: $${spikeConfig.threshold} (${spikeConfig.windows}). Min speed: $${spikeConfig.minSpeed}/min. Max entry: $${MAX_ENTRY_PRICE}. Max trade: $${safety.maxTradeSize}. Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost.`
   });
 
   if (!positionScanner.hasScanned()) {
@@ -170,6 +193,7 @@ function getStatus() {
   return {
     isRunning,
     lastScanTime,
+    lastSpikeStatus,
     safety: safety.getStatus()
   };
 }

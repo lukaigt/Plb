@@ -45,11 +45,6 @@ app.get('/api/activities', (req, res) => {
   res.json(logger.getActivities(limit));
 });
 
-app.get('/api/decisions', (req, res) => {
-  const limit = parseInt(req.query.limit) || 50;
-  res.json(logger.getAiDecisions(limit));
-});
-
 app.get('/api/trades', (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   res.json(logger.getTradeHistory(limit));
@@ -141,7 +136,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Wallet Private Key: ${hasWallet ? 'SET' : 'NOT SET'}`);
   console.log(`Max Trade Size: $${process.env.MAX_TRADE_SIZE || 5}`);
   console.log(`Daily Loss Limit: $${process.env.DAILY_LOSS_LIMIT || 15}`);
-  console.log(`Scan Interval: ${process.env.SCAN_INTERVAL || 30}s`);
+  console.log(`Scan Interval: ${process.env.SCAN_INTERVAL || 10}s`);
   console.log(`Proxy: ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
 
   testProxy().then(result => {

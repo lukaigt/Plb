@@ -22,10 +22,10 @@ function formatTime(iso) {
 }
 
 function getTypeClass(type) {
+  if (type.includes('spike')) return 'type-spike';
   if (type.includes('kraken')) return 'type-kraken';
   if (type.includes('price_block')) return 'type-price-block';
   if (type.includes('scan')) return 'type-scan';
-  if (type.includes('ai') || type.includes('decision')) return 'type-ai';
   if (type.includes('trade')) return 'type-trade';
   if (type.includes('error')) return 'type-error';
   if (type.includes('safety') || type.includes('skip')) return 'type-safety';
@@ -105,6 +105,35 @@ async function updateBtcTicker() {
   }
 }
 
+async function updateSpikeBar() {
+  const status = await api('/status');
+  if (!status || !status.lastSpikeStatus) return;
+
+  const spike = status.lastSpikeStatus;
+  const icon = document.getElementById('spikeIcon');
+  const label = document.getElementById('spikeLabel');
+  const detail = document.getElementById('spikeDetail');
+  const bar = document.getElementById('spikeBar');
+
+  if (spike.detected) {
+    bar.className = 'spike-bar spike-active';
+    icon.innerHTML = '&#9889;';
+    icon.className = 'spike-icon spike-icon-active';
+    label.textContent = `SPIKE ${spike.direction}`;
+    label.className = 'spike-label spike-label-active';
+    detail.textContent = spike.reason;
+    detail.className = 'spike-detail spike-detail-active';
+  } else {
+    bar.className = 'spike-bar';
+    icon.innerHTML = '&#9679;';
+    icon.className = 'spike-icon';
+    label.textContent = 'WATCHING';
+    label.className = 'spike-label';
+    detail.textContent = spike.reason || 'Monitoring BTC for spikes...';
+    detail.className = 'spike-detail';
+  }
+}
+
 async function updateStatus() {
   const status = await api('/status');
   if (!status) return;
@@ -162,62 +191,35 @@ async function updateStats() {
   document.getElementById('pendingTrades').textContent = `Pending: ${stats.pendingTrades}`;
 }
 
-async function updateDecisions() {
-  const decisions = await api('/decisions?limit=20');
-  if (!decisions || decisions.length === 0) return;
+async function updateSpikeLog() {
+  const activities = await api('/activities?limit=60');
+  if (!activities || activities.length === 0) return;
 
-  document.getElementById('decisionCount').textContent = `${decisions.length} decisions`;
-  const panel = document.getElementById('decisionsPanel');
+  const spikeEvents = activities.filter(a =>
+    a.type.includes('spike') || a.type.includes('trade') || a.type.includes('price_block')
+  );
 
-  panel.innerHTML = decisions.map(d => {
-    const actionClass = getActionClass(d.action);
-    const priceSeq = d.priceSequence || 'N/A';
-    const structureSignal = d.orderbookSignal || 'N/A';
+  const panel = document.getElementById('spikeLogPanel');
+  const countEl = document.getElementById('spikeLogCount');
+  countEl.textContent = `${spikeEvents.length} events`;
 
-    let btcInfo = '';
-    if (d.btcPrice) {
-      const dirBadge = directionBadge(d.btcDirection || 'FLAT');
-      const momBadge = momentumBadge(d.btcMomentum || 'STABLE');
-      btcInfo = `
-      <div class="btc-context-bar">
-        <span class="btc-ctx-label">BTC at decision:</span>
-        <span class="btc-ctx-price">$${d.btcPrice.toLocaleString()}</span>
-        ${dirBadge}
-        ${momBadge}
-      </div>`;
-    }
+  if (spikeEvents.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No spike events yet. Bot watches BTC for $30+ moves and trades instantly.</div>';
+    return;
+  }
 
-    let entryInfo = '';
-    if (d.action === 'BUY_YES' && d.yesPrice) {
-      entryInfo = `<span class="entry-price">Entry: $${d.yesPrice.toFixed(3)} ${d.yesPrice <= 0.20 ? '(5-10x)' : d.yesPrice <= 0.35 ? '(3-5x)' : d.yesPrice <= 0.45 ? '(2-3x)' : '(blocked)'}</span>`;
-    } else if (d.action === 'BUY_NO' && d.noPrice) {
-      entryInfo = `<span class="entry-price">Entry: $${d.noPrice.toFixed(3)} ${d.noPrice <= 0.20 ? '(5-10x)' : d.noPrice <= 0.35 ? '(3-5x)' : d.noPrice <= 0.45 ? '(2-3x)' : '(blocked)'}</span>`;
-    }
+  panel.innerHTML = spikeEvents.map(a => {
+    let cls = getTypeClass(a.type);
+    let icon = '';
+    if (a.type === 'spike_detected') icon = '&#9889; ';
+    if (a.type === 'spike_trade') icon = '&#128176; ';
+    if (a.type === 'trade_success') icon = '&#9989; ';
+    if (a.type === 'price_block') icon = '&#128683; ';
 
-    return `
-    <div class="decision-card">
-      <div class="decision-header">
-        <span class="decision-coin">BTC</span>
-        <span class="decision-action ${actionClass}">${d.action}</span>
-        ${entryInfo}
-        <span style="font-size:11px;color:#484f58;">${formatTime(d.timestamp)}</span>
-      </div>
-      <div style="font-size:12px;color:#8b949e;margin-bottom:6px;">${d.question || ''}</div>
-      ${btcInfo}
-      ${d.pattern && d.pattern !== 'none' && d.pattern !== 'not identified' ? `<div class="pattern-tag">${d.pattern}</div>` : ''}
-      <div class="decision-reasoning">${d.reasoning || 'No reasoning provided'}</div>
-      <div class="price-structure">
-        <div class="structure-label">Probability Candles:</div>
-        <div class="structure-data">${priceSeq}</div>
-      </div>
-      <div class="decision-meta">
-        <span>Confidence: <strong>${d.confidence}</strong></span>
-        <span>Candles: ${d.candleCount || '?'}</span>
-        <span>Move: ${d.totalMove || '?'}</span>
-        <span>Signal: ${structureSignal}</span>
-        <span>${d.minutesLeft || '?'}min left</span>
-        <span>UP: $${d.yesPrice?.toFixed(3) || '?'} | DOWN: $${d.noPrice?.toFixed(3) || '?'}</span>
-      </div>
+    return `<div class="activity-item">
+      <div class="activity-time">${formatTime(a.timestamp)}</div>
+      <span class="activity-type ${cls}">${a.type}</span>
+      ${icon}${a.message || ''}
     </div>`;
   }).join('');
 }
@@ -364,9 +366,10 @@ async function updateRedemptions() {
 async function refreshAll() {
   await Promise.all([
     updateBtcTicker(),
+    updateSpikeBar(),
     updateStatus(),
     updateStats(),
-    updateDecisions(),
+    updateSpikeLog(),
     updateActivities(),
     updateTrades(),
     updateRedemptions()

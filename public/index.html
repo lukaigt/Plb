@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTC Trading Bot — Polymarket</title>
+  <title>BTC Trading Bot — Spike Detection</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="header">
-    <h1>BTC Polymarket Trading Bot</h1>
+    <h1>BTC Spike Detection Bot</h1>
     <div class="header-controls">
       <button class="btn btn-blue" onclick="scanNow()">Scan Now</button>
       <button class="btn btn-green" id="startBtn" onclick="startBot()">Start Bot</button>
@@ -54,6 +54,17 @@
       </div>
     </div>
 
+    <div id="spikeBar" class="spike-bar">
+      <div class="spike-icon" id="spikeIcon">&#9679;</div>
+      <div class="spike-info">
+        <div class="spike-label" id="spikeLabel">SPIKE DETECTOR</div>
+        <div class="spike-detail" id="spikeDetail">Waiting for data...</div>
+      </div>
+      <div class="spike-config" id="spikeConfig">
+        Threshold: $30 | Windows: 1m, 3m, 5m | Min Speed: $15/min
+      </div>
+    </div>
+
     <div id="safetyBar" class="safety-bar">
       <div class="safety-item">
         <span class="s-label">Bot Status</span>
@@ -65,7 +76,7 @@
       </div>
       <div class="safety-item">
         <span class="s-label">Strategy</span>
-        <span class="s-value" style="font-size:12px;color:#bc8cff;">Value-Based</span>
+        <span class="s-value" style="font-size:12px;color:#f0883e;">Spike Detection</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Max Entry</span>
@@ -121,11 +132,11 @@
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        AI Analysis — Value Detection Log
-        <span style="font-size:11px;color:#484f58;" id="decisionCount">0 decisions</span>
+        Spike Detection Log
+        <span style="font-size:11px;color:#484f58;" id="spikeLogCount">0 events</span>
       </div>
-      <div class="panel-body" id="decisionsPanel" style="max-height:600px;">
-        <div class="empty-state">No AI decisions yet. Waiting for market scan...</div>
+      <div class="panel-body" id="spikeLogPanel" style="max-height:400px;">
+        <div class="empty-state">No spike events yet. Bot watches BTC for $30+ moves and trades instantly.</div>
       </div>
     </div>
 
@@ -161,12 +172,12 @@
               <tr>
                 <th>Time</th>
                 <th>Action</th>
-                <th>Pattern</th>
+                <th>Trigger</th>
                 <th>Confidence</th>
                 <th>Size</th>
                 <th>Price</th>
                 <th>Result</th>
-                <th>Reasoning</th>
+                <th>Reason</th>
               </tr>
             </thead>
             <tbody id="tradeBody">
