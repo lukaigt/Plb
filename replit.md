@@ -12,16 +12,14 @@ AI-powered trading bot for Polymarket BTC 15-minute price prediction markets. Us
 - **Trade execution** via CLOB API with wallet-derived API credentials
 - **Proxy support** via FlashProxy Brazil residential proxy for Cloudflare bypass
 
-## AI Strategy (Candle Structure Analysis)
-- **Candle reading**: AI reads minute-by-minute candles like a trader — direction, size, momentum
-- **Overbought/Oversold**: Price moved too far too fast from 0.50? Likely to snap back
-- **Momentum exhaustion**: Candles getting smaller = move is dying, reversal coming
-- **Support/Resistance**: Price levels where it tends to bounce or get rejected
-- **Trend strength**: Consistent candles in one direction = healthy trend, ride it
-- **Reversal signals**: Big move + stall + opposite candle = reversal starting
-- **Early market**: Can decide with 1-2 candles if structure is clear
-- **Value entries only**: only trade when entry price is 0.40-0.60
-- **SKIP is default**: AI skips unclear/flat/choppy structures
+## AI Strategy (Value-Based with Real BTC Price)
+- **Kraken WebSocket**: Real-time BTC/USD price feed (direction, momentum, volatility)
+- **Value detection**: AI compares real BTC movement with Polymarket probability to find underpriced outcomes
+- **Hard max entry**: 0.45 max entry price enforced — ensures minimum 2.2x payout
+- **Sweet spot**: Entries at 0.10-0.20 (5-10x), 0.20-0.35 (3-5x), 0.35-0.45 (2-3x)
+- **BTC direction is king**: If BTC is clearly moving one way but market hasn't priced it in = trade
+- **Probability candles**: Used as confirmation — do they match or lag behind real BTC?
+- **SKIP is default**: Only trade when real BTC movement creates clear value
 - **Temperature 0.2**: Low randomness for consistent decisions
 
 ## Safety Controls
@@ -101,6 +99,6 @@ All config via `.env` file:
 - BTC only for better quality decisions
 - All keys in .env only, never in code
 - Dashboard must show EVERYTHING the AI thinks and does
-- No external crypto data APIs — use Polymarket data only
+- Kraken WebSocket for real BTC price (no API key needed)
 - Bot stops after 6 losses, keeps going if winning
 - Quality over quantity — skip most opportunities
