@@ -109,6 +109,10 @@ app.get('/api/btc-price', (req, res) => {
   res.json(krakenFeed.getPriceContext());
 });
 
+app.get('/api/window-status', (req, res) => {
+  res.json(krakenFeed.getWindowStatus());
+});
+
 app.post('/api/bot/scan-now', async (req, res) => {
   if (safety.killSwitch) {
     return res.json({ success: false, message: 'Cannot scan: kill switch is ON' });

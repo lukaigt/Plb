@@ -5,6 +5,7 @@ const SPIKE_THRESHOLD = parseFloat(process.env.SPIKE_THRESHOLD) || 30;
 const MIN_SPIKE_SPEED = parseFloat(process.env.MIN_SPIKE_SPEED) || 15;
 
 let lastSpikeResult = null;
+let lastFadeSignal = null;
 
 function detect() {
   const ctx = krakenFeed.getPriceContext();
@@ -45,7 +46,6 @@ function detect() {
           absMoveD,
           speed,
           direction: moveDollars > 0 ? 'UP' : 'DOWN',
-          action: moveDollars > 0 ? 'BUY_YES' : 'BUY_NO',
           percent: w.data.percent
         };
       }
@@ -53,23 +53,47 @@ function detect() {
   }
 
   if (bestSpike) {
+    const spikeDirection = bestSpike.direction;
+    const fadeDirection = spikeDirection === 'UP' ? 'DOWN' : 'UP';
+    const fadeAction = spikeDirection === 'UP' ? 'BUY_NO' : 'BUY_YES';
+    const followAction = spikeDirection === 'UP' ? 'BUY_YES' : 'BUY_NO';
+
+    const isDecelerating = ctx.momentum === 'DECELERATING';
+    const isAccelerating = ctx.momentum === 'ACCELERATING';
+
+    let fadeConfidence = 'MEDIUM';
+    if (bestSpike.speed >= 60 && isDecelerating) {
+      fadeConfidence = 'HIGH';
+    } else if (bestSpike.speed >= 40 && isDecelerating) {
+      fadeConfidence = 'HIGH';
+    } else if (isAccelerating) {
+      fadeConfidence = 'LOW';
+    }
+
     lastSpikeResult = {
       detected: true,
-      reason: `BTC moved $${bestSpike.moveDollars > 0 ? '+' : ''}${bestSpike.moveDollars} in ${bestSpike.window} ($${bestSpike.speed.toFixed(0)}/min speed)`,
+      reason: `BTC spiked ${spikeDirection} $${bestSpike.moveDollars > 0 ? '+' : ''}${bestSpike.moveDollars} in ${bestSpike.window} ($${bestSpike.speed.toFixed(0)}/min) — FADE to ${fadeDirection}`,
       btcPrice: ctx.currentPrice,
-      direction: bestSpike.direction,
-      action: bestSpike.action,
+      spikeDirection,
+      direction: fadeDirection,
+      action: fadeAction,
+      followAction,
       magnitude: bestSpike.absMoveD,
       speed: bestSpike.speed,
       window: bestSpike.window,
       percent: bestSpike.percent,
-      confidence: bestSpike.speed >= 60 ? 'HIGH' : bestSpike.speed >= 30 ? 'HIGH' : 'MEDIUM',
+      confidence: fadeConfidence,
       momentum: ctx.momentum,
+      isDecelerating,
+      isAccelerating,
+      strategy: 'FADE',
       timestamp: Date.now()
     };
 
+    lastFadeSignal = lastSpikeResult;
+
     logger.addActivity('spike_detected', {
-      message: `SPIKE: BTC ${bestSpike.direction} $${bestSpike.moveDollars > 0 ? '+' : ''}${bestSpike.moveDollars} in ${bestSpike.window} | Speed: $${bestSpike.speed.toFixed(0)}/min | Action: ${bestSpike.action}`,
+      message: `SPIKE ${spikeDirection} $${bestSpike.moveDollars > 0 ? '+' : ''}${bestSpike.moveDollars} in ${bestSpike.window} | Speed: $${bestSpike.speed.toFixed(0)}/min | Momentum: ${ctx.momentum} | FADE → ${fadeAction}`,
       coin: 'BTC'
     });
 
@@ -102,12 +126,17 @@ function getLastResult() {
   return lastSpikeResult;
 }
 
+function getLastFadeSignal() {
+  return lastFadeSignal;
+}
+
 function getConfig() {
   return {
     threshold: SPIKE_THRESHOLD,
     windows: '1m, 3m, 5m',
-    minSpeed: MIN_SPIKE_SPEED
+    minSpeed: MIN_SPIKE_SPEED,
+    strategy: 'FADE (mean reversion)'
   };
 }
 
-module.exports = { detect, getLastResult, getConfig };
+module.exports = { detect, getLastResult, getLastFadeSignal, getConfig };

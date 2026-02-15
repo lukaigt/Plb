@@ -23,6 +23,9 @@ function formatTime(iso) {
 
 function getTypeClass(type) {
   if (type.includes('spike')) return 'type-spike';
+  if (type.includes('strategy')) return 'type-strategy';
+  if (type.includes('fade')) return 'type-fade';
+  if (type.includes('sniper')) return 'type-sniper';
   if (type.includes('kraken')) return 'type-kraken';
   if (type.includes('price_block')) return 'type-price-block';
   if (type.includes('scan')) return 'type-scan';
@@ -105,6 +108,56 @@ async function updateBtcTicker() {
   }
 }
 
+async function updateWindowBar() {
+  const data = await api('/window-status');
+  if (!data) return;
+
+  const timerEl = document.getElementById('windowTimer');
+  const openEl = document.getElementById('windowOpen');
+  const leadEl = document.getElementById('windowLead');
+  const sideEl = document.getElementById('windowSide');
+  const bar = document.getElementById('windowBar');
+
+  if (data.minutesLeft !== undefined && data.minutesLeft !== null) {
+    const min = Math.floor(data.minutesLeft);
+    const sec = Math.floor((data.minutesLeft - min) * 60);
+    timerEl.textContent = `${min}:${String(sec).padStart(2, '0')} left`;
+
+    if (data.minutesLeft <= 5 && data.btcVsOpenDollars >= 100) {
+      bar.className = 'window-bar window-sniper-ready';
+    } else if (data.minutesLeft <= 5) {
+      bar.className = 'window-bar window-late';
+    } else {
+      bar.className = 'window-bar';
+    }
+  } else {
+    timerEl.textContent = '--:--';
+  }
+
+  if (data.openPrice) {
+    openEl.textContent = '$' + data.openPrice.toLocaleString();
+  } else {
+    openEl.textContent = '--';
+  }
+
+  if (data.btcVsOpenDollars !== null && data.btcVsOpenDollars !== undefined) {
+    const sign = data.btcVsOpenRaw >= 0 ? '+' : '-';
+    leadEl.textContent = `${sign}$${data.btcVsOpenDollars.toFixed(0)}`;
+    leadEl.className = `window-value ${data.btcVsOpenRaw >= 0 ? 'positive' : 'negative'}`;
+  } else {
+    leadEl.textContent = '--';
+    leadEl.className = 'window-value';
+  }
+
+  if (data.btcLeadingSide) {
+    sideEl.innerHTML = data.btcLeadingSide === 'UP'
+      ? '<span class="dir-badge dir-up">UP</span>'
+      : '<span class="dir-badge dir-down">DOWN</span>';
+  } else {
+    sideEl.textContent = '--';
+  }
+}
+
 async function updateSpikeBar() {
   const status = await api('/status');
   if (!status || !status.lastSpikeStatus) return;
@@ -115,11 +168,22 @@ async function updateSpikeBar() {
   const detail = document.getElementById('spikeDetail');
   const bar = document.getElementById('spikeBar');
 
+  const stratEl = document.getElementById('activeStrategy');
+  if (status.lastStrategy) {
+    stratEl.innerHTML = status.lastStrategy === 'FADE'
+      ? '<span class="strat-badge strat-fade">FADE</span>'
+      : '<span class="strat-badge strat-sniper">SNIPER</span>';
+  } else {
+    stratEl.textContent = 'Watching';
+  }
+
   if (spike.detected) {
     bar.className = 'spike-bar spike-active';
     icon.innerHTML = '&#9889;';
     icon.className = 'spike-icon spike-icon-active';
-    label.textContent = `SPIKE ${spike.direction}`;
+    label.textContent = spike.strategy === 'FADE'
+      ? `FADE: Spike ${spike.spikeDirection} → Trade ${spike.direction}`
+      : `SPIKE ${spike.direction}`;
     label.className = 'spike-label spike-label-active';
     detail.textContent = spike.reason;
     detail.className = 'spike-detail spike-detail-active';
@@ -196,7 +260,8 @@ async function updateSpikeLog() {
   if (!activities || activities.length === 0) return;
 
   const spikeEvents = activities.filter(a =>
-    a.type.includes('spike') || a.type.includes('trade') || a.type.includes('price_block')
+    a.type.includes('spike') || a.type.includes('trade') || a.type.includes('price_block') ||
+    a.type.includes('fade') || a.type.includes('sniper') || a.type.includes('strategy')
   );
 
   const panel = document.getElementById('spikeLogPanel');
@@ -204,7 +269,7 @@ async function updateSpikeLog() {
   countEl.textContent = `${spikeEvents.length} events`;
 
   if (spikeEvents.length === 0) {
-    panel.innerHTML = '<div class="empty-state">No spike events yet. Bot watches BTC for $30+ moves and trades instantly.</div>';
+    panel.innerHTML = '<div class="empty-state">No strategy events yet. Bot uses FADE (trade against spikes) + SNIPER (trade with late-game BTC lead).</div>';
     return;
   }
 
@@ -212,9 +277,11 @@ async function updateSpikeLog() {
     let cls = getTypeClass(a.type);
     let icon = '';
     if (a.type === 'spike_detected') icon = '&#9889; ';
-    if (a.type === 'spike_trade') icon = '&#128176; ';
+    if (a.type.includes('strategy_trade')) icon = '&#128176; ';
     if (a.type === 'trade_success') icon = '&#9989; ';
-    if (a.type === 'price_block') icon = '&#128683; ';
+    if (a.type.includes('price_block')) icon = '&#128683; ';
+    if (a.type.includes('fade')) icon = '&#8634; ';
+    if (a.type.includes('sniper')) icon = '&#127919; ';
 
     return `<div class="activity-item">
       <div class="activity-time">${formatTime(a.timestamp)}</div>
@@ -248,10 +315,14 @@ async function updateTrades() {
   const tbody = document.getElementById('tradeBody');
 
   tbody.innerHTML = trades.map(t => {
+    const stratMatch = (t.pattern || '').match(/\[(FADE|SNIPER)\]/);
+    const strat = stratMatch ? stratMatch[1] : '?';
+    const stratCls = strat === 'FADE' ? 'strat-fade' : strat === 'SNIPER' ? 'strat-sniper' : '';
+
     return `<tr>
       <td>${formatTime(t.timestamp)}</td>
+      <td><span class="strat-badge ${stratCls}">${strat}</span></td>
       <td><span class="decision-action ${getActionClass(t.action)}">${t.action}</span></td>
-      <td>${t.pattern || 'N/A'}</td>
       <td>${t.confidence || 'N/A'}</td>
       <td>$${t.size?.toFixed(2) || '0.00'}</td>
       <td>$${t.price?.toFixed(3) || '0.000'}</td>
@@ -366,6 +437,7 @@ async function updateRedemptions() {
 async function refreshAll() {
   await Promise.all([
     updateBtcTicker(),
+    updateWindowBar(),
     updateSpikeBar(),
     updateStatus(),
     updateStats(),

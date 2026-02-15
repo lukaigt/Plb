@@ -17,6 +17,75 @@ let lastUpdateTime = null;
 const priceHistory = [];
 const MAX_HISTORY = 600;
 
+const windowOpenPrices = {};
+const MAX_WINDOW_ENTRIES = 20;
+
+function get15MinWindowKey(timestamp) {
+  const d = new Date(timestamp);
+  const totalMinutes = d.getUTCHours() * 60 + d.getUTCMinutes();
+  const slotMinutes = Math.floor(totalMinutes / 15) * 15;
+  const slotDate = new Date(d);
+  slotDate.setUTCHours(Math.floor(slotMinutes / 60), slotMinutes % 60, 0, 0);
+  return slotDate.getTime();
+}
+
+function trackWindowOpenPrice(price, timestamp) {
+  const windowKey = get15MinWindowKey(timestamp);
+
+  if (!windowOpenPrices[windowKey]) {
+    windowOpenPrices[windowKey] = {
+      openPrice: price,
+      openTime: timestamp,
+      windowKey
+    };
+
+    const keys = Object.keys(windowOpenPrices).map(Number).sort();
+    while (keys.length > MAX_WINDOW_ENTRIES) {
+      delete windowOpenPrices[keys.shift()];
+    }
+  }
+}
+
+function getCurrentWindowOpen() {
+  const now = Date.now();
+  const windowKey = get15MinWindowKey(now);
+  return windowOpenPrices[windowKey] || null;
+}
+
+function getWindowOpenPrice(windowKey) {
+  return windowOpenPrices[windowKey] || null;
+}
+
+function getWindowStatus() {
+  const now = Date.now();
+  const windowKey = get15MinWindowKey(now);
+  const windowEnd = windowKey + 15 * 60 * 1000;
+  const minutesLeft = (windowEnd - now) / (1000 * 60);
+  const windowOpen = windowOpenPrices[windowKey];
+
+  let btcVsOpen = null;
+  let btcVsOpenDollars = null;
+  let btcLeadingSide = null;
+
+  if (windowOpen && latestPrice) {
+    btcVsOpenDollars = latestPrice - windowOpen.openPrice;
+    btcVsOpen = btcVsOpenDollars >= 0 ? 'ABOVE' : 'BELOW';
+    btcLeadingSide = btcVsOpenDollars >= 0 ? 'UP' : 'DOWN';
+  }
+
+  return {
+    windowKey,
+    windowEnd,
+    minutesLeft: Math.max(0, minutesLeft),
+    openPrice: windowOpen?.openPrice || null,
+    currentPrice: latestPrice,
+    btcVsOpen,
+    btcVsOpenDollars: btcVsOpenDollars !== null ? Math.abs(btcVsOpenDollars) : null,
+    btcLeadingSide,
+    btcVsOpenRaw: btcVsOpenDollars
+  };
+}
+
 function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
@@ -63,6 +132,8 @@ function connect() {
           while (priceHistory.length > MAX_HISTORY) {
             priceHistory.shift();
           }
+
+          trackWindowOpenPrice(latestPrice, now);
         }
 
         if (msg.channel === 'heartbeat') {
@@ -225,5 +296,9 @@ module.exports = {
   connect,
   getLatestPrice,
   getPriceContext,
-  buildPriceText
+  buildPriceText,
+  getCurrentWindowOpen,
+  getWindowOpenPrice,
+  getWindowStatus,
+  get15MinWindowKey
 };

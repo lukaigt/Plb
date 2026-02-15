@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTC Trading Bot — Spike Detection</title>
+  <title>BTC Trading Bot — Fade + Sniper</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="header">
-    <h1>BTC Spike Detection Bot</h1>
+    <h1>BTC Fade + Sniper Bot</h1>
     <div class="header-controls">
       <button class="btn btn-blue" onclick="scanNow()">Scan Now</button>
       <button class="btn btn-green" id="startBtn" onclick="startBot()">Start Bot</button>
@@ -54,6 +54,29 @@
       </div>
     </div>
 
+    <div id="windowBar" class="window-bar">
+      <div class="window-section">
+        <span class="window-label">15-MIN WINDOW</span>
+        <span class="window-timer" id="windowTimer">--:--</span>
+      </div>
+      <div class="window-section">
+        <span class="window-label">Open Price</span>
+        <span class="window-value" id="windowOpen">--</span>
+      </div>
+      <div class="window-section">
+        <span class="window-label">BTC vs Open</span>
+        <span class="window-value" id="windowLead">--</span>
+      </div>
+      <div class="window-section">
+        <span class="window-label">Leading Side</span>
+        <span class="window-value" id="windowSide">--</span>
+      </div>
+      <div class="window-section">
+        <span class="window-label">Active Strategy</span>
+        <span class="window-value" id="activeStrategy">--</span>
+      </div>
+    </div>
+
     <div id="spikeBar" class="spike-bar">
       <div class="spike-icon" id="spikeIcon">&#9679;</div>
       <div class="spike-info">
@@ -61,7 +84,7 @@
         <div class="spike-detail" id="spikeDetail">Waiting for data...</div>
       </div>
       <div class="spike-config" id="spikeConfig">
-        Threshold: $30 | Windows: 1m, 3m, 5m | Min Speed: $15/min
+        Strategy: FADE spikes | Threshold: $30 | Sniper: $100+ lead in last 5min
       </div>
     </div>
 
@@ -76,11 +99,11 @@
       </div>
       <div class="safety-item">
         <span class="s-label">Strategy</span>
-        <span class="s-value" style="font-size:12px;color:#f0883e;">Spike Detection</span>
+        <span class="s-value" style="font-size:12px;color:#58a6ff;">Fade + Sniper</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Max Entry</span>
-        <span class="s-value" style="font-size:14px;color:#d29922;">$0.45</span>
+        <span class="s-value" style="font-size:14px;color:#d29922;">$0.40</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Today's Record</span>
@@ -132,11 +155,11 @@
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        Spike Detection Log
+        Strategy Log
         <span style="font-size:11px;color:#484f58;" id="spikeLogCount">0 events</span>
       </div>
       <div class="panel-body" id="spikeLogPanel" style="max-height:400px;">
-        <div class="empty-state">No spike events yet. Bot watches BTC for $30+ moves and trades instantly.</div>
+        <div class="empty-state">No strategy events yet. Bot uses FADE (trade against spikes) + SNIPER (trade with late-game BTC lead).</div>
       </div>
     </div>
 
@@ -171,8 +194,8 @@
             <thead>
               <tr>
                 <th>Time</th>
+                <th>Strategy</th>
                 <th>Action</th>
-                <th>Trigger</th>
                 <th>Confidence</th>
                 <th>Size</th>
                 <th>Price</th>
