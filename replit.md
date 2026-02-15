@@ -22,8 +22,9 @@ Spike detection trading bot for Polymarket BTC 15-minute price prediction market
 - **AI demoted**: AI no longer makes trade decisions, spike detection does
 
 ## Safety Controls
-- **Max 1 trade per scan cycle** — BTC only
-- **Max 1 trade per 15-minute window** — no duplicate bets on same market
+- **Max 2 trades per 15-minute window** — 1 original + 1 reversal (only if opposite direction AND stronger spike)
+- **Min entry $0.10** — blocks garbage orders below 10 cents (bad data protection)
+- **Max entry $0.45** — ensures minimum 2.2x payout
 - **Max 6 LOSING trades per day** — bot stops after 6 losses (keeps going if winning)
 - **Daily loss limit** — stops trading when cumulative losses hit $15 (configurable)
 - **Kill switch** — manual stop via dashboard

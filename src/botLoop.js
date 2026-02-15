@@ -9,6 +9,7 @@ const krakenFeed = require('./krakenFeed');
 const spikeDetector = require('./spikeDetector');
 
 const MAX_ENTRY_PRICE = 0.45;
+const MIN_ENTRY_PRICE = 0.10;
 
 let isRunning = false;
 let loopInterval = null;
@@ -52,11 +53,39 @@ async function runOnce() {
     }
 
     const market = markets[0];
-
     const windowKey = safety.getWindowKey(market.endTime);
-    if (safety.hasTraded('BTC', windowKey)) {
-      logger.addActivity('skip', { message: `Spike detected but already traded this 15-min window.` });
-      return;
+    const alreadyTraded = safety.hasTraded('BTC', windowKey);
+    let isReversal = false;
+
+    if (alreadyTraded) {
+      const prevTrade = safety.getWindowTrade('BTC', windowKey);
+
+      if (!prevTrade || prevTrade.reversed) {
+        logger.addActivity('skip', { message: `Spike detected but already traded + reversed this window. Max 2 trades per window.` });
+        return;
+      }
+
+      const oppositeDirection = prevTrade.direction === 'UNKNOWN' ||
+                                 (prevTrade.direction === 'UP' && spike.direction === 'DOWN') ||
+                                 (prevTrade.direction === 'DOWN' && spike.direction === 'UP');
+
+      if (!oppositeDirection) {
+        logger.addActivity('skip', { message: `Spike ${spike.direction} but already traded ${prevTrade.direction} this window. Same direction = skip.` });
+        return;
+      }
+
+      if (prevTrade.direction !== 'UNKNOWN' && spike.magnitude < prevTrade.magnitude) {
+        logger.addActivity('skip', {
+          message: `Reversal spike $${spike.magnitude?.toFixed(0)} weaker than original $${prevTrade.magnitude?.toFixed(0)}. Need stronger reversal to trade.`
+        });
+        return;
+      }
+
+      isReversal = true;
+      logger.addActivity('spike_reversal', {
+        message: `REVERSAL DETECTED: Was ${prevTrade.direction} ($${prevTrade.magnitude?.toFixed(0)}), now ${spike.direction} ($${spike.magnitude?.toFixed(0)}). Allowing reversal trade!`,
+        coin: 'BTC'
+      });
     }
 
     const marketData = await fetchFullMarketData(market);
@@ -74,16 +103,24 @@ async function runOnce() {
       entryPrice = marketData.noToken.price?.mid;
     }
 
-    if (entryPrice && entryPrice > MAX_ENTRY_PRICE) {
+    if (!entryPrice) {
+      logger.addActivity('skip', { message: 'No entry price available for trade' });
+      return;
+    }
+
+    if (entryPrice < MIN_ENTRY_PRICE) {
       logger.addActivity('price_block', {
-        message: `BLOCKED: ${action} entry $${entryPrice.toFixed(3)} > max $${MAX_ENTRY_PRICE}. Market already priced in.`,
+        message: `BLOCKED: ${action} entry $${entryPrice.toFixed(3)} < min $${MIN_ENTRY_PRICE}. Price too low, likely bad data.`,
         coin: 'BTC'
       });
       return;
     }
 
-    if (!entryPrice) {
-      logger.addActivity('skip', { message: 'No entry price available for trade' });
+    if (entryPrice > MAX_ENTRY_PRICE) {
+      logger.addActivity('price_block', {
+        message: `BLOCKED: ${action} entry $${entryPrice.toFixed(3)} > max $${MAX_ENTRY_PRICE}. Market already priced in.`,
+        coin: 'BTC'
+      });
       return;
     }
 
@@ -103,21 +140,29 @@ async function runOnce() {
     const decision = {
       action: action,
       confidence: confidence,
-      pattern: `Spike ${spike.direction}: $${spike.magnitude?.toFixed(0)} in ${spike.window}`,
+      pattern: isReversal
+        ? `REVERSAL ${spike.direction}: $${spike.magnitude?.toFixed(0)} in ${spike.window}`
+        : `Spike ${spike.direction}: $${spike.magnitude?.toFixed(0)} in ${spike.window}`,
       reasoning: spike.reason
     };
 
     logger.addActivity('spike_trade', {
-      message: `TRADING on spike: ${action} at $${entryPrice.toFixed(3)} | BTC $${spike.btcPrice?.toLocaleString()} ${spike.direction} | $${spike.magnitude?.toFixed(0)} move in ${spike.window} | Speed: $${spike.speed?.toFixed(0)}/min`,
+      message: `${isReversal ? 'REVERSAL' : 'TRADING'} on spike: ${action} at $${entryPrice.toFixed(3)} | BTC $${spike.btcPrice?.toLocaleString()} ${spike.direction} | $${spike.magnitude?.toFixed(0)} move in ${spike.window} | Speed: $${spike.speed?.toFixed(0)}/min`,
       coin: 'BTC'
     });
 
     const trade = await executeTrade(decision, marketData, tradeSize);
     if (trade && trade.success) {
       safety.recordTrade(tradeSize);
-      safety.markTraded('BTC', windowKey);
+
+      if (isReversal) {
+        safety.markReversed('BTC', windowKey);
+      } else {
+        safety.markTraded('BTC', windowKey, spike.direction, spike.magnitude);
+      }
+
       logger.addActivity('trade_success', {
-        message: `TRADE PLACED: ${action} on BTC for $${tradeSize} at $${trade.price?.toFixed(3)} | Spike: ${spike.direction} $${spike.magnitude?.toFixed(0)} | Speed: $${spike.speed?.toFixed(0)}/min`,
+        message: `${isReversal ? 'REVERSAL ' : ''}TRADE PLACED: ${action} on BTC for $${tradeSize} at $${trade.price?.toFixed(3)} | Spike: ${spike.direction} $${spike.magnitude?.toFixed(0)} | Speed: $${spike.speed?.toFixed(0)}/min`,
         coin: 'BTC'
       });
 
@@ -158,7 +203,7 @@ async function start() {
   const spikeConfig = spikeDetector.getConfig();
 
   logger.addActivity('bot', {
-    message: `Bot started — SPIKE DETECTION MODE. Scanning every ${interval / 1000}s. Spike threshold: $${spikeConfig.threshold} (${spikeConfig.windows}). Min speed: $${spikeConfig.minSpeed}/min. Max entry: $${MAX_ENTRY_PRICE}. Max trade: $${safety.maxTradeSize}. Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost.`
+    message: `Bot started — SPIKE DETECTION MODE. Scanning every ${interval / 1000}s. Spike threshold: $${spikeConfig.threshold} (${spikeConfig.windows}). Min speed: $${spikeConfig.minSpeed}/min. Entry range: $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE}. Max trade: $${safety.maxTradeSize}. Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost. Reversal trades: ENABLED.`
   });
 
   if (!positionScanner.hasScanned()) {

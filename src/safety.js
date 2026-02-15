@@ -58,10 +58,28 @@ class SafetySystem {
     return !!this.tradedWindows[key];
   }
 
-  markTraded(coin, windowKey) {
+  getWindowTrade(coin, windowKey) {
     const key = `${coin}_${windowKey}`;
-    this.tradedWindows[key] = true;
-    logger.addActivity('safety', { message: `Marked ${coin} as traded for window ${windowKey}` });
+    const entry = this.tradedWindows[key];
+    if (!entry) return null;
+    if (entry === true) {
+      return { direction: 'UNKNOWN', magnitude: 0, reversed: false };
+    }
+    return entry;
+  }
+
+  markTraded(coin, windowKey, direction, magnitude) {
+    const key = `${coin}_${windowKey}`;
+    this.tradedWindows[key] = { direction, magnitude: magnitude || 0, reversed: false };
+    logger.addActivity('safety', { message: `Marked ${coin} as traded for window ${windowKey} (${direction}, $${(magnitude || 0).toFixed(0)} spike)` });
+  }
+
+  markReversed(coin, windowKey) {
+    const key = `${coin}_${windowKey}`;
+    if (this.tradedWindows[key]) {
+      this.tradedWindows[key].reversed = true;
+      logger.addActivity('safety', { message: `Marked ${coin} reversal trade for window ${windowKey}` });
+    }
   }
 
   getWindowKey(endTime) {
