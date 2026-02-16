@@ -5,10 +5,10 @@ const SPIKE_THRESHOLD = parseFloat(process.env.SPIKE_THRESHOLD) || 30;
 const MIN_SPIKE_SPEED = parseFloat(process.env.MIN_SPIKE_SPEED) || 15;
 
 let lastSpikeResult = null;
-let lastFadeSignal = null;
 
 function detect() {
   const ctx = krakenFeed.getPriceContext();
+  const windowStatus = krakenFeed.getWindowStatus();
 
   if (!ctx.available) {
     lastSpikeResult = {
@@ -18,6 +18,7 @@ function detect() {
       direction: null,
       magnitude: null,
       speed: null,
+      crossedOpen: false,
       timestamp: Date.now()
     };
     return lastSpikeResult;
@@ -54,46 +55,50 @@ function detect() {
 
   if (bestSpike) {
     const spikeDirection = bestSpike.direction;
-    const fadeDirection = spikeDirection === 'UP' ? 'DOWN' : 'UP';
-    const fadeAction = spikeDirection === 'UP' ? 'BUY_NO' : 'BUY_YES';
-    const followAction = spikeDirection === 'UP' ? 'BUY_YES' : 'BUY_NO';
+    const crossedOpen = windowStatus.crossedOpen || false;
+    const preSpikeeSide = windowStatus.preSpikeeSide || null;
 
     const isDecelerating = ctx.momentum === 'DECELERATING';
     const isAccelerating = ctx.momentum === 'ACCELERATING';
 
-    let fadeConfidence = 'MEDIUM';
-    if (bestSpike.speed >= 60 && isDecelerating) {
-      fadeConfidence = 'HIGH';
-    } else if (bestSpike.speed >= 40 && isDecelerating) {
-      fadeConfidence = 'HIGH';
+    let confidence = 'MEDIUM';
+    if (crossedOpen && isDecelerating) {
+      confidence = 'HIGH';
+    } else if (crossedOpen && !isAccelerating) {
+      confidence = 'MEDIUM';
     } else if (isAccelerating) {
-      fadeConfidence = 'LOW';
+      confidence = 'LOW';
+    } else if (!crossedOpen) {
+      confidence = 'LOW';
     }
+
+    const fadeAction = preSpikeeSide === 'UP' ? 'BUY_YES' : 'BUY_NO';
+    const fadeDirection = preSpikeeSide === 'UP' ? 'UP' : 'DOWN';
 
     lastSpikeResult = {
       detected: true,
-      reason: `BTC spiked ${spikeDirection} $${bestSpike.moveDollars > 0 ? '+' : ''}${bestSpike.moveDollars} in ${bestSpike.window} ($${bestSpike.speed.toFixed(0)}/min) — FADE to ${fadeDirection}`,
+      reason: `BTC spiked ${spikeDirection} $${bestSpike.moveDollars > 0 ? '+' : ''}${bestSpike.moveDollars} in ${bestSpike.window} ($${bestSpike.speed.toFixed(0)}/min)${crossedOpen ? ' — CROSSED OPENING PRICE' : ' — did not cross opening'}`,
       btcPrice: ctx.currentPrice,
       spikeDirection,
       direction: fadeDirection,
       action: fadeAction,
-      followAction,
       magnitude: bestSpike.absMoveD,
       speed: bestSpike.speed,
       window: bestSpike.window,
       percent: bestSpike.percent,
-      confidence: fadeConfidence,
+      confidence,
       momentum: ctx.momentum,
       isDecelerating,
       isAccelerating,
-      strategy: 'FADE',
+      crossedOpen,
+      preSpikeeSide,
+      strategy: 'CROSS_OPEN_FADE',
       timestamp: Date.now()
     };
 
-    lastFadeSignal = lastSpikeResult;
-
-    logger.addActivity('spike_detected', {
-      message: `SPIKE ${spikeDirection} $${bestSpike.moveDollars > 0 ? '+' : ''}${bestSpike.moveDollars} in ${bestSpike.window} | Speed: $${bestSpike.speed.toFixed(0)}/min | Momentum: ${ctx.momentum} | FADE → ${fadeAction}`,
+    const logType = crossedOpen ? 'spike_crossopen' : 'spike_detected';
+    logger.addActivity(logType, {
+      message: `SPIKE ${spikeDirection} $${bestSpike.moveDollars > 0 ? '+' : ''}${bestSpike.moveDollars} in ${bestSpike.window} | Speed: $${bestSpike.speed.toFixed(0)}/min | Momentum: ${ctx.momentum} | Cross-Open: ${crossedOpen ? 'YES → FADE ' + fadeAction : 'NO (skip)'}`,
       coin: 'BTC'
     });
 
@@ -116,6 +121,7 @@ function detect() {
     magnitude: change1mVal,
     speed: change1mVal,
     momentum: ctx.momentum,
+    crossedOpen: false,
     timestamp: Date.now()
   };
 
@@ -126,17 +132,13 @@ function getLastResult() {
   return lastSpikeResult;
 }
 
-function getLastFadeSignal() {
-  return lastFadeSignal;
-}
-
 function getConfig() {
   return {
     threshold: SPIKE_THRESHOLD,
     windows: '1m, 3m, 5m',
     minSpeed: MIN_SPIKE_SPEED,
-    strategy: 'FADE (mean reversion)'
+    strategy: 'Cross-Open Fade + Late Contrarian'
   };
 }
 
-module.exports = { detect, getLastResult, getLastFadeSignal, getConfig };
+module.exports = { detect, getLastResult, getConfig };

@@ -10,9 +10,10 @@ const spikeDetector = require('./spikeDetector');
 
 const MAX_ENTRY_PRICE = parseFloat(process.env.MAX_ENTRY_PRICE) || 0.40;
 const MIN_ENTRY_PRICE = parseFloat(process.env.MIN_ENTRY_PRICE) || 0.10;
-const SNIPER_MIN_LEAD = parseFloat(process.env.SNIPER_MIN_LEAD) || 100;
-const SNIPER_MAX_MINUTES = parseFloat(process.env.SNIPER_MAX_MINUTES) || 5;
-const SNIPER_MIN_MINUTES = parseFloat(process.env.SNIPER_MIN_MINUTES) || 1.5;
+const CONTRARIAN_MIN_LEAD = parseFloat(process.env.CONTRARIAN_MIN_LEAD) || 20;
+const CONTRARIAN_MAX_LEAD = parseFloat(process.env.CONTRARIAN_MAX_LEAD) || 60;
+const CONTRARIAN_MAX_MINUTES = parseFloat(process.env.CONTRARIAN_MAX_MINUTES) || 5;
+const CONTRARIAN_MIN_MINUTES = parseFloat(process.env.CONTRARIAN_MIN_MINUTES) || 2;
 
 let isRunning = false;
 let loopInterval = null;
@@ -20,12 +21,21 @@ let lastScanTime = null;
 let lastSpikeStatus = null;
 let lastStrategy = null;
 
-async function tryFadeStrategy(spike, markets) {
+async function tryCrossOpenFade(spike, markets) {
   if (!spike.detected) return null;
+  if (!spike.crossedOpen) return null;
 
   if (spike.confidence === 'LOW') {
-    logger.addActivity('fade_skip', {
-      message: `Spike ${spike.spikeDirection} but confidence LOW (momentum: ${spike.momentum}) — too risky to fade. Waiting for better setup.`,
+    logger.addActivity('crossopen_skip', {
+      message: `Spike ${spike.spikeDirection} crossed opening but confidence LOW (momentum: ${spike.momentum}) — skipping.`,
+      coin: 'BTC'
+    });
+    return null;
+  }
+
+  if (!spike.preSpikeeSide) {
+    logger.addActivity('crossopen_skip', {
+      message: `Spike crossed opening but pre-spike side unknown (insufficient price history). Skipping.`,
       coin: 'BTC'
     });
     return null;
@@ -39,25 +49,17 @@ async function tryFadeStrategy(spike, markets) {
 
   if (alreadyTraded) {
     const prevTrade = safety.getWindowTrade('BTC', windowKey);
-    if (!prevTrade || prevTrade.reversed) {
-      return null;
-    }
+    if (!prevTrade || prevTrade.reversed) return null;
 
-    const oppositeDirection = prevTrade.direction === 'UNKNOWN' ||
-      (prevTrade.direction !== spike.direction);
+    const isSameDir = prevTrade.direction === spike.direction;
+    if (isSameDir) return null;
 
-    if (!oppositeDirection) {
-      return null;
-    }
-
-    if (prevTrade.direction !== 'UNKNOWN' && spike.magnitude < prevTrade.magnitude) {
-      return null;
-    }
+    if (prevTrade.direction !== 'UNKNOWN' && spike.magnitude < prevTrade.magnitude) return null;
   }
 
   const marketData = await fetchFullMarketData(market);
-
   const action = spike.action;
+
   let entryPrice = null;
   if (action === 'BUY_YES') {
     entryPrice = marketData.yesToken.price?.mid;
@@ -68,15 +70,15 @@ async function tryFadeStrategy(spike, markets) {
   if (!entryPrice) return null;
 
   if (entryPrice < MIN_ENTRY_PRICE || entryPrice > MAX_ENTRY_PRICE) {
-    logger.addActivity('fade_price_block', {
-      message: `FADE blocked: ${action} at $${entryPrice.toFixed(3)} outside range $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE}`,
+    logger.addActivity('crossopen_price_block', {
+      message: `CROSS-OPEN blocked: ${action} at $${entryPrice.toFixed(3)} outside range $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE}. BTC was ${spike.preSpikeeSide} before spike, now on other side.`,
       coin: 'BTC'
     });
     return null;
   }
 
   return {
-    strategy: 'FADE',
+    strategy: 'CROSS_OPEN',
     action,
     entryPrice,
     marketData,
@@ -84,16 +86,16 @@ async function tryFadeStrategy(spike, markets) {
     windowKey,
     isReversal: alreadyTraded,
     confidence: spike.confidence,
-    reason: `FADE: BTC spiked ${spike.spikeDirection} $${spike.magnitude?.toFixed(0)} → betting ${spike.direction} (mean reversion). Entry: $${entryPrice.toFixed(3)}. Momentum: ${spike.momentum}.`
+    reason: `CROSS-OPEN: BTC was ${spike.preSpikeeSide} opening, spiked ${spike.spikeDirection} $${spike.magnitude?.toFixed(0)} crossing opening price → bet ${spike.preSpikeeSide} (reversion). Entry: $${entryPrice.toFixed(3)}. Momentum: ${spike.momentum}.`
   };
 }
 
-async function trySniperStrategy(markets) {
+async function tryLateContrarian(markets) {
   const windowStatus = krakenFeed.getWindowStatus();
 
-  if (!windowStatus.openPrice || !windowStatus.currentPrice) return null;
-  if (windowStatus.minutesLeft > SNIPER_MAX_MINUTES || windowStatus.minutesLeft < SNIPER_MIN_MINUTES) return null;
-  if (windowStatus.btcVsOpenDollars < SNIPER_MIN_LEAD) return null;
+  if (!windowStatus.openPrice || !windowStatus.currentPrice || !windowStatus.btcLeadingSide) return null;
+  if (windowStatus.minutesLeft > CONTRARIAN_MAX_MINUTES || windowStatus.minutesLeft < CONTRARIAN_MIN_MINUTES) return null;
+  if (windowStatus.btcVsOpenDollars === null || windowStatus.btcVsOpenDollars < CONTRARIAN_MIN_LEAD || windowStatus.btcVsOpenDollars > CONTRARIAN_MAX_LEAD) return null;
 
   const market = markets[0];
   if (!market) return null;
@@ -105,12 +107,13 @@ async function trySniperStrategy(markets) {
     const prevTrade = safety.getWindowTrade('BTC', windowKey);
     if (prevTrade && prevTrade.reversed) return null;
 
+    const losingDir = windowStatus.btcLeadingSide === 'UP' ? 'DOWN' : 'UP';
     const prevDir = prevTrade?.direction;
-    const sniperDir = windowStatus.btcLeadingSide;
-    if (prevDir && prevDir !== 'UNKNOWN' && prevDir === sniperDir) return null;
+    if (prevDir && prevDir !== 'UNKNOWN' && prevDir === losingDir) return null;
   }
 
-  const action = windowStatus.btcLeadingSide === 'UP' ? 'BUY_YES' : 'BUY_NO';
+  const losingSide = windowStatus.btcLeadingSide === 'UP' ? 'DOWN' : 'UP';
+  const action = losingSide === 'UP' ? 'BUY_YES' : 'BUY_NO';
 
   const marketData = await fetchFullMarketData(market);
 
@@ -124,24 +127,43 @@ async function trySniperStrategy(markets) {
   if (!entryPrice) return null;
 
   if (entryPrice < MIN_ENTRY_PRICE || entryPrice > MAX_ENTRY_PRICE) {
-    logger.addActivity('sniper_price_block', {
-      message: `SNIPER blocked: ${action} at $${entryPrice.toFixed(3)} outside range $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE}. Lead: $${windowStatus.btcVsOpenDollars.toFixed(0)} with ${windowStatus.minutesLeft.toFixed(1)}min left.`,
+    logger.addActivity('contrarian_price_block', {
+      message: `CONTRARIAN blocked: ${action} at $${entryPrice.toFixed(3)} outside range $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE}. BTC leads by $${windowStatus.btcVsOpenDollars.toFixed(0)} (${windowStatus.btcLeadingSide}) with ${windowStatus.minutesLeft.toFixed(1)}min left.`,
       coin: 'BTC'
     });
     return null;
   }
 
+  let confidence = 'MEDIUM';
+  if (windowStatus.btcVsOpenDollars <= 35 && windowStatus.minutesLeft >= 3 && entryPrice <= 0.30) {
+    confidence = 'HIGH';
+  }
+
   return {
-    strategy: 'SNIPER',
+    strategy: 'CONTRARIAN',
     action,
     entryPrice,
     marketData,
     market,
     windowKey,
     isReversal: alreadyTraded,
-    confidence: windowStatus.btcVsOpenDollars >= 200 ? 'HIGH' : 'MEDIUM',
-    reason: `SNIPER: BTC ${windowStatus.btcVsOpen} opening by $${windowStatus.btcVsOpenDollars.toFixed(0)} with ${windowStatus.minutesLeft.toFixed(1)}min left → ${action} at $${entryPrice.toFixed(3)}`
+    confidence,
+    reason: `CONTRARIAN: BTC leads ${windowStatus.btcLeadingSide} by $${windowStatus.btcVsOpenDollars.toFixed(0)} with ${windowStatus.minutesLeft.toFixed(1)}min left → buy underdog ${losingSide} at $${entryPrice.toFixed(3)} (small lead, can flip).`
   };
+}
+
+function shouldCheckStrategies(spike, windowStatus) {
+  if (spike.detected && spike.crossedOpen) return true;
+
+  if (windowStatus.openPrice &&
+      windowStatus.btcVsOpenDollars >= CONTRARIAN_MIN_LEAD &&
+      windowStatus.btcVsOpenDollars <= CONTRARIAN_MAX_LEAD &&
+      windowStatus.minutesLeft <= CONTRARIAN_MAX_MINUTES &&
+      windowStatus.minutesLeft >= CONTRARIAN_MIN_MINUTES) {
+    return true;
+  }
+
+  return false;
 }
 
 async function runOnce() {
@@ -161,7 +183,7 @@ async function runOnce() {
 
     const windowStatus = krakenFeed.getWindowStatus();
 
-    if (!spike.detected && (!windowStatus.openPrice || windowStatus.btcVsOpenDollars < SNIPER_MIN_LEAD || windowStatus.minutesLeft > SNIPER_MAX_MINUTES)) {
+    if (!shouldCheckStrategies(spike, windowStatus)) {
       const windowInfo = windowStatus.openPrice
         ? ` | vs Open: ${windowStatus.btcVsOpen || '?'} $${windowStatus.btcVsOpenDollars?.toFixed(0) || '?'} | ${windowStatus.minutesLeft?.toFixed(1) || '?'}min left`
         : '';
@@ -187,17 +209,17 @@ async function runOnce() {
 
     let signal = null;
 
-    if (spike.detected) {
-      signal = await tryFadeStrategy(spike, markets);
+    if (spike.detected && spike.crossedOpen) {
+      signal = await tryCrossOpenFade(spike, markets);
     }
 
     if (!signal) {
-      signal = await trySniperStrategy(markets);
+      signal = await tryLateContrarian(markets);
     }
 
     if (!signal) {
-      if (spike.detected) {
-        logger.addActivity('skip', { message: `Spike detected but no valid entry found (price outside range or already traded this window)` });
+      if (spike.detected && spike.crossedOpen) {
+        logger.addActivity('skip', { message: `Cross-open spike detected but no valid entry found (price outside range or already traded this window)` });
       }
       return;
     }
@@ -234,10 +256,11 @@ async function runOnce() {
       safety.recordTrade(tradeSize);
 
       const windowKey = signal.windowKey;
+      const tradeDir = signal.action === 'BUY_YES' ? 'UP' : 'DOWN';
       if (signal.isReversal) {
         safety.markReversed('BTC', windowKey);
       } else {
-        safety.markTraded('BTC', windowKey, signal.strategy === 'FADE' ? spike.direction : (signal.action === 'BUY_YES' ? 'UP' : 'DOWN'), spike.magnitude || 0);
+        safety.markTraded('BTC', windowKey, tradeDir, spike.magnitude || 0);
       }
 
       logger.addActivity('trade_success', {
@@ -284,8 +307,8 @@ async function start() {
 
   logger.addActivity('bot', {
     message: `Bot started — DUAL STRATEGY MODE.\n` +
-      `  Strategy 1: FADE THE SPIKE (mean reversion) — trade AGAINST $${spikeConfig.threshold}+ spikes\n` +
-      `  Strategy 2: LATE-GAME SNIPER — trade with BTC lead ($${SNIPER_MIN_LEAD}+) in last ${SNIPER_MAX_MINUTES}min\n` +
+      `  Strategy 1: CROSS-OPEN FADE — only fade spikes that cross the opening price\n` +
+      `  Strategy 2: LATE CONTRARIAN — buy cheap underdog when lead is small ($${CONTRARIAN_MIN_LEAD}-$${CONTRARIAN_MAX_LEAD}) with ${CONTRARIAN_MAX_MINUTES}min left\n` +
       `  Scan: ${interval / 1000}s | Entry: $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE} | Max trade: $${safety.maxTradeSize}\n` +
       `  Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost`
   });

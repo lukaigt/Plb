@@ -56,6 +56,18 @@ function getWindowOpenPrice(windowKey) {
   return windowOpenPrices[windowKey] || null;
 }
 
+function getPriceSecondsAgo(secondsAgo) {
+  const cutoff = Date.now() - (secondsAgo * 1000);
+  const older = priceHistory.filter(p => p.time <= cutoff);
+  if (older.length === 0) return null;
+  return older[older.length - 1].price;
+}
+
+function getSideOfOpen(price, openPrice) {
+  if (price === null || openPrice === null) return null;
+  return price >= openPrice ? 'UP' : 'DOWN';
+}
+
 function getWindowStatus() {
   const now = Date.now();
   const windowKey = get15MinWindowKey(now);
@@ -65,12 +77,29 @@ function getWindowStatus() {
 
   let btcVsOpen = null;
   let btcVsOpenDollars = null;
+  let btcVsOpenRaw = null;
   let btcLeadingSide = null;
+  let preSpikeeSide = null;
+  let currentSide = null;
+  let crossedOpen = false;
 
   if (windowOpen && latestPrice) {
-    btcVsOpenDollars = latestPrice - windowOpen.openPrice;
-    btcVsOpen = btcVsOpenDollars >= 0 ? 'ABOVE' : 'BELOW';
-    btcLeadingSide = btcVsOpenDollars >= 0 ? 'UP' : 'DOWN';
+    btcVsOpenRaw = latestPrice - windowOpen.openPrice;
+    btcVsOpenDollars = Math.abs(btcVsOpenRaw);
+    btcVsOpen = btcVsOpenRaw >= 0 ? 'ABOVE' : 'BELOW';
+    btcLeadingSide = btcVsOpenRaw >= 0 ? 'UP' : 'DOWN';
+    currentSide = btcLeadingSide;
+
+    const priceAgo90 = getPriceSecondsAgo(90);
+    const priceAgo60 = getPriceSecondsAgo(60);
+    const prePrice = priceAgo90 || priceAgo60;
+
+    if (prePrice) {
+      preSpikeeSide = getSideOfOpen(prePrice, windowOpen.openPrice);
+      if (preSpikeeSide && currentSide && preSpikeeSide !== currentSide) {
+        crossedOpen = true;
+      }
+    }
   }
 
   return {
@@ -80,9 +109,12 @@ function getWindowStatus() {
     openPrice: windowOpen?.openPrice || null,
     currentPrice: latestPrice,
     btcVsOpen,
-    btcVsOpenDollars: btcVsOpenDollars !== null ? Math.abs(btcVsOpenDollars) : null,
+    btcVsOpenDollars: btcVsOpenDollars !== null ? btcVsOpenDollars : null,
     btcLeadingSide,
-    btcVsOpenRaw: btcVsOpenDollars
+    btcVsOpenRaw: btcVsOpenRaw,
+    preSpikeeSide,
+    currentSide,
+    crossedOpen
   };
 }
 

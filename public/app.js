@@ -22,10 +22,10 @@ function formatTime(iso) {
 }
 
 function getTypeClass(type) {
+  if (type.includes('crossopen')) return 'type-crossopen';
   if (type.includes('spike')) return 'type-spike';
+  if (type.includes('contrarian')) return 'type-contrarian';
   if (type.includes('strategy')) return 'type-strategy';
-  if (type.includes('fade')) return 'type-fade';
-  if (type.includes('sniper')) return 'type-sniper';
   if (type.includes('kraken')) return 'type-kraken';
   if (type.includes('price_block')) return 'type-price-block';
   if (type.includes('scan')) return 'type-scan';
@@ -116,6 +116,7 @@ async function updateWindowBar() {
   const openEl = document.getElementById('windowOpen');
   const leadEl = document.getElementById('windowLead');
   const sideEl = document.getElementById('windowSide');
+  const crossedEl = document.getElementById('windowCrossed');
   const bar = document.getElementById('windowBar');
 
   if (data.minutesLeft !== undefined && data.minutesLeft !== null) {
@@ -123,8 +124,10 @@ async function updateWindowBar() {
     const sec = Math.floor((data.minutesLeft - min) * 60);
     timerEl.textContent = `${min}:${String(sec).padStart(2, '0')} left`;
 
-    if (data.minutesLeft <= 5 && data.btcVsOpenDollars >= 100) {
-      bar.className = 'window-bar window-sniper-ready';
+    if (data.crossedOpen) {
+      bar.className = 'window-bar window-crossopen';
+    } else if (data.minutesLeft <= 5 && data.btcVsOpenDollars >= 20 && data.btcVsOpenDollars <= 60) {
+      bar.className = 'window-bar window-contrarian-ready';
     } else if (data.minutesLeft <= 5) {
       bar.className = 'window-bar window-late';
     } else {
@@ -156,6 +159,12 @@ async function updateWindowBar() {
   } else {
     sideEl.textContent = '--';
   }
+
+  if (data.crossedOpen) {
+    crossedEl.innerHTML = '<span class="badge badge-win">YES</span>';
+  } else {
+    crossedEl.innerHTML = '<span class="badge badge-failed">NO</span>';
+  }
 }
 
 async function updateSpikeBar() {
@@ -170,30 +179,36 @@ async function updateSpikeBar() {
 
   const stratEl = document.getElementById('activeStrategy');
   if (status.lastStrategy) {
-    stratEl.innerHTML = status.lastStrategy === 'FADE'
-      ? '<span class="strat-badge strat-fade">FADE</span>'
-      : '<span class="strat-badge strat-sniper">SNIPER</span>';
+    stratEl.innerHTML = status.lastStrategy === 'CROSS_OPEN'
+      ? '<span class="strat-badge strat-crossopen">CROSS-OPEN</span>'
+      : '<span class="strat-badge strat-contrarian">CONTRARIAN</span>';
   } else {
     stratEl.textContent = 'Watching';
   }
 
-  if (spike.detected) {
+  if (spike.detected && spike.crossedOpen) {
     bar.className = 'spike-bar spike-active';
     icon.innerHTML = '&#9889;';
     icon.className = 'spike-icon spike-icon-active';
-    label.textContent = spike.strategy === 'FADE'
-      ? `FADE: Spike ${spike.spikeDirection} → Trade ${spike.direction}`
-      : `SPIKE ${spike.direction}`;
+    label.textContent = `CROSS-OPEN: Spike ${spike.spikeDirection} crossed opening`;
     label.className = 'spike-label spike-label-active';
     detail.textContent = spike.reason;
     detail.className = 'spike-detail spike-detail-active';
+  } else if (spike.detected) {
+    bar.className = 'spike-bar';
+    icon.innerHTML = '&#9889;';
+    icon.className = 'spike-icon';
+    label.textContent = `SPIKE ${spike.spikeDirection} (no cross-open, skipping)`;
+    label.className = 'spike-label';
+    detail.textContent = spike.reason;
+    detail.className = 'spike-detail';
   } else {
     bar.className = 'spike-bar';
     icon.innerHTML = '&#9679;';
     icon.className = 'spike-icon';
     label.textContent = 'WATCHING';
     label.className = 'spike-label';
-    detail.textContent = spike.reason || 'Monitoring BTC for spikes...';
+    detail.textContent = spike.reason || 'Monitoring BTC for cross-open spikes...';
     detail.className = 'spike-detail';
   }
 }
@@ -261,7 +276,7 @@ async function updateSpikeLog() {
 
   const spikeEvents = activities.filter(a =>
     a.type.includes('spike') || a.type.includes('trade') || a.type.includes('price_block') ||
-    a.type.includes('fade') || a.type.includes('sniper') || a.type.includes('strategy')
+    a.type.includes('crossopen') || a.type.includes('contrarian') || a.type.includes('strategy')
   );
 
   const panel = document.getElementById('spikeLogPanel');
@@ -269,19 +284,19 @@ async function updateSpikeLog() {
   countEl.textContent = `${spikeEvents.length} events`;
 
   if (spikeEvents.length === 0) {
-    panel.innerHTML = '<div class="empty-state">No strategy events yet. Bot uses FADE (trade against spikes) + SNIPER (trade with late-game BTC lead).</div>';
+    panel.innerHTML = '<div class="empty-state">No strategy events yet. Cross-Open fades spikes that cross opening price. Contrarian buys cheap underdog late in window.</div>';
     return;
   }
 
   panel.innerHTML = spikeEvents.map(a => {
     let cls = getTypeClass(a.type);
     let icon = '';
+    if (a.type.includes('crossopen')) icon = '&#8634; ';
+    if (a.type.includes('contrarian')) icon = '&#127919; ';
     if (a.type === 'spike_detected') icon = '&#9889; ';
     if (a.type.includes('strategy_trade')) icon = '&#128176; ';
     if (a.type === 'trade_success') icon = '&#9989; ';
     if (a.type.includes('price_block')) icon = '&#128683; ';
-    if (a.type.includes('fade')) icon = '&#8634; ';
-    if (a.type.includes('sniper')) icon = '&#127919; ';
 
     return `<div class="activity-item">
       <div class="activity-time">${formatTime(a.timestamp)}</div>
@@ -315,9 +330,9 @@ async function updateTrades() {
   const tbody = document.getElementById('tradeBody');
 
   tbody.innerHTML = trades.map(t => {
-    const stratMatch = (t.pattern || '').match(/\[(FADE|SNIPER)\]/);
+    const stratMatch = (t.pattern || '').match(/\[(CROSS_OPEN|CONTRARIAN)\]/);
     const strat = stratMatch ? stratMatch[1] : '?';
-    const stratCls = strat === 'FADE' ? 'strat-fade' : strat === 'SNIPER' ? 'strat-sniper' : '';
+    const stratCls = strat === 'CROSS_OPEN' ? 'strat-crossopen' : strat === 'CONTRARIAN' ? 'strat-contrarian' : '';
 
     return `<tr>
       <td>${formatTime(t.timestamp)}</td>
