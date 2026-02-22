@@ -79,16 +79,17 @@ All config via `.env` file:
 - Dashboard shows 5-min countdown, token prices, scalp signal status
 
 ## Recent Changes (Feb 22, 2026)
+- **CRITICAL FIX: Live CLOB prices** — Bot was using stale Gamma API prices (~$0.50/$0.50) instead of real-time CLOB API prices. Now fetches live orderbook prices for both UP and DOWN tokens every scan cycle. This was the reason zero trades were happening.
+- **Entry range widened**: $0.85-$0.95 (was $0.88-$0.95) and window 15-120s (was 30-90s)
+- **Confidence threshold**: HIGH at $0.90+ (was $0.92+), MEDIUM at $0.85-$0.89
+- **Price logging**: Dashboard logs now show Gamma vs CLOB prices side-by-side for verification
 - **COMPLETE STRATEGY REBUILD**: Replaced Cross-Open + Contrarian with 5-Min End-of-Window Scalper
-  - Old strategies: Cross-Open Fade + Late Contrarian on 15-min markets → complex, lower win rate
-  - New strategy: Simple scalper buying high-probability tokens ($0.88-$0.95) with 30-90s left → 95% win rate target
+  - New strategy: Simple scalper buying high-probability tokens ($0.85-$0.95) with 15-120s left → 95% win rate target
   - Switched from 15-min to 5-min markets for higher trade frequency
-  - Removed spikeDetector.js — no longer detecting spikes
-  - Created scalpSignal.js — simple time + price check
   - Scanner now uses 5-min slot timestamps
   - KrakenFeed tracks 5-min windows instead of 15-min
   - Dashboard redesigned with green theme, scalp-focused UI
-  - Safety limits updated: $25 daily loss limit, $0.88-$0.95 entry range
+  - Safety limits updated: $25 daily loss limit, $0.85-$0.95 entry range
 
 ## User Preferences
 - BTC only for better quality decisions
