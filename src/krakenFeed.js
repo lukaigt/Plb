@@ -18,19 +18,15 @@ const priceHistory = [];
 const MAX_HISTORY = 600;
 
 const windowOpenPrices = {};
-const MAX_WINDOW_ENTRIES = 20;
+const MAX_WINDOW_ENTRIES = 50;
 
-function get15MinWindowKey(timestamp) {
-  const d = new Date(timestamp);
-  const totalMinutes = d.getUTCHours() * 60 + d.getUTCMinutes();
-  const slotMinutes = Math.floor(totalMinutes / 15) * 15;
-  const slotDate = new Date(d);
-  slotDate.setUTCHours(Math.floor(slotMinutes / 60), slotMinutes % 60, 0, 0);
-  return slotDate.getTime();
+function get5MinWindowKey(timestamp) {
+  const ts = Math.floor(timestamp / 1000);
+  return Math.floor(ts / 300) * 300;
 }
 
 function trackWindowOpenPrice(price, timestamp) {
-  const windowKey = get15MinWindowKey(timestamp);
+  const windowKey = get5MinWindowKey(timestamp);
 
   if (!windowOpenPrices[windowKey]) {
     windowOpenPrices[windowKey] = {
@@ -48,7 +44,7 @@ function trackWindowOpenPrice(price, timestamp) {
 
 function getCurrentWindowOpen() {
   const now = Date.now();
-  const windowKey = get15MinWindowKey(now);
+  const windowKey = get5MinWindowKey(now);
   return windowOpenPrices[windowKey] || null;
 }
 
@@ -56,65 +52,35 @@ function getWindowOpenPrice(windowKey) {
   return windowOpenPrices[windowKey] || null;
 }
 
-function getPriceSecondsAgo(secondsAgo) {
-  const cutoff = Date.now() - (secondsAgo * 1000);
-  const older = priceHistory.filter(p => p.time <= cutoff);
-  if (older.length === 0) return null;
-  return older[older.length - 1].price;
-}
-
-function getSideOfOpen(price, openPrice) {
-  if (price === null || openPrice === null) return null;
-  return price >= openPrice ? 'UP' : 'DOWN';
-}
-
 function getWindowStatus() {
   const now = Date.now();
-  const windowKey = get15MinWindowKey(now);
-  const windowEnd = windowKey + 15 * 60 * 1000;
-  const minutesLeft = (windowEnd - now) / (1000 * 60);
+  const windowKey = get5MinWindowKey(now);
+  const windowEndMs = (windowKey + 300) * 1000;
+  const secondsLeft = Math.max(0, (windowEndMs - now) / 1000);
   const windowOpen = windowOpenPrices[windowKey];
 
   let btcVsOpen = null;
   let btcVsOpenDollars = null;
   let btcVsOpenRaw = null;
   let btcLeadingSide = null;
-  let preSpikeeSide = null;
-  let currentSide = null;
-  let crossedOpen = false;
 
   if (windowOpen && latestPrice) {
     btcVsOpenRaw = latestPrice - windowOpen.openPrice;
     btcVsOpenDollars = Math.abs(btcVsOpenRaw);
     btcVsOpen = btcVsOpenRaw >= 0 ? 'ABOVE' : 'BELOW';
     btcLeadingSide = btcVsOpenRaw >= 0 ? 'UP' : 'DOWN';
-    currentSide = btcLeadingSide;
-
-    const priceAgo90 = getPriceSecondsAgo(90);
-    const priceAgo60 = getPriceSecondsAgo(60);
-    const prePrice = priceAgo90 || priceAgo60;
-
-    if (prePrice) {
-      preSpikeeSide = getSideOfOpen(prePrice, windowOpen.openPrice);
-      if (preSpikeeSide && currentSide && preSpikeeSide !== currentSide) {
-        crossedOpen = true;
-      }
-    }
   }
 
   return {
     windowKey,
-    windowEnd,
-    minutesLeft: Math.max(0, minutesLeft),
+    windowEndMs,
+    secondsLeft: Math.round(secondsLeft * 10) / 10,
     openPrice: windowOpen?.openPrice || null,
     currentPrice: latestPrice,
     btcVsOpen,
     btcVsOpenDollars: btcVsOpenDollars !== null ? btcVsOpenDollars : null,
-    btcLeadingSide,
     btcVsOpenRaw: btcVsOpenRaw,
-    preSpikeeSide,
-    currentSide,
-    crossedOpen
+    btcLeadingSide
   };
 }
 
@@ -263,7 +229,6 @@ function getPriceContext() {
   const change1m = getChangeFromAgo(60);
   const change3m = getChangeFromAgo(180);
   const change5m = getChangeFromAgo(300);
-  const change10m = getChangeFromAgo(600);
 
   const recent30s = priceHistory.filter(p => p.time >= now - 30000);
   let recentHigh = currentPrice;
@@ -278,25 +243,15 @@ function getPriceContext() {
   if (change1m && change1m.changePct > 0.05) direction = 'RISING';
   else if (change1m && change1m.changePct < -0.05) direction = 'FALLING';
 
-  let momentum = 'STABLE';
-  if (change1m && change3m) {
-    const speed1m = Math.abs(change1m.changePct);
-    const speed3m = Math.abs(change3m.changePct / 3);
-    if (speed1m > speed3m * 2) momentum = 'ACCELERATING';
-    else if (speed1m < speed3m * 0.3) momentum = 'DECELERATING';
-  }
-
   return {
     available: true,
     currentPrice,
     bid: latestBid,
     ask: latestAsk,
     direction,
-    momentum,
     change1m: change1m ? { dollars: change1m.change.toFixed(2), percent: change1m.changePct.toFixed(3) } : null,
     change3m: change3m ? { dollars: change3m.change.toFixed(2), percent: change3m.changePct.toFixed(3) } : null,
     change5m: change5m ? { dollars: change5m.change.toFixed(2), percent: change5m.changePct.toFixed(3) } : null,
-    change10m: change10m ? { dollars: change10m.change.toFixed(2), percent: change10m.changePct.toFixed(3) } : null,
     recentVolatility: recentVolatility.toFixed(2),
     historyLength: priceHistory.length,
     connected: isConnected
@@ -312,12 +267,11 @@ function buildPriceText() {
 
   let text = `REAL BTC PRICE (Kraken, live):\n`;
   text += `  Current: $${ctx.currentPrice.toLocaleString()}\n`;
-  text += `  Direction: ${ctx.direction} | Momentum: ${ctx.momentum}\n`;
+  text += `  Direction: ${ctx.direction}\n`;
 
   if (ctx.change1m) text += `  1-min change: $${ctx.change1m.dollars} (${ctx.change1m.percent}%)\n`;
   if (ctx.change3m) text += `  3-min change: $${ctx.change3m.dollars} (${ctx.change3m.percent}%)\n`;
   if (ctx.change5m) text += `  5-min change: $${ctx.change5m.dollars} (${ctx.change5m.percent}%)\n`;
-  if (ctx.change10m) text += `  10-min change: $${ctx.change10m.dollars} (${ctx.change10m.percent}%)\n`;
 
   text += `  30s volatility: $${ctx.recentVolatility}`;
 
@@ -332,5 +286,5 @@ module.exports = {
   getCurrentWindowOpen,
   getWindowOpenPrice,
   getWindowStatus,
-  get15MinWindowKey
+  get5MinWindowKey
 };

@@ -2,9 +2,6 @@ const logger = require('./logger');
 
 const GAMMA_API = 'https://gamma-api.polymarket.com';
 
-const COINS = ['btc'];
-const COIN_NAMES = { btc: 'BTC' };
-
 async function fetchWithTimeout(url, options = {}, timeout = 15000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -18,40 +15,37 @@ async function fetchWithTimeout(url, options = {}, timeout = 15000) {
   }
 }
 
-function get15MinSlotTimestamps() {
+function get5MinSlotTimestamps() {
   const now = new Date();
+  const nowUnix = Math.floor(now.getTime() / 1000);
+  const slotSeconds = 300;
+  const currentSlot = Math.floor(nowUnix / slotSeconds) * slotSeconds;
   const timestamps = [];
 
-  for (let offset = -2; offset <= 2; offset++) {
-    const t = new Date(now);
-    const totalMinutes = t.getUTCHours() * 60 + t.getUTCMinutes();
-    const slotMinutes = Math.floor(totalMinutes / 15) * 15 + offset * 15;
-
-    const slotDate = new Date(t);
-    slotDate.setUTCHours(Math.floor(slotMinutes / 60) % 24, slotMinutes % 60, 0, 0);
-    if (slotMinutes < 0) slotDate.setUTCDate(slotDate.getUTCDate() - 1);
-    if (slotMinutes >= 1440) slotDate.setUTCDate(slotDate.getUTCDate() + 1);
-
-    timestamps.push(Math.floor(slotDate.getTime() / 1000));
+  for (let offset = -2; offset <= 3; offset++) {
+    timestamps.push(currentSlot + offset * slotSeconds);
   }
 
   return timestamps;
 }
 
+function getSecondsLeftInWindow(endTimestamp) {
+  const now = Math.floor(Date.now() / 1000);
+  return Math.max(0, endTimestamp - now);
+}
+
 async function scanMarkets() {
-  logger.addActivity('scan', { message: 'Scanning for BTC 15-min Up/Down market...' });
+  logger.addActivity('scan', { message: 'Scanning for BTC 5-min Up/Down market...' });
 
   const markets = [];
-  const timestamps = get15MinSlotTimestamps();
+  const timestamps = get5MinSlotTimestamps();
 
-  const slugsToTry = [];
-  for (const coin of COINS) {
-    for (const ts of timestamps) {
-      slugsToTry.push({ coin, slug: `${coin}-updown-15m-${ts}`, timestamp: ts });
-    }
-  }
+  const slugsToTry = timestamps.map(ts => ({
+    slug: `btc-updown-5m-${ts}`,
+    timestamp: ts
+  }));
 
-  const fetchPromises = slugsToTry.map(async ({ coin, slug, timestamp }) => {
+  const fetchPromises = slugsToTry.map(async ({ slug, timestamp }) => {
     try {
       const res = await fetchWithTimeout(`${GAMMA_API}/events?slug=${slug}`);
       if (!res.ok) return null;
@@ -64,11 +58,11 @@ async function scanMarkets() {
       const market = event.markets?.[0];
       if (!market) return null;
 
-      const endDate = new Date(market.endDate || event.endDate);
-      const now = new Date();
-      const minutesLeft = (endDate - now) / (1000 * 60);
+      const windowEnd = (timestamp + 300) * 1000;
+      const now = Date.now();
+      const secondsLeft = Math.max(0, (windowEnd - now) / 1000);
 
-      if (minutesLeft <= 0) return null;
+      if (secondsLeft <= 0) return null;
 
       let tokenIds = [];
       if (market.clobTokenIds) {
@@ -99,9 +93,11 @@ async function scanMarkets() {
       return {
         id: market.conditionId || market.id,
         question: market.question || event.title,
-        coin: COIN_NAMES[coin],
-        endTime: endDate,
-        minutesLeft: Math.round(minutesLeft),
+        coin: 'BTC',
+        endTime: new Date(windowEnd),
+        windowStartTs: timestamp,
+        windowEndTs: timestamp + 300,
+        secondsLeft: Math.round(secondsLeft),
         tokens,
         outcomePrices,
         slug: market.slug || slug,
@@ -113,7 +109,6 @@ async function scanMarkets() {
         active: true
       };
     } catch (err) {
-      logger.addActivity('scan_debug', { message: `Slug ${slug} fetch error: ${err.message}` });
       return null;
     }
   });
@@ -123,24 +118,20 @@ async function scanMarkets() {
     if (result) markets.push(result);
   }
 
-  const bestPerCoin = {};
-  for (const market of markets) {
-    const existing = bestPerCoin[market.coin];
-    if (!existing || (market.minutesLeft < existing.minutesLeft && market.minutesLeft > 1)) {
-      bestPerCoin[market.coin] = market;
-    }
-  }
+  const activeMarkets = markets
+    .filter(m => m.secondsLeft > 0 && m.secondsLeft <= 300)
+    .sort((a, b) => a.secondsLeft - b.secondsLeft);
 
-  const finalMarkets = Object.values(bestPerCoin).filter(m => m.minutesLeft >= 1 && m.minutesLeft <= 14);
+  const best = activeMarkets[0] || null;
 
   logger.addActivity('scan_result', {
-    message: finalMarkets.length > 0
-      ? `Found BTC market: ${finalMarkets[0].question} (${finalMarkets[0].minutesLeft}min left)`
-      : 'No active BTC 15-min market found',
-    count: finalMarkets.length
+    message: best
+      ? `Found 5-min market: ${best.question} (${best.secondsLeft}s left)`
+      : 'No active BTC 5-min market found',
+    count: activeMarkets.length
   });
 
-  return finalMarkets;
+  return best;
 }
 
-module.exports = { scanMarkets, get15MinSlotTimestamps };
+module.exports = { scanMarkets, get5MinSlotTimestamps };

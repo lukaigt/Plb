@@ -1,170 +1,18 @@
 const { scanMarkets } = require('./scanner');
-const { fetchFullMarketData } = require('./dataFetcher');
+const { getMarketPrice } = require('./dataFetcher');
 const { executeTrade } = require('./trader');
 const safety = require('./safety');
 const logger = require('./logger');
 const redeemer = require('./redeemer');
 const positionScanner = require('./positionScanner');
 const krakenFeed = require('./krakenFeed');
-const spikeDetector = require('./spikeDetector');
-
-const MAX_ENTRY_PRICE = parseFloat(process.env.MAX_ENTRY_PRICE) || 0.40;
-const MIN_ENTRY_PRICE = parseFloat(process.env.MIN_ENTRY_PRICE) || 0.10;
-const CONTRARIAN_MIN_LEAD = parseFloat(process.env.CONTRARIAN_MIN_LEAD) || 20;
-const CONTRARIAN_MAX_LEAD = parseFloat(process.env.CONTRARIAN_MAX_LEAD) || 60;
-const CONTRARIAN_MAX_MINUTES = parseFloat(process.env.CONTRARIAN_MAX_MINUTES) || 5;
-const CONTRARIAN_MIN_MINUTES = parseFloat(process.env.CONTRARIAN_MIN_MINUTES) || 2;
+const scalpSignal = require('./scalpSignal');
 
 let isRunning = false;
 let loopInterval = null;
 let lastScanTime = null;
-let lastSpikeStatus = null;
-let lastStrategy = null;
-
-async function tryCrossOpenFade(spike, markets) {
-  if (!spike.detected) return null;
-  if (!spike.crossedOpen) return null;
-
-  if (spike.confidence === 'LOW') {
-    logger.addActivity('crossopen_skip', {
-      message: `Spike ${spike.spikeDirection} crossed opening but confidence LOW (momentum: ${spike.momentum}) — skipping.`,
-      coin: 'BTC'
-    });
-    return null;
-  }
-
-  if (!spike.preSpikeeSide) {
-    logger.addActivity('crossopen_skip', {
-      message: `Spike crossed opening but pre-spike side unknown (insufficient price history). Skipping.`,
-      coin: 'BTC'
-    });
-    return null;
-  }
-
-  const market = markets[0];
-  if (!market) return null;
-
-  const windowKey = safety.getWindowKey(market.endTime);
-  const alreadyTraded = safety.hasTraded('BTC', windowKey);
-
-  if (alreadyTraded) {
-    const prevTrade = safety.getWindowTrade('BTC', windowKey);
-    if (!prevTrade || prevTrade.reversed) return null;
-
-    const isSameDir = prevTrade.direction === spike.direction;
-    if (isSameDir) return null;
-
-    if (prevTrade.direction !== 'UNKNOWN' && spike.magnitude < prevTrade.magnitude) return null;
-  }
-
-  const marketData = await fetchFullMarketData(market);
-  const action = spike.action;
-
-  let entryPrice = null;
-  if (action === 'BUY_YES') {
-    entryPrice = marketData.yesToken.price?.mid;
-  } else if (action === 'BUY_NO') {
-    entryPrice = marketData.noToken.price?.mid;
-  }
-
-  if (!entryPrice) return null;
-
-  if (entryPrice < MIN_ENTRY_PRICE || entryPrice > MAX_ENTRY_PRICE) {
-    logger.addActivity('crossopen_price_block', {
-      message: `CROSS-OPEN blocked: ${action} at $${entryPrice.toFixed(3)} outside range $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE}. BTC was ${spike.preSpikeeSide} before spike, now on other side.`,
-      coin: 'BTC'
-    });
-    return null;
-  }
-
-  return {
-    strategy: 'CROSS_OPEN',
-    action,
-    entryPrice,
-    marketData,
-    market,
-    windowKey,
-    isReversal: alreadyTraded,
-    confidence: spike.confidence,
-    reason: `CROSS-OPEN: BTC was ${spike.preSpikeeSide} opening, spiked ${spike.spikeDirection} $${spike.magnitude?.toFixed(0)} crossing opening price → bet ${spike.preSpikeeSide} (reversion). Entry: $${entryPrice.toFixed(3)}. Momentum: ${spike.momentum}.`
-  };
-}
-
-async function tryLateContrarian(markets) {
-  const windowStatus = krakenFeed.getWindowStatus();
-
-  if (!windowStatus.openPrice || !windowStatus.currentPrice || !windowStatus.btcLeadingSide) return null;
-  if (windowStatus.minutesLeft > CONTRARIAN_MAX_MINUTES || windowStatus.minutesLeft < CONTRARIAN_MIN_MINUTES) return null;
-  if (windowStatus.btcVsOpenDollars === null || windowStatus.btcVsOpenDollars < CONTRARIAN_MIN_LEAD || windowStatus.btcVsOpenDollars > CONTRARIAN_MAX_LEAD) return null;
-
-  const market = markets[0];
-  if (!market) return null;
-
-  const windowKey = safety.getWindowKey(market.endTime);
-  const alreadyTraded = safety.hasTraded('BTC', windowKey);
-
-  if (alreadyTraded) {
-    const prevTrade = safety.getWindowTrade('BTC', windowKey);
-    if (prevTrade && prevTrade.reversed) return null;
-
-    const losingDir = windowStatus.btcLeadingSide === 'UP' ? 'DOWN' : 'UP';
-    const prevDir = prevTrade?.direction;
-    if (prevDir && prevDir !== 'UNKNOWN' && prevDir === losingDir) return null;
-  }
-
-  const losingSide = windowStatus.btcLeadingSide === 'UP' ? 'DOWN' : 'UP';
-  const action = losingSide === 'UP' ? 'BUY_YES' : 'BUY_NO';
-
-  const marketData = await fetchFullMarketData(market);
-
-  let entryPrice = null;
-  if (action === 'BUY_YES') {
-    entryPrice = marketData.yesToken.price?.mid;
-  } else if (action === 'BUY_NO') {
-    entryPrice = marketData.noToken.price?.mid;
-  }
-
-  if (!entryPrice) return null;
-
-  if (entryPrice < MIN_ENTRY_PRICE || entryPrice > MAX_ENTRY_PRICE) {
-    logger.addActivity('contrarian_price_block', {
-      message: `CONTRARIAN blocked: ${action} at $${entryPrice.toFixed(3)} outside range $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE}. BTC leads by $${windowStatus.btcVsOpenDollars.toFixed(0)} (${windowStatus.btcLeadingSide}) with ${windowStatus.minutesLeft.toFixed(1)}min left.`,
-      coin: 'BTC'
-    });
-    return null;
-  }
-
-  let confidence = 'MEDIUM';
-  if (windowStatus.btcVsOpenDollars <= 35 && windowStatus.minutesLeft >= 3 && entryPrice <= 0.30) {
-    confidence = 'HIGH';
-  }
-
-  return {
-    strategy: 'CONTRARIAN',
-    action,
-    entryPrice,
-    marketData,
-    market,
-    windowKey,
-    isReversal: alreadyTraded,
-    confidence,
-    reason: `CONTRARIAN: BTC leads ${windowStatus.btcLeadingSide} by $${windowStatus.btcVsOpenDollars.toFixed(0)} with ${windowStatus.minutesLeft.toFixed(1)}min left → buy underdog ${losingSide} at $${entryPrice.toFixed(3)} (small lead, can flip).`
-  };
-}
-
-function shouldCheckStrategies(spike, windowStatus) {
-  if (spike.detected && spike.crossedOpen) return true;
-
-  if (windowStatus.openPrice &&
-      windowStatus.btcVsOpenDollars >= CONTRARIAN_MIN_LEAD &&
-      windowStatus.btcVsOpenDollars <= CONTRARIAN_MAX_LEAD &&
-      windowStatus.minutesLeft <= CONTRARIAN_MAX_MINUTES &&
-      windowStatus.minutesLeft >= CONTRARIAN_MIN_MINUTES) {
-    return true;
-  }
-
-  return false;
-}
+let lastSignalStatus = null;
+let consecutiveErrors = 0;
 
 async function runOnce() {
   if (!isRunning) return;
@@ -178,53 +26,62 @@ async function runOnce() {
       return;
     }
 
-    const spike = spikeDetector.detect();
-    lastSpikeStatus = spike;
-
     const windowStatus = krakenFeed.getWindowStatus();
+    const secondsLeft = windowStatus.secondsLeft;
 
-    if (!shouldCheckStrategies(spike, windowStatus)) {
-      const windowInfo = windowStatus.openPrice
-        ? ` | vs Open: ${windowStatus.btcVsOpen || '?'} $${windowStatus.btcVsOpenDollars?.toFixed(0) || '?'} | ${windowStatus.minutesLeft?.toFixed(1) || '?'}min left`
-        : '';
-      logger.addActivity('spike_watch', {
-        message: `Watching BTC: $${spike.btcPrice?.toLocaleString() || '?'} | ${spike.direction || 'N/A'} | ${spike.reason}${windowInfo}`,
-        coin: 'BTC'
+    const scalpConfig = scalpSignal.getConfig();
+
+    if (secondsLeft > scalpConfig.maxSeconds + 30) {
+      logger.addActivity('scalp_watch', {
+        message: `Watching: ${Math.round(secondsLeft)}s left in window | BTC: $${windowStatus.currentPrice?.toLocaleString() || '?'} | ` +
+          (windowStatus.btcLeadingSide
+            ? `Lead: ${windowStatus.btcLeadingSide} $${windowStatus.btcVsOpenDollars?.toFixed(0) || '?'}`
+            : 'Waiting for window data...')
       });
 
-      try {
-        await redeemer.checkAndRedeem();
-      } catch (err) {
-        logger.addActivity('redeemer_error', { message: `Redeem check error: ${err.message}` });
-      }
+      try { await redeemer.checkAndRedeem(); } catch (err) {}
+      consecutiveErrors = 0;
       return;
     }
 
-    const markets = await scanMarkets();
+    const market = await scanMarkets();
 
-    if (markets.length === 0) {
-      logger.addActivity('bot', { message: 'Signal detected but no BTC market available. Waiting...' });
+    if (!market) {
+      logger.addActivity('scalp_watch', {
+        message: `No active 5-min market found. ${Math.round(secondsLeft)}s left in current window.`
+      });
+      consecutiveErrors = 0;
       return;
     }
 
-    let signal = null;
+    if (market.outcomePrices) {
+      const prices = typeof market.outcomePrices === 'string'
+        ? JSON.parse(market.outcomePrices)
+        : market.outcomePrices;
 
-    if (spike.detected && spike.crossedOpen) {
-      signal = await tryCrossOpenFade(spike, markets);
+      market.tokens.forEach((t, i) => {
+        t.price = prices[i] ? parseFloat(prices[i]) : t.price;
+      });
     }
 
-    if (!signal) {
-      signal = await tryLateContrarian(markets);
-    }
+    const signal = scalpSignal.evaluate(market);
+    lastSignalStatus = signal;
 
-    if (!signal) {
-      if (spike.detected && spike.crossedOpen) {
-        logger.addActivity('skip', { message: `Cross-open spike detected but no valid entry found (price outside range or already traded this window)` });
-      }
+    if (!signal.ready) {
+      logger.addActivity('scalp_watch', {
+        message: `${signal.reason} | ${market.secondsLeft}s left`
+      });
+      consecutiveErrors = 0;
       return;
     }
 
-    lastStrategy = signal.strategy;
+    const windowKey = safety.getWindowKey(market.endTime);
+    if (safety.hasTraded('BTC', windowKey)) {
+      logger.addActivity('scalp_skip', {
+        message: `Already traded this window (${windowKey}). Skipping.`
+      });
+      return;
+    }
 
     const canStillTrade = safety.canTrade();
     if (!canStillTrade.allowed) {
@@ -238,59 +95,76 @@ async function runOnce() {
       return;
     }
 
+    const isYes = signal.action === 'BUY_YES';
+    const token = isYes
+      ? market.tokens.find(t => (t.outcome || '').toLowerCase() === 'up' || (t.outcome || '').toLowerCase() === 'yes') || market.tokens[0]
+      : market.tokens.find(t => (t.outcome || '').toLowerCase() === 'down' || (t.outcome || '').toLowerCase() === 'no') || market.tokens[1];
+
+    const otherToken = isYes
+      ? market.tokens.find(t => (t.outcome || '').toLowerCase() === 'down' || (t.outcome || '').toLowerCase() === 'no') || market.tokens[1]
+      : market.tokens.find(t => (t.outcome || '').toLowerCase() === 'up' || (t.outcome || '').toLowerCase() === 'yes') || market.tokens[0];
+
+    const marketData = {
+      market,
+      yesToken: {
+        ...market.tokens.find(t => (t.outcome || '').toLowerCase() === 'up' || (t.outcome || '').toLowerCase() === 'yes') || market.tokens[0],
+        price: { buy: signal.upPrice, sell: null, mid: signal.upPrice }
+      },
+      noToken: {
+        ...market.tokens.find(t => (t.outcome || '').toLowerCase() === 'down' || (t.outcome || '').toLowerCase() === 'no') || market.tokens[1],
+        price: { buy: signal.downPrice, sell: null, mid: signal.downPrice }
+      },
+      fetchedAt: new Date().toISOString()
+    };
+
     const decision = {
       action: signal.action,
       confidence: signal.confidence,
-      pattern: `[${signal.strategy}] ${signal.reason}`,
+      pattern: `[SCALP] ${signal.reason}`,
       reasoning: signal.reason
     };
 
-    logger.addActivity('strategy_trade', {
-      message: `${signal.strategy} ${signal.isReversal ? '(REVERSAL) ' : ''}TRADE: ${signal.action} at $${signal.entryPrice.toFixed(3)} | ${signal.reason}`,
+    logger.addActivity('scalp_trade', {
+      message: `SCALP TRADE: ${signal.action} at $${signal.entryPrice.toFixed(3)} | ${signal.secondsLeft}s left | $${tradeSize} bet | Payout: ${signal.payout}x`,
       coin: 'BTC',
-      strategy: signal.strategy
+      strategy: 'SCALP'
     });
 
-    const trade = await executeTrade(decision, signal.marketData, tradeSize);
+    const trade = await executeTrade(decision, marketData, tradeSize);
     if (trade && trade.success) {
       safety.recordTrade(tradeSize);
-
-      const windowKey = signal.windowKey;
-      const tradeDir = signal.action === 'BUY_YES' ? 'UP' : 'DOWN';
-      if (signal.isReversal) {
-        safety.markReversed('BTC', windowKey);
-      } else {
-        safety.markTraded('BTC', windowKey, tradeDir, spike.magnitude || 0);
-      }
+      safety.markTraded('BTC', windowKey, signal.side, 0);
 
       logger.addActivity('trade_success', {
-        message: `${signal.strategy} ${signal.isReversal ? 'REVERSAL ' : ''}PLACED: ${signal.action} for $${tradeSize} at $${trade.price?.toFixed(3)} | ${signal.reason}`,
+        message: `SCALP PLACED: ${signal.action} $${tradeSize} at $${trade.price?.toFixed(3)} | ${signal.secondsLeft}s left | Window: ${market.question}`,
         coin: 'BTC',
-        strategy: signal.strategy
+        strategy: 'SCALP'
       });
 
       redeemer.addPendingRedemption({
         tradeId: trade.tradeId,
         tokenId: trade.tokenId,
-        conditionId: signal.market.id,
-        negRisk: signal.market.negRisk,
-        marketEndTime: signal.market.endTime,
+        conditionId: market.id,
+        negRisk: market.negRisk,
+        marketEndTime: market.endTime,
         action: trade.action,
         side: trade.side,
         size: trade.size,
         price: trade.price,
-        question: signal.market.question
+        question: market.question
       });
+
+      consecutiveErrors = 0;
     }
   } catch (err) {
+    consecutiveErrors++;
     logger.addActivity('error', { message: `Bot error: ${err.message}` });
+    if (consecutiveErrors > 10) {
+      logger.addActivity('error', { message: `${consecutiveErrors} consecutive errors. Check configuration.` });
+    }
   }
 
-  try {
-    await redeemer.checkAndRedeem();
-  } catch (err) {
-    logger.addActivity('redeemer_error', { message: `Redeem check error: ${err.message}` });
-  }
+  try { await redeemer.checkAndRedeem(); } catch (err) {}
 }
 
 async function start() {
@@ -302,14 +176,13 @@ async function start() {
   isRunning = true;
   safety.reload();
 
-  const interval = (parseInt(process.env.SCAN_INTERVAL) || 10) * 1000;
-  const spikeConfig = spikeDetector.getConfig();
+  const interval = (parseInt(process.env.SCAN_INTERVAL) || 5) * 1000;
+  const config = scalpSignal.getConfig();
 
   logger.addActivity('bot', {
-    message: `Bot started — DUAL STRATEGY MODE.\n` +
-      `  Strategy 1: CROSS-OPEN FADE — only fade spikes that cross the opening price\n` +
-      `  Strategy 2: LATE CONTRARIAN — buy cheap underdog when lead is small ($${CONTRARIAN_MIN_LEAD}-$${CONTRARIAN_MAX_LEAD}) with ${CONTRARIAN_MAX_MINUTES}min left\n` +
-      `  Scan: ${interval / 1000}s | Entry: $${MIN_ENTRY_PRICE}-$${MAX_ENTRY_PRICE} | Max trade: $${safety.maxTradeSize}\n` +
+    message: `Bot started — 5-MIN SCALP MODE\n` +
+      `  Strategy: Buy winning side at $${config.minEntry}-$${config.maxEntry} when ${config.minSeconds}-${config.maxSeconds}s left\n` +
+      `  Scan: every ${interval / 1000}s | Trade size: $${safety.maxTradeSize}\n` +
       `  Stops after ${safety.maxDailyLosses} losses or $${safety.dailyLossLimit} lost`
   });
 
@@ -345,10 +218,10 @@ function getStatus() {
   return {
     isRunning,
     lastScanTime,
-    lastSpikeStatus,
-    lastStrategy,
+    lastSignalStatus,
     windowStatus: krakenFeed.getWindowStatus(),
-    safety: safety.getStatus()
+    safety: safety.getStatus(),
+    config: scalpSignal.getConfig()
   };
 }
 

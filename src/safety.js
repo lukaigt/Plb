@@ -2,7 +2,7 @@ const logger = require('./logger');
 
 class SafetySystem {
   constructor() {
-    this.dailyLossLimit = parseFloat(process.env.DAILY_LOSS_LIMIT) || 15;
+    this.dailyLossLimit = parseFloat(process.env.DAILY_LOSS_LIMIT) || 25;
     this.maxTradeSize = parseFloat(process.env.MAX_TRADE_SIZE) || 5;
     this.maxDailyLosses = parseInt(process.env.MAX_DAILY_LOSSES) || 6;
     this.killSwitch = false;
@@ -11,12 +11,13 @@ class SafetySystem {
     this.dailyTradeCount = 0;
     this.dailyWinCount = 0;
     this.dailyLossCount = 0;
+    this.dailyProfit = 0;
     this.lastResetDate = new Date().toDateString();
     this.tradedWindows = {};
   }
 
   reload() {
-    this.dailyLossLimit = parseFloat(process.env.DAILY_LOSS_LIMIT) || 15;
+    this.dailyLossLimit = parseFloat(process.env.DAILY_LOSS_LIMIT) || 25;
     this.maxTradeSize = parseFloat(process.env.MAX_TRADE_SIZE) || 5;
     this.maxDailyLosses = parseInt(process.env.MAX_DAILY_LOSSES) || 6;
   }
@@ -29,6 +30,7 @@ class SafetySystem {
       this.dailyTradeCount = 0;
       this.dailyWinCount = 0;
       this.dailyLossCount = 0;
+      this.dailyProfit = 0;
       this.tradedWindows = {};
       this.lastResetDate = today;
       logger.addActivity('safety', { message: 'Daily counters reset for new day' });
@@ -47,7 +49,7 @@ class SafetySystem {
     }
 
     if (this.dailyLossCount >= this.maxDailyLosses) {
-      return { allowed: false, reason: `Max daily losing trades reached: ${this.dailyLossCount} / ${this.maxDailyLosses} losses. Bot stops to protect your money.` };
+      return { allowed: false, reason: `Max daily losing trades reached: ${this.dailyLossCount} / ${this.maxDailyLosses} losses` };
     }
 
     return { allowed: true, reason: 'All checks passed' };
@@ -60,26 +62,13 @@ class SafetySystem {
 
   getWindowTrade(coin, windowKey) {
     const key = `${coin}_${windowKey}`;
-    const entry = this.tradedWindows[key];
-    if (!entry) return null;
-    if (entry === true) {
-      return { direction: 'UNKNOWN', magnitude: 0, reversed: false };
-    }
-    return entry;
+    return this.tradedWindows[key] || null;
   }
 
   markTraded(coin, windowKey, direction, magnitude) {
     const key = `${coin}_${windowKey}`;
-    this.tradedWindows[key] = { direction, magnitude: magnitude || 0, reversed: false };
-    logger.addActivity('safety', { message: `Marked ${coin} as traded for window ${windowKey} (${direction}, $${(magnitude || 0).toFixed(0)} spike)` });
-  }
-
-  markReversed(coin, windowKey) {
-    const key = `${coin}_${windowKey}`;
-    if (this.tradedWindows[key]) {
-      this.tradedWindows[key].reversed = true;
-      logger.addActivity('safety', { message: `Marked ${coin} reversal trade for window ${windowKey}` });
-    }
+    this.tradedWindows[key] = { direction, magnitude: magnitude || 0 };
+    logger.addActivity('safety', { message: `Marked ${coin} as traded for window ${windowKey} (${direction})` });
   }
 
   getWindowKey(endTime) {
@@ -90,24 +79,16 @@ class SafetySystem {
 
   getTradeSize(confidence) {
     this.resetDailyIfNeeded();
-
-    let size = this.maxTradeSize;
-    if (confidence === 'MEDIUM') {
-      size = this.maxTradeSize * 0.5;
-    } else if (confidence === 'HIGH') {
-      size = this.maxTradeSize;
-    } else {
-      return 0;
-    }
-
-    return Math.max(0, parseFloat(size.toFixed(2)));
+    if (confidence === 'HIGH') return this.maxTradeSize;
+    if (confidence === 'MEDIUM') return this.maxTradeSize;
+    return 0;
   }
 
   recordTrade(amount) {
     this.dailyTradeCount++;
     this.dailySpent += Math.abs(amount);
     logger.addActivity('safety', {
-      message: `Trade placed: $${Math.abs(amount).toFixed(2)} | Today: ${this.dailyTradeCount} trades, $${this.dailySpent.toFixed(2)} spent, ${this.dailyWinCount}W/${this.dailyLossCount}L`
+      message: `Trade #${this.dailyTradeCount}: $${Math.abs(amount).toFixed(2)} | Today: ${this.dailyWinCount}W/${this.dailyLossCount}L | Spent: $${this.dailySpent.toFixed(2)}`
     });
   }
 
@@ -122,8 +103,9 @@ class SafetySystem {
 
   recordWin(amount) {
     this.dailyWinCount++;
+    this.dailyProfit += Math.abs(amount);
     logger.addActivity('safety', {
-      message: `WIN #${this.dailyWinCount}: +$${Math.abs(amount).toFixed(2)} | Record: ${this.dailyWinCount}W/${this.dailyLossCount}L`
+      message: `WIN #${this.dailyWinCount}: +$${Math.abs(amount).toFixed(2)} | Record: ${this.dailyWinCount}W/${this.dailyLossCount}L | Net: $${(this.dailyProfit - this.dailyLoss).toFixed(2)}`
     });
   }
 
@@ -145,6 +127,7 @@ class SafetySystem {
 
   getStatus() {
     this.resetDailyIfNeeded();
+    const netPnL = this.dailyProfit - this.dailyLoss;
     return {
       killSwitch: this.killSwitch,
       dailyLoss: this.dailyLoss.toFixed(2),
@@ -154,6 +137,8 @@ class SafetySystem {
       dailyTradeCount: this.dailyTradeCount,
       dailyWinCount: this.dailyWinCount,
       dailyLossCount: this.dailyLossCount,
+      dailyProfit: this.dailyProfit.toFixed(2),
+      dailyNetPnL: netPnL.toFixed(2),
       maxDailyLosses: this.maxDailyLosses,
       maxTradeSize: this.maxTradeSize.toFixed(2),
       remainingBudget: Math.max(0, this.dailyLossLimit - this.dailyLoss).toFixed(2),

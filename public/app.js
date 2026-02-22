@@ -22,24 +22,16 @@ function formatTime(iso) {
 }
 
 function getTypeClass(type) {
-  if (type.includes('crossopen')) return 'type-crossopen';
-  if (type.includes('spike')) return 'type-spike';
-  if (type.includes('contrarian')) return 'type-contrarian';
-  if (type.includes('strategy')) return 'type-strategy';
-  if (type.includes('kraken')) return 'type-kraken';
-  if (type.includes('price_block')) return 'type-price-block';
-  if (type.includes('scan')) return 'type-scan';
+  if (type.includes('scalp_signal')) return 'type-scalp-signal';
+  if (type.includes('scalp_trade')) return 'type-trade';
+  if (type.includes('scalp')) return 'type-scalp';
   if (type.includes('trade')) return 'type-trade';
   if (type.includes('error')) return 'type-error';
   if (type.includes('safety') || type.includes('skip')) return 'type-safety';
+  if (type.includes('scan')) return 'type-scan';
+  if (type.includes('kraken')) return 'type-kraken';
   if (type.includes('redeem')) return 'type-redeem';
   return 'type-bot';
-}
-
-function getActionClass(action) {
-  if (action === 'BUY_YES') return 'action-buy-yes';
-  if (action === 'BUY_NO') return 'action-buy-no';
-  return 'action-skip';
 }
 
 function getResultBadge(result) {
@@ -63,12 +55,6 @@ function directionBadge(dir) {
   return '<span class="dir-badge dir-flat">FLAT</span>';
 }
 
-function momentumBadge(mom) {
-  if (mom === 'ACCELERATING') return '<span class="mom-badge mom-accel">ACCELERATING</span>';
-  if (mom === 'DECELERATING') return '<span class="mom-badge mom-decel">DECELERATING</span>';
-  return '<span class="mom-badge mom-stable">STABLE</span>';
-}
-
 async function updateBtcTicker() {
   const data = await api('/btc-price');
   if (!data) return;
@@ -79,7 +65,6 @@ async function updateBtcTicker() {
   if (!data.available) {
     document.getElementById('btcPrice').textContent = '--';
     document.getElementById('btcDirection').innerHTML = '<span class="dir-badge dir-flat">NO DATA</span>';
-    document.getElementById('btcMomentum').innerHTML = '';
     dot.className = 'kraken-dot dot-red';
     text.textContent = data.connected ? 'Waiting...' : 'Disconnected';
     return;
@@ -87,12 +72,10 @@ async function updateBtcTicker() {
 
   document.getElementById('btcPrice').textContent = '$' + data.currentPrice.toLocaleString();
   document.getElementById('btcDirection').innerHTML = directionBadge(data.direction);
-  document.getElementById('btcMomentum').innerHTML = momentumBadge(data.momentum);
 
   document.getElementById('btcChange1m').innerHTML = formatChangeVal(data.change1m);
   document.getElementById('btcChange3m').innerHTML = formatChangeVal(data.change3m);
   document.getElementById('btcChange5m').innerHTML = formatChangeVal(data.change5m);
-  document.getElementById('btcChange10m').innerHTML = formatChangeVal(data.change10m);
   document.getElementById('btcVolatility').textContent = data.recentVolatility ? '$' + data.recentVolatility : '--';
 
   dot.className = 'kraken-dot dot-green';
@@ -116,20 +99,17 @@ async function updateWindowBar() {
   const openEl = document.getElementById('windowOpen');
   const leadEl = document.getElementById('windowLead');
   const sideEl = document.getElementById('windowSide');
-  const crossedEl = document.getElementById('windowCrossed');
   const bar = document.getElementById('windowBar');
 
-  if (data.minutesLeft !== undefined && data.minutesLeft !== null) {
-    const min = Math.floor(data.minutesLeft);
-    const sec = Math.floor((data.minutesLeft - min) * 60);
+  if (data.secondsLeft !== undefined && data.secondsLeft !== null) {
+    const min = Math.floor(data.secondsLeft / 60);
+    const sec = Math.floor(data.secondsLeft % 60);
     timerEl.textContent = `${min}:${String(sec).padStart(2, '0')} left`;
 
-    if (data.crossedOpen) {
-      bar.className = 'window-bar window-crossopen';
-    } else if (data.minutesLeft <= 5 && data.btcVsOpenDollars >= 20 && data.btcVsOpenDollars <= 60) {
-      bar.className = 'window-bar window-contrarian-ready';
-    } else if (data.minutesLeft <= 5) {
-      bar.className = 'window-bar window-late';
+    if (data.secondsLeft <= 90 && data.secondsLeft > 0) {
+      bar.className = 'window-bar window-scalp-zone';
+    } else if (data.secondsLeft <= 120) {
+      bar.className = 'window-bar window-approaching';
     } else {
       bar.className = 'window-bar';
     }
@@ -159,57 +139,53 @@ async function updateWindowBar() {
   } else {
     sideEl.textContent = '--';
   }
-
-  if (data.crossedOpen) {
-    crossedEl.innerHTML = '<span class="badge badge-win">YES</span>';
-  } else {
-    crossedEl.innerHTML = '<span class="badge badge-failed">NO</span>';
-  }
 }
 
-async function updateSpikeBar() {
+async function updateScalpBar() {
   const status = await api('/status');
-  if (!status || !status.lastSpikeStatus) return;
+  if (!status) return;
 
-  const spike = status.lastSpikeStatus;
-  const icon = document.getElementById('spikeIcon');
-  const label = document.getElementById('spikeLabel');
-  const detail = document.getElementById('spikeDetail');
-  const bar = document.getElementById('spikeBar');
+  const signal = status.lastSignalStatus;
+  const icon = document.getElementById('scalpIcon');
+  const label = document.getElementById('scalpLabel');
+  const detail = document.getElementById('scalpDetail');
+  const bar = document.getElementById('scalpBar');
+  const config = document.getElementById('scalpConfig');
 
-  const stratEl = document.getElementById('activeStrategy');
-  if (status.lastStrategy) {
-    stratEl.innerHTML = status.lastStrategy === 'CROSS_OPEN'
-      ? '<span class="strat-badge strat-crossopen">CROSS-OPEN</span>'
-      : '<span class="strat-badge strat-contrarian">CONTRARIAN</span>';
-  } else {
-    stratEl.textContent = 'Watching';
+  const upEl = document.getElementById('upTokenPrice');
+  const downEl = document.getElementById('downTokenPrice');
+
+  if (signal) {
+    if (signal.upPrice !== undefined && signal.upPrice !== null) {
+      upEl.textContent = '$' + signal.upPrice.toFixed(3);
+      upEl.className = 'window-value ' + (signal.upPrice >= 0.88 ? 'positive' : '');
+    }
+    if (signal.downPrice !== undefined && signal.downPrice !== null) {
+      downEl.textContent = '$' + signal.downPrice.toFixed(3);
+      downEl.className = 'window-value ' + (signal.downPrice >= 0.88 ? 'positive' : '');
+    }
   }
 
-  if (spike.detected && spike.crossedOpen) {
-    bar.className = 'spike-bar spike-active';
+  if (status.config) {
+    config.textContent = `Entry: $${status.config.minEntry}-$${status.config.maxEntry} | Window: ${status.config.minSeconds}-${status.config.maxSeconds}s`;
+  }
+
+  if (signal && signal.ready) {
+    bar.className = 'scalp-bar scalp-active';
     icon.innerHTML = '&#9889;';
-    icon.className = 'spike-icon spike-icon-active';
-    label.textContent = `CROSS-OPEN: Spike ${spike.spikeDirection} crossed opening`;
-    label.className = 'spike-label spike-label-active';
-    detail.textContent = spike.reason;
-    detail.className = 'spike-detail spike-detail-active';
-  } else if (spike.detected) {
-    bar.className = 'spike-bar';
-    icon.innerHTML = '&#9889;';
-    icon.className = 'spike-icon';
-    label.textContent = `SPIKE ${spike.spikeDirection} (no cross-open, skipping)`;
-    label.className = 'spike-label';
-    detail.textContent = spike.reason;
-    detail.className = 'spike-detail';
-  } else {
-    bar.className = 'spike-bar';
+    icon.className = 'scalp-icon scalp-icon-active';
+    label.textContent = `SCALP READY: BUY ${signal.side}`;
+    label.className = 'scalp-label scalp-label-active';
+    detail.textContent = signal.reason;
+    detail.className = 'scalp-detail scalp-detail-active';
+  } else if (signal) {
+    bar.className = 'scalp-bar';
     icon.innerHTML = '&#9679;';
-    icon.className = 'spike-icon';
+    icon.className = 'scalp-icon';
     label.textContent = 'WATCHING';
-    label.className = 'spike-label';
-    detail.textContent = spike.reason || 'Monitoring BTC for cross-open spikes...';
-    detail.className = 'spike-detail';
+    label.className = 'scalp-label';
+    detail.textContent = signal.reason || 'Monitoring 5-min windows...';
+    detail.className = 'scalp-detail';
   }
 }
 
@@ -232,14 +208,19 @@ async function updateStatus() {
 
     document.getElementById('todayRecord').textContent = `${safety.dailyWinCount || 0}W / ${safety.dailyLossCount || 0}L`;
     document.getElementById('dailyLosses').textContent = `${safety.dailyLossCount || 0} / ${safety.maxDailyLosses || 6}`;
-    document.getElementById('dailyLoss').textContent = `$${safety.dailyLoss} / $${safety.dailyLossLimit}`;
+
+    const netPnL = parseFloat(safety.dailyNetPnL || 0);
+    const pnlEl = document.getElementById('dailyNetPnL');
+    pnlEl.textContent = `$${safety.dailyNetPnL || '0.00'}`;
+    pnlEl.className = `s-value ${netPnL > 0 ? 'positive' : netPnL < 0 ? 'negative' : ''}`;
+
     document.getElementById('dailySpent').textContent = `$${safety.dailySpent || '0.00'}`;
     document.getElementById('tradesToday').textContent = safety.dailyTradeCount;
 
     const lossPct = safety.maxDailyLosses > 0 ? ((safety.dailyLossCount || 0) / safety.maxDailyLosses * 100) : 0;
-    const bar = document.getElementById('lossProgress');
-    bar.style.width = `${Math.min(100, lossPct)}%`;
-    bar.style.background = lossPct > 80 ? '#f85149' : lossPct > 50 ? '#d29922' : '#3fb950';
+    const progressBar = document.getElementById('lossProgress');
+    progressBar.style.width = `${Math.min(100, lossPct)}%`;
+    progressBar.style.background = lossPct > 80 ? '#f85149' : lossPct > 50 ? '#d29922' : '#3fb950';
 
     const safetyBar = document.getElementById('safetyBar');
     if (safety.killSwitch) {
@@ -270,33 +251,30 @@ async function updateStats() {
   document.getElementById('pendingTrades').textContent = `Pending: ${stats.pendingTrades}`;
 }
 
-async function updateSpikeLog() {
-  const activities = await api('/activities?limit=60');
+async function updateScalpLog() {
+  const activities = await api('/activities?limit=80');
   if (!activities || activities.length === 0) return;
 
-  const spikeEvents = activities.filter(a =>
-    a.type.includes('spike') || a.type.includes('trade') || a.type.includes('price_block') ||
-    a.type.includes('crossopen') || a.type.includes('contrarian') || a.type.includes('strategy')
+  const scalpEvents = activities.filter(a =>
+    a.type.includes('scalp') || a.type.includes('trade') || a.type.includes('strategy')
   );
 
-  const panel = document.getElementById('spikeLogPanel');
-  const countEl = document.getElementById('spikeLogCount');
-  countEl.textContent = `${spikeEvents.length} events`;
+  const panel = document.getElementById('scalpLogPanel');
+  const countEl = document.getElementById('scalpLogCount');
+  countEl.textContent = `${scalpEvents.length} events`;
 
-  if (spikeEvents.length === 0) {
-    panel.innerHTML = '<div class="empty-state">No strategy events yet. Cross-Open fades spikes that cross opening price. Contrarian buys cheap underdog late in window.</div>';
+  if (scalpEvents.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No scalp events yet. Bot buys winning side at $0.88-$0.95 when 30-90 seconds remain.</div>';
     return;
   }
 
-  panel.innerHTML = spikeEvents.map(a => {
+  panel.innerHTML = scalpEvents.map(a => {
     let cls = getTypeClass(a.type);
     let icon = '';
-    if (a.type.includes('crossopen')) icon = '&#8634; ';
-    if (a.type.includes('contrarian')) icon = '&#127919; ';
-    if (a.type === 'spike_detected') icon = '&#9889; ';
-    if (a.type.includes('strategy_trade')) icon = '&#128176; ';
+    if (a.type === 'scalp_signal') icon = '&#9889; ';
+    if (a.type === 'scalp_trade') icon = '&#128176; ';
     if (a.type === 'trade_success') icon = '&#9989; ';
-    if (a.type.includes('price_block')) icon = '&#128683; ';
+    if (a.type === 'scalp_skip') icon = '&#128683; ';
 
     return `<div class="activity-item">
       <div class="activity-time">${formatTime(a.timestamp)}</div>
@@ -330,19 +308,21 @@ async function updateTrades() {
   const tbody = document.getElementById('tradeBody');
 
   tbody.innerHTML = trades.map(t => {
-    const stratMatch = (t.pattern || '').match(/\[(CROSS_OPEN|CONTRARIAN)\]/);
-    const strat = stratMatch ? stratMatch[1] : '?';
-    const stratCls = strat === 'CROSS_OPEN' ? 'strat-crossopen' : strat === 'CONTRARIAN' ? 'strat-contrarian' : '';
+    const side = t.action === 'BUY_YES' ? 'UP' : 'DOWN';
+    const sideCls = side === 'UP' ? 'action-buy-yes' : 'action-buy-no';
+    const payout = t.price > 0 ? (1 / t.price).toFixed(2) : '?';
+    const pnlStr = t.pnl !== undefined && t.pnl !== 0 ? `$${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}` : '--';
+    const pnlCls = t.pnl > 0 ? 'positive' : t.pnl < 0 ? 'negative' : '';
 
     return `<tr>
       <td>${formatTime(t.timestamp)}</td>
-      <td><span class="strat-badge ${stratCls}">${strat}</span></td>
-      <td><span class="decision-action ${getActionClass(t.action)}">${t.action}</span></td>
-      <td>${t.confidence || 'N/A'}</td>
-      <td>$${t.size?.toFixed(2) || '0.00'}</td>
+      <td><span class="decision-action ${sideCls}">${side}</span></td>
       <td>$${t.price?.toFixed(3) || '0.000'}</td>
+      <td>$${t.size?.toFixed(2) || '0.00'}</td>
+      <td>${payout}x</td>
       <td>${getResultBadge(t.result)}</td>
-      <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(t.reasoning || '').replace(/"/g, '&quot;')}">${t.reasoning || 'N/A'}</td>
+      <td class="${pnlCls}">${pnlStr}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(t.reasoning || '').replace(/"/g, '&quot;')}">${t.reasoning || 'N/A'}</td>
     </tr>`;
   }).join('');
 }
@@ -453,10 +433,10 @@ async function refreshAll() {
   await Promise.all([
     updateBtcTicker(),
     updateWindowBar(),
-    updateSpikeBar(),
+    updateScalpBar(),
     updateStatus(),
     updateStats(),
-    updateSpikeLog(),
+    updateScalpLog(),
     updateActivities(),
     updateTrades(),
     updateRedemptions()

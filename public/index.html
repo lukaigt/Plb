@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTC Trading Bot — Cross-Open + Contrarian</title>
+  <title>BTC 5-Min Scalper</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="header">
-    <h1>BTC Cross-Open + Contrarian Bot</h1>
+    <h1>BTC 5-Min Scalper</h1>
     <div class="header-controls">
       <button class="btn btn-blue" onclick="scanNow()">Scan Now</button>
       <button class="btn btn-green" id="startBtn" onclick="startBot()">Start Bot</button>
@@ -24,7 +24,6 @@
         <span class="btc-label">BTC/USD</span>
         <span class="btc-price" id="btcPrice">--</span>
         <span class="btc-direction" id="btcDirection">--</span>
-        <span class="btc-momentum" id="btcMomentum">--</span>
       </div>
       <div class="btc-ticker-right">
         <div class="btc-change-group">
@@ -40,10 +39,6 @@
           <span class="btc-change-val" id="btcChange5m">--</span>
         </div>
         <div class="btc-change-group">
-          <span class="btc-change-label">10m</span>
-          <span class="btc-change-val" id="btcChange10m">--</span>
-        </div>
-        <div class="btc-change-group">
           <span class="btc-change-label">Vol</span>
           <span class="btc-change-val" id="btcVolatility">--</span>
         </div>
@@ -56,7 +51,7 @@
 
     <div id="windowBar" class="window-bar">
       <div class="window-section">
-        <span class="window-label">15-MIN WINDOW</span>
+        <span class="window-label">5-MIN WINDOW</span>
         <span class="window-timer" id="windowTimer">--:--</span>
       </div>
       <div class="window-section">
@@ -72,23 +67,23 @@
         <span class="window-value" id="windowSide">--</span>
       </div>
       <div class="window-section">
-        <span class="window-label">Crossed Open</span>
-        <span class="window-value" id="windowCrossed">--</span>
+        <span class="window-label">UP Token</span>
+        <span class="window-value" id="upTokenPrice">--</span>
       </div>
       <div class="window-section">
-        <span class="window-label">Active Strategy</span>
-        <span class="window-value" id="activeStrategy">--</span>
+        <span class="window-label">DOWN Token</span>
+        <span class="window-value" id="downTokenPrice">--</span>
       </div>
     </div>
 
-    <div id="spikeBar" class="spike-bar">
-      <div class="spike-icon" id="spikeIcon">&#9679;</div>
-      <div class="spike-info">
-        <div class="spike-label" id="spikeLabel">SPIKE DETECTOR</div>
-        <div class="spike-detail" id="spikeDetail">Waiting for data...</div>
+    <div id="scalpBar" class="scalp-bar">
+      <div class="scalp-icon" id="scalpIcon">&#9679;</div>
+      <div class="scalp-info">
+        <div class="scalp-label" id="scalpLabel">SCALP DETECTOR</div>
+        <div class="scalp-detail" id="scalpDetail">Waiting for data...</div>
       </div>
-      <div class="spike-config" id="spikeConfig">
-        Cross-Open Fade: $30+ spike crossing opening | Contrarian: $20-60 lead, 2-5min left
+      <div class="scalp-config" id="scalpConfig">
+        Scalp: Buy $0.88-$0.95 tokens | 30-90s before window ends
       </div>
     </div>
 
@@ -103,11 +98,11 @@
       </div>
       <div class="safety-item">
         <span class="s-label">Strategy</span>
-        <span class="s-value" style="font-size:12px;color:#58a6ff;">Cross-Open + Contrarian</span>
+        <span class="s-value" style="font-size:12px;color:#58a6ff;">5-Min Scalper</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Max Entry</span>
-        <span class="s-value" style="font-size:14px;color:#d29922;">$0.40</span>
+        <span class="s-label">Entry Range</span>
+        <span class="s-value" style="font-size:14px;color:#d29922;">$0.88-$0.95</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Today's Record</span>
@@ -121,8 +116,8 @@
         </div>
       </div>
       <div class="safety-item">
-        <span class="s-label">Money Lost</span>
-        <span class="s-value" id="dailyLoss">$0.00 / $15.00</span>
+        <span class="s-label">Daily P&L</span>
+        <span class="s-value" id="dailyNetPnL">$0.00</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Money Spent</span>
@@ -153,17 +148,17 @@
       <div class="stat-card">
         <div class="label">Last Scan</div>
         <div class="value neutral" id="lastScan" style="font-size:16px;">Never</div>
-        <div class="sub" id="scanInterval">Interval: --</div>
+        <div class="sub" id="scanInterval">Every 5s</div>
       </div>
     </div>
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        Strategy Log
-        <span style="font-size:11px;color:#484f58;" id="spikeLogCount">0 events</span>
+        Scalp Signal Log
+        <span style="font-size:11px;color:#484f58;" id="scalpLogCount">0 events</span>
       </div>
-      <div class="panel-body" id="spikeLogPanel" style="max-height:400px;">
-        <div class="empty-state">No strategy events yet. Cross-Open fades spikes that cross opening price. Contrarian buys cheap underdog late in window.</div>
+      <div class="panel-body" id="scalpLogPanel" style="max-height:400px;">
+        <div class="empty-state">No scalp events yet. Bot buys winning side at $0.88-$0.95 when 30-90 seconds remain.</div>
       </div>
     </div>
 
@@ -198,13 +193,13 @@
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Strategy</th>
-                <th>Action</th>
-                <th>Confidence</th>
+                <th>Side</th>
+                <th>Entry</th>
                 <th>Size</th>
-                <th>Price</th>
+                <th>Payout</th>
                 <th>Result</th>
-                <th>Reason</th>
+                <th>P&L</th>
+                <th>Info</th>
               </tr>
             </thead>
             <tbody id="tradeBody">

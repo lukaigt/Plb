@@ -131,16 +131,18 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
-  console.log('Starting bot...');
+  console.log('Starting 5-Min BTC Scalper...');
 
-  const hasKey = !!process.env.OPENROUTER_API_KEY;
   const hasWallet = !!process.env.WALLET_PRIVATE_KEY;
+  const hasApiKey = !!process.env.POLY_API_KEY;
 
-  console.log(`OpenRouter API Key: ${hasKey ? 'SET' : 'NOT SET'}`);
   console.log(`Wallet Private Key: ${hasWallet ? 'SET' : 'NOT SET'}`);
+  console.log(`CLOB API Key: ${hasApiKey ? 'SET' : 'NOT SET'}`);
   console.log(`Max Trade Size: $${process.env.MAX_TRADE_SIZE || 5}`);
-  console.log(`Daily Loss Limit: $${process.env.DAILY_LOSS_LIMIT || 15}`);
-  console.log(`Scan Interval: ${process.env.SCAN_INTERVAL || 10}s`);
+  console.log(`Daily Loss Limit: $${process.env.DAILY_LOSS_LIMIT || 25}`);
+  console.log(`Scan Interval: ${process.env.SCAN_INTERVAL || 5}s`);
+  console.log(`Entry Range: $${process.env.MIN_ENTRY_PRICE || 0.88}-$${process.env.MAX_ENTRY_PRICE || 0.95}`);
+  console.log(`Scalp Window: ${process.env.SCALP_MIN_SECONDS || 30}-${process.env.SCALP_MAX_SECONDS || 90}s before end`);
   console.log(`Proxy: ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
 
   testProxy().then(result => {
