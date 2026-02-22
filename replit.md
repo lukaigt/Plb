@@ -60,7 +60,7 @@ All config via `.env` file:
 - `MAX_TRADE_SIZE` - Max dollars per trade (default 5)
 - `MIN_ENTRY_PRICE` - Min entry price (default 0.88)
 - `MAX_ENTRY_PRICE` - Max entry price (default 0.95)
-- `SCALP_MIN_SECONDS` - Min seconds left to enter (default 30)
+- `SCALP_MIN_SECONDS` - Min seconds left to enter (default 15)
 - `SCALP_MAX_SECONDS` - Max seconds left to enter (default 90)
 - `DAILY_LOSS_LIMIT` - Max daily loss in dollars (default 25)
 - `MAX_DAILY_LOSSES` - Max losing trades per day (default 6)

@@ -2,7 +2,7 @@ const logger = require('./logger');
 
 const MIN_ENTRY_PRICE = parseFloat(process.env.MIN_ENTRY_PRICE) || 0.88;
 const MAX_ENTRY_PRICE = parseFloat(process.env.MAX_ENTRY_PRICE) || 0.95;
-const SCALP_MIN_SECONDS = parseInt(process.env.SCALP_MIN_SECONDS) || 30;
+const SCALP_MIN_SECONDS = parseInt(process.env.SCALP_MIN_SECONDS) || 15;
 const SCALP_MAX_SECONDS = parseInt(process.env.SCALP_MAX_SECONDS) || 90;
 
 let lastSignal = null;
