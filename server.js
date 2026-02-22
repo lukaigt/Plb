@@ -141,8 +141,9 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Max Trade Size: $${process.env.MAX_TRADE_SIZE || 5}`);
   console.log(`Daily Loss Limit: $${process.env.DAILY_LOSS_LIMIT || 25}`);
   console.log(`Scan Interval: ${process.env.SCAN_INTERVAL || 5}s`);
-  console.log(`Entry Range: $${process.env.MIN_ENTRY_PRICE || 0.88}-$${process.env.MAX_ENTRY_PRICE || 0.95}`);
-  console.log(`Scalp Window: ${process.env.SCALP_MIN_SECONDS || 30}-${process.env.SCALP_MAX_SECONDS || 90}s before end`);
+  const scalpConfig = require('./src/scalpSignal').getConfig();
+  console.log(`Entry Range: $${scalpConfig.minEntry}-$${scalpConfig.maxEntry}`);
+  console.log(`Scalp Window: ${scalpConfig.minSeconds}-${scalpConfig.maxSeconds}s before end`);
   console.log(`Proxy: ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
 
   testProxy().then(result => {
