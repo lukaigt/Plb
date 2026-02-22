@@ -158,11 +158,11 @@ async function updateScalpBar() {
   if (signal) {
     if (signal.upPrice !== undefined && signal.upPrice !== null) {
       upEl.textContent = '$' + signal.upPrice.toFixed(3);
-      upEl.className = 'window-value ' + (signal.upPrice >= 0.88 ? 'positive' : '');
+      upEl.className = 'window-value ' + (signal.upPrice >= 0.85 ? 'positive' : '');
     }
     if (signal.downPrice !== undefined && signal.downPrice !== null) {
       downEl.textContent = '$' + signal.downPrice.toFixed(3);
-      downEl.className = 'window-value ' + (signal.downPrice >= 0.88 ? 'positive' : '');
+      downEl.className = 'window-value ' + (signal.downPrice >= 0.85 ? 'positive' : '');
     }
   }
 
@@ -264,7 +264,7 @@ async function updateScalpLog() {
   countEl.textContent = `${scalpEvents.length} events`;
 
   if (scalpEvents.length === 0) {
-    panel.innerHTML = '<div class="empty-state">No scalp events yet. Bot buys winning side at $0.88-$0.95 when 30-90 seconds remain.</div>';
+    panel.innerHTML = '<div class="empty-state">No scalp events yet. Bot buys winning side at $0.85-$0.95 when 15-120 seconds remain.</div>';
     return;
   }
 

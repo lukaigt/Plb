@@ -1,9 +1,9 @@
 const logger = require('./logger');
 
-const MIN_ENTRY_PRICE = parseFloat(process.env.MIN_ENTRY_PRICE) || 0.88;
+const MIN_ENTRY_PRICE = parseFloat(process.env.MIN_ENTRY_PRICE) || 0.85;
 const MAX_ENTRY_PRICE = parseFloat(process.env.MAX_ENTRY_PRICE) || 0.95;
 const SCALP_MIN_SECONDS = parseInt(process.env.SCALP_MIN_SECONDS) || 15;
-const SCALP_MAX_SECONDS = parseInt(process.env.SCALP_MAX_SECONDS) || 90;
+const SCALP_MAX_SECONDS = parseInt(process.env.SCALP_MAX_SECONDS) || 120;
 
 let lastSignal = null;
 
@@ -102,7 +102,7 @@ function evaluate(market) {
 
   const payout = 1.0 / targetPrice;
   const profitPerDollar = payout - 1;
-  const confidence = targetPrice >= 0.92 ? 'HIGH' : 'MEDIUM';
+  const confidence = targetPrice >= 0.90 ? 'HIGH' : 'MEDIUM';
 
   lastSignal = {
     ready: true,
