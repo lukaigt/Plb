@@ -54,15 +54,37 @@ async function runOnce() {
       return;
     }
 
-    if (market.outcomePrices) {
-      const prices = typeof market.outcomePrices === 'string'
-        ? JSON.parse(market.outcomePrices)
-        : market.outcomePrices;
+    const upToken = market.tokens.find(t => {
+      const o = (t.outcome || '').toLowerCase();
+      return o === 'up' || o === 'yes' || o === 'true';
+    }) || market.tokens[0];
 
-      market.tokens.forEach((t, i) => {
-        t.price = prices[i] ? parseFloat(prices[i]) : t.price;
-      });
+    const downToken = market.tokens.find(t => {
+      const o = (t.outcome || '').toLowerCase();
+      return o === 'down' || o === 'no' || o === 'false';
+    }) || market.tokens[1];
+
+    const gammaUp = upToken.price;
+    const gammaDown = downToken.price;
+
+    const [upClobPrice, downClobPrice] = await Promise.all([
+      getMarketPrice(upToken.token_id),
+      getMarketPrice(downToken.token_id)
+    ]);
+
+    const liveUpPrice = upClobPrice.buy || upClobPrice.mid || upClobPrice.sell;
+    const liveDownPrice = downClobPrice.buy || downClobPrice.mid || downClobPrice.sell;
+
+    if (liveUpPrice !== null && liveUpPrice !== undefined) {
+      upToken.price = liveUpPrice;
     }
+    if (liveDownPrice !== null && liveDownPrice !== undefined) {
+      downToken.price = liveDownPrice;
+    }
+
+    logger.addActivity('price_check', {
+      message: `PRICES — Gamma: UP=$${gammaUp?.toFixed(3) || '?'} DOWN=$${gammaDown?.toFixed(3) || '?'} | CLOB Live: UP=$${liveUpPrice?.toFixed(3) || '?'} DOWN=$${liveDownPrice?.toFixed(3) || '?'} | ${market.secondsLeft}s left`
+    });
 
     const signal = scalpSignal.evaluate(market);
     lastSignalStatus = signal;
