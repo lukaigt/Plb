@@ -1,4 +1,5 @@
 const REFRESH_INTERVAL = 3000;
+const COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
 
 async function api(path, method = 'GET', body = null) {
   try {
@@ -25,6 +26,7 @@ function getTypeClass(type) {
   if (type.includes('scalp_signal')) return 'type-scalp-signal';
   if (type.includes('scalp_trade')) return 'type-trade';
   if (type.includes('scalp')) return 'type-scalp';
+  if (type.includes('price_check')) return 'type-price';
   if (type.includes('trade')) return 'type-trade';
   if (type.includes('error')) return 'type-error';
   if (type.includes('safety') || type.includes('skip')) return 'type-safety';
@@ -141,6 +143,69 @@ async function updateWindowBar() {
   }
 }
 
+function updateMultiCoinCards(status) {
+  if (!status || !status.multiCoinStatus) return;
+
+  const mcs = status.multiCoinStatus;
+
+  for (const coin of COINS) {
+    const card = document.getElementById(`coinCard_${coin}`);
+    const statusEl = document.getElementById(`coinStatus_${coin}`);
+    const upEl = document.getElementById(`coinUp_${coin}`);
+    const downEl = document.getElementById(`coinDown_${coin}`);
+    const timeEl = document.getElementById(`coinTime_${coin}`);
+
+    if (!card) continue;
+
+    const data = mcs[coin];
+    if (!data) {
+      statusEl.textContent = 'Waiting...';
+      statusEl.className = 'coin-status';
+      upEl.textContent = '--';
+      upEl.className = 'coin-price-val';
+      downEl.textContent = '--';
+      downEl.className = 'coin-price-val';
+      timeEl.textContent = '--';
+      card.className = 'coin-card';
+      continue;
+    }
+
+    const sig = data.signal;
+    const sLeft = data.secondsLeft || sig?.secondsLeft;
+
+    if (sig && sig.ready) {
+      statusEl.innerHTML = `<span class="badge badge-win">SCALP ${sig.side}</span>`;
+      card.className = 'coin-card coin-card-active';
+    } else if (sig && sig.reason) {
+      const short = sig.reason.length > 40 ? sig.reason.substring(0, 40) + '...' : sig.reason;
+      statusEl.textContent = short;
+      statusEl.className = 'coin-status';
+      card.className = 'coin-card';
+    } else {
+      statusEl.textContent = 'Monitoring';
+      card.className = 'coin-card';
+    }
+
+    const up = data.liveUpPrice || sig?.upPrice;
+    const down = data.liveDownPrice || sig?.downPrice;
+
+    if (up !== undefined && up !== null) {
+      upEl.textContent = '$' + up.toFixed(3);
+      upEl.className = 'coin-price-val ' + (up >= 0.85 ? 'positive' : '');
+    }
+    if (down !== undefined && down !== null) {
+      downEl.textContent = '$' + down.toFixed(3);
+      downEl.className = 'coin-price-val ' + (down >= 0.85 ? 'positive' : '');
+    }
+
+    if (sLeft !== undefined && sLeft !== null) {
+      const m = Math.floor(sLeft / 60);
+      const s = Math.floor(sLeft % 60);
+      timeEl.textContent = `${m}:${String(s).padStart(2, '0')} left`;
+    }
+  }
+}
+
 async function updateScalpBar() {
   const status = await api('/status');
   if (!status) return;
@@ -152,29 +217,18 @@ async function updateScalpBar() {
   const bar = document.getElementById('scalpBar');
   const config = document.getElementById('scalpConfig');
 
-  const upEl = document.getElementById('upTokenPrice');
-  const downEl = document.getElementById('downTokenPrice');
-
-  if (signal) {
-    if (signal.upPrice !== undefined && signal.upPrice !== null) {
-      upEl.textContent = '$' + signal.upPrice.toFixed(3);
-      upEl.className = 'window-value ' + (signal.upPrice >= 0.85 ? 'positive' : '');
-    }
-    if (signal.downPrice !== undefined && signal.downPrice !== null) {
-      downEl.textContent = '$' + signal.downPrice.toFixed(3);
-      downEl.className = 'window-value ' + (signal.downPrice >= 0.85 ? 'positive' : '');
-    }
-  }
+  updateMultiCoinCards(status);
 
   if (status.config) {
-    config.textContent = `Entry: $${status.config.minEntry}-$${status.config.maxEntry} | Window: ${status.config.minSeconds}-${status.config.maxSeconds}s`;
+    config.textContent = `Entry: $${status.config.minEntry}-$${status.config.maxEntry} | Window: ${status.config.minSeconds}-${status.config.maxSeconds}s | BTC, ETH, SOL, XRP`;
   }
 
   if (signal && signal.ready) {
+    const coin = signal.market?.coin || 'BTC';
     bar.className = 'scalp-bar scalp-active';
     icon.innerHTML = '&#9889;';
     icon.className = 'scalp-icon scalp-icon-active';
-    label.textContent = `SCALP READY: BUY ${signal.side}`;
+    label.textContent = `SCALP READY: BUY ${signal.side} [${coin}]`;
     label.className = 'scalp-label scalp-label-active';
     detail.textContent = signal.reason;
     detail.className = 'scalp-detail scalp-detail-active';
@@ -182,9 +236,9 @@ async function updateScalpBar() {
     bar.className = 'scalp-bar';
     icon.innerHTML = '&#9679;';
     icon.className = 'scalp-icon';
-    label.textContent = 'WATCHING';
+    label.textContent = 'WATCHING ALL COINS';
     label.className = 'scalp-label';
-    detail.textContent = signal.reason || 'Monitoring 5-min windows...';
+    detail.textContent = signal.reason || 'Monitoring BTC, ETH, SOL, XRP...';
     detail.className = 'scalp-detail';
   }
 }
@@ -256,7 +310,7 @@ async function updateScalpLog() {
   if (!activities || activities.length === 0) return;
 
   const scalpEvents = activities.filter(a =>
-    a.type.includes('scalp') || a.type.includes('trade') || a.type.includes('strategy')
+    a.type.includes('scalp') || a.type.includes('trade') || a.type.includes('strategy') || a.type.includes('price_check')
   );
 
   const panel = document.getElementById('scalpLogPanel');
@@ -264,7 +318,7 @@ async function updateScalpLog() {
   countEl.textContent = `${scalpEvents.length} events`;
 
   if (scalpEvents.length === 0) {
-    panel.innerHTML = '<div class="empty-state">No scalp events yet. Bot buys winning side at $0.85-$0.95 when 15-120 seconds remain.</div>';
+    panel.innerHTML = '<div class="empty-state">No scalp events yet. Bot scans BTC, ETH, SOL, XRP — buys winning side at $0.85-$0.95 when 15-120 seconds remain.</div>';
     return;
   }
 
@@ -313,16 +367,17 @@ async function updateTrades() {
     const payout = t.price > 0 ? (1 / t.price).toFixed(2) : '?';
     const pnlStr = t.pnl !== undefined && t.pnl !== 0 ? `$${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}` : '--';
     const pnlCls = t.pnl > 0 ? 'positive' : t.pnl < 0 ? 'negative' : '';
+    const coin = t.coin || 'BTC';
 
     return `<tr>
       <td>${formatTime(t.timestamp)}</td>
+      <td><span class="coin-badge-sm coin-${coin.toLowerCase()}">${coin}</span></td>
       <td><span class="decision-action ${sideCls}">${side}</span></td>
       <td>$${t.price?.toFixed(3) || '0.000'}</td>
       <td>$${t.size?.toFixed(2) || '0.00'}</td>
       <td>${payout}x</td>
       <td>${getResultBadge(t.result)}</td>
       <td class="${pnlCls}">${pnlStr}</td>
-      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(t.reasoning || '').replace(/"/g, '&quot;')}">${t.reasoning || 'N/A'}</td>
     </tr>`;
   }).join('');
 }
@@ -412,7 +467,7 @@ async function updateRedemptions() {
     html += `<div class="activity-item">
       <div class="activity-time">${formatTime(p.addedAt)}</div>
       ${getRedeemStatusBadge(p.status)}
-      <span style="margin-left:6px;">${p.question || 'BTC trade'}</span>
+      <span style="margin-left:6px;">${p.question || 'Trade'}</span>
       <span style="color:#484f58;font-size:11px;margin-left:auto;">$${p.size?.toFixed(2) || '?'} ${p.side || ''} | ends ${timeStr}</span>
     </div>`;
   }
@@ -421,7 +476,7 @@ async function updateRedemptions() {
     html += `<div class="activity-item">
       <div class="activity-time">${formatTime(h.redeemedAt)}</div>
       ${getRedeemStatusBadge(h.status)}
-      <span style="margin-left:6px;">${h.question || 'BTC trade'}</span>
+      <span style="margin-left:6px;">${h.question || 'Trade'}</span>
       <span style="color:#484f58;font-size:11px;margin-left:auto;">$${h.size?.toFixed(2) || '?'} ${h.side || ''}${h.txHash ? ' | TX: ' + h.txHash.substring(0, 12) + '...' : ''}</span>
     </div>`;
   }

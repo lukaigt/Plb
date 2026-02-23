@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTC 5-Min Scalper</title>
+  <title>Multi-Coin 5-Min Scalper</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="header">
-    <h1>BTC 5-Min Scalper</h1>
+    <h1>Multi-Coin 5-Min Scalper</h1>
     <div class="header-controls">
       <button class="btn btn-blue" onclick="scanNow()">Scan Now</button>
       <button class="btn btn-green" id="startBtn" onclick="startBot()">Start Bot</button>
@@ -66,13 +66,40 @@
         <span class="window-label">Leading Side</span>
         <span class="window-value" id="windowSide">--</span>
       </div>
-      <div class="window-section">
-        <span class="window-label">UP Token</span>
-        <span class="window-value" id="upTokenPrice">--</span>
+    </div>
+
+    <div class="multi-coin-grid" id="multiCoinGrid">
+      <div class="coin-card" id="coinCard_BTC">
+        <div class="coin-header"><span class="coin-badge coin-btc">BTC</span><span class="coin-status" id="coinStatus_BTC">--</span></div>
+        <div class="coin-prices">
+          <div class="coin-price-item"><span class="coin-price-label">UP</span><span class="coin-price-val" id="coinUp_BTC">--</span></div>
+          <div class="coin-price-item"><span class="coin-price-label">DOWN</span><span class="coin-price-val" id="coinDown_BTC">--</span></div>
+        </div>
+        <div class="coin-time" id="coinTime_BTC">--</div>
       </div>
-      <div class="window-section">
-        <span class="window-label">DOWN Token</span>
-        <span class="window-value" id="downTokenPrice">--</span>
+      <div class="coin-card" id="coinCard_ETH">
+        <div class="coin-header"><span class="coin-badge coin-eth">ETH</span><span class="coin-status" id="coinStatus_ETH">--</span></div>
+        <div class="coin-prices">
+          <div class="coin-price-item"><span class="coin-price-label">UP</span><span class="coin-price-val" id="coinUp_ETH">--</span></div>
+          <div class="coin-price-item"><span class="coin-price-label">DOWN</span><span class="coin-price-val" id="coinDown_ETH">--</span></div>
+        </div>
+        <div class="coin-time" id="coinTime_ETH">--</div>
+      </div>
+      <div class="coin-card" id="coinCard_SOL">
+        <div class="coin-header"><span class="coin-badge coin-sol">SOL</span><span class="coin-status" id="coinStatus_SOL">--</span></div>
+        <div class="coin-prices">
+          <div class="coin-price-item"><span class="coin-price-label">UP</span><span class="coin-price-val" id="coinUp_SOL">--</span></div>
+          <div class="coin-price-item"><span class="coin-price-label">DOWN</span><span class="coin-price-val" id="coinDown_SOL">--</span></div>
+        </div>
+        <div class="coin-time" id="coinTime_SOL">--</div>
+      </div>
+      <div class="coin-card" id="coinCard_XRP">
+        <div class="coin-header"><span class="coin-badge coin-xrp">XRP</span><span class="coin-status" id="coinStatus_XRP">--</span></div>
+        <div class="coin-prices">
+          <div class="coin-price-item"><span class="coin-price-label">UP</span><span class="coin-price-val" id="coinUp_XRP">--</span></div>
+          <div class="coin-price-item"><span class="coin-price-label">DOWN</span><span class="coin-price-val" id="coinDown_XRP">--</span></div>
+        </div>
+        <div class="coin-time" id="coinTime_XRP">--</div>
       </div>
     </div>
 
@@ -83,7 +110,7 @@
         <div class="scalp-detail" id="scalpDetail">Waiting for data...</div>
       </div>
       <div class="scalp-config" id="scalpConfig">
-        Scalp: Buy $0.85-$0.95 tokens | 15-120s before window ends
+        Scalp: Buy $0.85-$0.95 tokens | 15-120s before window ends | BTC, ETH, SOL, XRP
       </div>
     </div>
 
@@ -98,11 +125,15 @@
       </div>
       <div class="safety-item">
         <span class="s-label">Strategy</span>
-        <span class="s-value" style="font-size:12px;color:#58a6ff;">5-Min Scalper</span>
+        <span class="s-value" style="font-size:12px;color:#58a6ff;">Multi-Coin Scalper</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Entry Range</span>
         <span class="s-value" style="font-size:14px;color:#d29922;">$0.85-$0.95</span>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Coins</span>
+        <span class="s-value" style="font-size:12px;color:#79c0ff;">BTC ETH SOL XRP</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Today's Record</span>
@@ -158,7 +189,7 @@
         <span style="font-size:11px;color:#484f58;" id="scalpLogCount">0 events</span>
       </div>
       <div class="panel-body" id="scalpLogPanel" style="max-height:400px;">
-        <div class="empty-state">No scalp events yet. Bot buys winning side at $0.85-$0.95 when 15-120 seconds remain.</div>
+        <div class="empty-state">No scalp events yet. Bot scans BTC, ETH, SOL, XRP — buys winning side at $0.85-$0.95 when 15-120 seconds remain.</div>
       </div>
     </div>
 
@@ -193,13 +224,13 @@
             <thead>
               <tr>
                 <th>Time</th>
+                <th>Coin</th>
                 <th>Side</th>
                 <th>Entry</th>
                 <th>Size</th>
                 <th>Payout</th>
                 <th>Result</th>
                 <th>P&L</th>
-                <th>Info</th>
               </tr>
             </thead>
             <tbody id="tradeBody">

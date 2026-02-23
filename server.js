@@ -131,7 +131,9 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
-  console.log('Starting 5-Min BTC Scalper...');
+  console.log('Starting Multi-Coin 5-Min Scalper...');
+  const { COINS } = require('./src/scanner');
+  console.log(`Coins: ${COINS.join(', ')}`);
 
   const hasWallet = !!process.env.WALLET_PRIVATE_KEY;
   const hasApiKey = !!process.env.POLY_API_KEY;

@@ -124,7 +124,7 @@ function evaluate(market) {
 
   logger.addActivity('scalp_signal', {
     message: `SCALP READY: BUY ${targetSide} at $${targetPrice.toFixed(3)} | ${secondsLeft}s left | Payout: ${payout.toFixed(2)}x | Confidence: ${confidence}`,
-    coin: 'BTC'
+    coin: market.coin || 'BTC'
   });
 
   return lastSignal;

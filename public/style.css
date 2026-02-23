@@ -511,9 +511,101 @@ body {
   white-space: nowrap;
 }
 
+.multi-coin-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.coin-card {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 12px 14px;
+  transition: all 0.3s;
+}
+
+.coin-card-active {
+  border-color: #3fb950;
+  background: linear-gradient(135deg, #161b22 0%, #0d1a0d 100%);
+  box-shadow: 0 0 12px rgba(63, 185, 80, 0.15);
+}
+
+.coin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.coin-badge {
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.coin-badge-sm {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.coin-btc { background: #f7931a22; color: #f7931a; }
+.coin-eth { background: #627eea22; color: #627eea; }
+.coin-sol { background: #9945ff22; color: #b77dff; }
+.coin-xrp { background: #23292f; color: #c3c3c3; }
+
+.coin-status {
+  font-size: 11px;
+  color: #8b949e;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coin-prices {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.coin-price-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.coin-price-label {
+  font-size: 10px;
+  color: #484f58;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.coin-price-val {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e1e4e8;
+  font-variant-numeric: tabular-nums;
+}
+
+.coin-time {
+  font-size: 11px;
+  color: #484f58;
+  font-variant-numeric: tabular-nums;
+}
+
+.type-price { background: #8957e522; color: #a371f7; }
+
 @media (max-width: 1200px) {
   .grid-top { grid-template-columns: 1fr 1fr; }
   .grid-main { grid-template-columns: 1fr; }
+  .multi-coin-grid { grid-template-columns: 1fr 1fr; }
   .btc-ticker { flex-direction: column; align-items: flex-start; }
   .scalp-bar { flex-direction: column; align-items: flex-start; }
   .window-bar { justify-content: center; }
@@ -521,6 +613,7 @@ body {
 
 @media (max-width: 600px) {
   .grid-top { grid-template-columns: 1fr; }
+  .multi-coin-grid { grid-template-columns: 1fr; }
   .header { flex-direction: column; gap: 10px; }
   .btc-ticker-right { gap: 10px; }
 }

@@ -1,7 +1,7 @@
-# Polymarket 5-Min BTC Scalper Bot
+# Polymarket Multi-Coin 5-Min Scalper Bot
 
 ## Overview
-End-of-window scalping bot for Polymarket BTC 5-minute price prediction markets. Buys high-probability tokens ($0.88-$0.95) in the final 30-90 seconds before market resolution. Strategy: when either UP or DOWN token is priced $0.88-$0.95 with 30-90s left, auto-buy that token for $5, collect $1.00 payout at resolution. Target: ~40 trades/day at 95% win rate = ~$11/day (~$330/month).
+End-of-window scalping bot for Polymarket 5-minute price prediction markets across BTC, ETH, SOL, and XRP. Buys high-probability tokens ($0.85-$0.95) in the final 15-120 seconds before market resolution. Strategy: when either UP or DOWN token is priced $0.85-$0.95 with 15-120s left, auto-buy that token for $5, collect $1.00 payout at resolution. 4 coins = 4x more opportunities. Target: ~160 signals/day at 95% win rate.
 
 ## Architecture
 - **Node.js + Express** backend serving dashboard on port 5000 (Replit) / port 4000 (VPS)
@@ -13,19 +13,19 @@ End-of-window scalping bot for Polymarket BTC 5-minute price prediction markets.
 - **Proxy support** via FlashProxy Brazil residential proxy for Cloudflare bypass
 
 ## Strategy: 5-Min End-of-Window Scalper
-- **Trigger**: 30-90 seconds remaining AND either UP or DOWN token priced $0.88-$0.95
+- **Trigger**: 15-120 seconds remaining AND either UP or DOWN token priced $0.85-$0.95
 - **Action**: Buy that token (it's the high-probability winner)
-- **Entry price**: $0.88-$0.95 per token (configurable via MIN_ENTRY_PRICE/MAX_ENTRY_PRICE)
-- **Payout**: $1.00 per token on win → profit of $0.05-$0.12 per token
-- **Confidence**: HIGH when price >= $0.92, MEDIUM when $0.88-$0.91
+- **Entry price**: $0.85-$0.95 per token (configurable via MIN_ENTRY_PRICE/MAX_ENTRY_PRICE)
+- **Payout**: $1.00 per token on win → profit of $0.05-$0.15 per token
+- **Confidence**: HIGH when price >= $0.90, MEDIUM when $0.85-$0.89
 - **Win rate target**: ~95% (token price reflects market probability)
 - **Risk**: lose full $5 bet on loss (~5% of trades)
-- **Max 1 trade per 5-min window** — prevents doubling down
-- **Why it works**: Token price IS the probability. $0.92 token = 92% chance of winning. Only buy high-probability outcomes late in window when less time for reversal.
+- **Max 1 trade per coin per 5-min window** — prevents doubling down, but can trade BTC AND ETH in same window
+- **Why it works**: Token price IS the probability. $0.90 token = 90% chance of winning. Only buy high-probability outcomes late in window when less time for reversal.
 
 ## Safety Controls
-- **Max 1 trade per 5-minute window** — no doubling down
-- **Min entry $0.88** — only high-probability tokens
+- **Max 1 trade per coin per 5-minute window** — no doubling down on same coin, but can trade multiple coins per window
+- **Min entry $0.85** — only high-probability tokens
 - **Max entry $0.95** — ensures reasonable profit margin
 - **Max 6 LOSING trades per day** — bot stops after 6 losses (keeps going if winning)
 - **Daily loss limit** — stops trading when cumulative losses hit $25 (configurable)
@@ -69,12 +69,20 @@ All config via `.env` file:
 - `PROXY_URL` - FlashProxy SOCKS5 proxy URL
 - `POLYGON_RPC_URL` - Polygon RPC URL for contract calls
 
+## CRITICAL RULE: Always Use CLOB API for Live Prices
+- **NEVER use Gamma API outcomePrices for trading decisions** — they are cached/stale (~$0.50/$0.50)
+- **ALWAYS fetch live prices from CLOB API** using `getMarketPrice(tokenId)` from `src/dataFetcher.js`
+- The CLOB API endpoint is `https://clob.polymarket.com/price?token_id={id}&side=BUY`
+- Pattern: scanner finds market via Gamma API → fetch LIVE prices from CLOB API → evaluate signal with live prices
+- This was a critical bug that caused zero trades for hours — Gamma prices never update fast enough for scalping
+
 ## Key Technical Details
-- BTC ONLY — focused on single asset for quality
-- 5-min markets use slug pattern `btc-updown-5m-{unix_timestamp}` where timestamp is start of 5-min slot
-- Token price from Gamma API outcomePrices field directly reflects win probability
+- Multi-coin: BTC, ETH, SOL, XRP — all use same slug pattern and strategy
+- 5-min markets use slug pattern `{coin}-updown-5m-{unix_timestamp}` where timestamp is start of 5-min slot
+- Token price from CLOB API reflects live win probability
 - Window tracking via Kraken WebSocket for BTC price + 5-min slot timing
 - Safety stops after 6 LOSSES not 6 trades — winning streaks continue
+- Per-coin window dedup: bot can trade BTC AND ETH in same 5-min window (max 1 per coin per window)
 - signatureType=0 for EOA/MetaMask wallets
 - Dashboard shows 5-min countdown, token prices, scalp signal status
 
