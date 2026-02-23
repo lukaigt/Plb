@@ -138,6 +138,13 @@ async function runOnce() {
 
     readySignals.sort((a, b) => b.signal.entryPrice - a.signal.entryPrice);
 
+    if (readySignals.length > 1) {
+      const coinList = readySignals.map(r => `${r.market.coin}@$${r.signal.entryPrice.toFixed(3)}`).join(', ');
+      logger.addActivity('scalp_multi', {
+        message: `${readySignals.length} COINS QUALIFY — trading ALL: ${coinList}`
+      });
+    }
+
     for (const { signal, market } of readySignals) {
       const canStillTrade = safety.canTrade();
       if (!canStillTrade.allowed) {

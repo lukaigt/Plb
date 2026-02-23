@@ -20,7 +20,7 @@ End-of-window scalping bot for Polymarket 5-minute price prediction markets acro
 - **Confidence**: HIGH when price >= $0.90, MEDIUM when $0.85-$0.89
 - **Win rate target**: ~95% (token price reflects market probability)
 - **Risk**: lose full $5 bet on loss (~5% of trades)
-- **Max 1 trade per coin per 5-min window** — prevents doubling down, but can trade BTC AND ETH in same window
+- **Trades ALL qualifying coins per scan cycle** — if BTC, ETH, SOL, XRP all qualify, buys all 4 simultaneously (max 1 per coin per window)
 - **Why it works**: Token price IS the probability. $0.90 token = 90% chance of winning. Only buy high-probability outcomes late in window when less time for reversal.
 
 ## Safety Controls
