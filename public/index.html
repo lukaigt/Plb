@@ -40,6 +40,25 @@
       </div>
     </div>
 
+    <div id="windowBar" class="window-bar">
+      <div class="window-section">
+        <span class="window-label">5-MIN WINDOW</span>
+        <span class="window-timer" id="windowTimer">--:--</span>
+      </div>
+      <div class="window-section">
+        <span class="window-label">BTC Open</span>
+        <span class="window-value" id="windowOpen">--</span>
+      </div>
+      <div class="window-section">
+        <span class="window-label">BTC vs Open</span>
+        <span class="window-value" id="windowLead">--</span>
+      </div>
+      <div class="window-section">
+        <span class="window-label">Leading Side</span>
+        <span class="window-value" id="windowSide">--</span>
+      </div>
+    </div>
+
     <div class="market-grid" id="marketGrid">
       <div class="market-card" id="mc_5m">
         <div class="mc-header">
@@ -47,21 +66,30 @@
           <span class="mc-phase" id="mc_5m_phase">Idle</span>
           <span class="mc-timer" id="mc_5m_timer">--</span>
         </div>
+        <div class="mc-question" id="mc_5m_question">No active market</div>
         <div class="mc-body">
           <div class="mc-row">
-            <span class="mc-label">Midpoint (UP)</span>
+            <span class="mc-label">UP Midpoint</span>
             <span class="mc-val" id="mc_5m_mid">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">DOWN Midpoint</span>
+            <span class="mc-val" id="mc_5m_downmid">--</span>
           </div>
           <div class="mc-row">
             <span class="mc-label">BID UP / BID DOWN</span>
             <span class="mc-val" id="mc_5m_bids">--</span>
           </div>
           <div class="mc-row">
+            <span class="mc-label">Open Orders</span>
+            <span class="mc-val" id="mc_5m_openorders">--</span>
+          </div>
+          <div class="mc-row">
             <span class="mc-label">Orders Posted</span>
             <span class="mc-val" id="mc_5m_orders">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">Total Spent</span>
+            <span class="mc-label">Total Committed</span>
             <span class="mc-val" id="mc_5m_spent">--</span>
           </div>
         </div>
@@ -73,21 +101,30 @@
           <span class="mc-phase" id="mc_15m_phase">Idle</span>
           <span class="mc-timer" id="mc_15m_timer">--</span>
         </div>
+        <div class="mc-question" id="mc_15m_question">No active market</div>
         <div class="mc-body">
           <div class="mc-row">
-            <span class="mc-label">Midpoint (UP)</span>
+            <span class="mc-label">UP Midpoint</span>
             <span class="mc-val" id="mc_15m_mid">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">DOWN Midpoint</span>
+            <span class="mc-val" id="mc_15m_downmid">--</span>
           </div>
           <div class="mc-row">
             <span class="mc-label">BID UP / BID DOWN</span>
             <span class="mc-val" id="mc_15m_bids">--</span>
           </div>
           <div class="mc-row">
+            <span class="mc-label">Open Orders</span>
+            <span class="mc-val" id="mc_15m_openorders">--</span>
+          </div>
+          <div class="mc-row">
             <span class="mc-label">Orders Posted</span>
             <span class="mc-val" id="mc_15m_orders">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">Total Spent</span>
+            <span class="mc-label">Total Committed</span>
             <span class="mc-val" id="mc_15m_spent">--</span>
           </div>
         </div>

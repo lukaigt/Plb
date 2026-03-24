@@ -147,6 +147,14 @@ class MarketSession {
     }
   }
 
+  async fetchMidpointOnly() {
+    const mid = await fetchMidpoint(this.market.upTokenId);
+    if (mid !== null && mid > 0 && mid < 1) {
+      this.lastMid = mid;
+      this.lastQuoteTime = new Date().toISOString();
+    }
+  }
+
   async cancelOpenOrders(client) {
     if (!client || this.openOrderIds.length === 0) {
       this.openOrderIds = [];
@@ -164,17 +172,28 @@ class MarketSession {
   }
 
   getStatus() {
+    const mid    = this.lastMid;
+    const spread = this.config.spread;
+    const rawBidUp   = mid !== null ? Math.round((mid - spread / 2) * 100) / 100 : null;
+    const rawBidDown = mid !== null ? Math.round(((1 - mid) - spread / 2) * 100) / 100 : null;
+    const bidsValid  = rawBidUp !== null && rawBidUp >= 0.02 && rawBidUp <= 0.97
+                    && rawBidDown >= 0.02 && rawBidDown <= 0.97;
     return {
       marketId:       this.marketId,
       coin:           this.market.coin,
       type:           this.market.type,
       secondsLeft:    Math.round(this.secondsLeft),
       phase:          this.isClosing() ? 'closing' : this.isTooEarly() ? 'waiting' : 'quoting',
-      lastMid:        this.lastMid,
+      lastMid:        mid,
+      bidUp:          bidsValid ? rawBidUp   : null,
+      bidDown:        bidsValid ? rawBidDown : null,
+      bidsValid,
       lastQuoteTime:  this.lastQuoteTime,
       ordersPosted:   this.ordersPosted,
+      openOrderCount: this.openOrderIds.length,
       totalSpent:     parseFloat(this.totalSpent.toFixed(2)),
       question:       this.market.question,
+      slug:           this.market.slug,
       endTime:        this.market.endTime
     };
   }

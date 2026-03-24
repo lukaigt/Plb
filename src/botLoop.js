@@ -91,6 +91,7 @@ async function runOnce() {
         logger.addActivity('mm_wait', {
           message: `[${market.coin}-${market.type}] Too early to quote (${Math.round(session.secondsLeft)}s left, starts at ${config.maxSeconds}s)`
         });
+        await session.fetchMidpointOnly();
         continue;
       }
 

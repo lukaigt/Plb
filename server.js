@@ -86,6 +86,8 @@ app.post('/api/scan-positions', async (req, res) => {
   }
 });
 
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });

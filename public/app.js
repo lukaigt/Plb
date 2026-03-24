@@ -91,26 +91,32 @@ async function updateBtcTicker() {
 }
 
 function updateMarketCard(type, sessions) {
-  const session = sessions.find(s => s.type === type);
-  const suffix  = type.replace('-', '');
+  const session  = sessions.find(s => s.type === type);
+  const suffix   = type.replace('-', '');
 
-  const phaseEl  = document.getElementById(`mc_${suffix}_phase`);
-  const timerEl  = document.getElementById(`mc_${suffix}_timer`);
-  const midEl    = document.getElementById(`mc_${suffix}_mid`);
-  const bidsEl   = document.getElementById(`mc_${suffix}_bids`);
-  const ordersEl = document.getElementById(`mc_${suffix}_orders`);
-  const spentEl  = document.getElementById(`mc_${suffix}_spent`);
-  const card     = document.getElementById(`mc_${suffix}`);
+  const phaseEl      = document.getElementById(`mc_${suffix}_phase`);
+  const timerEl      = document.getElementById(`mc_${suffix}_timer`);
+  const questionEl   = document.getElementById(`mc_${suffix}_question`);
+  const midEl        = document.getElementById(`mc_${suffix}_mid`);
+  const downMidEl    = document.getElementById(`mc_${suffix}_downmid`);
+  const bidsEl       = document.getElementById(`mc_${suffix}_bids`);
+  const openOrdersEl = document.getElementById(`mc_${suffix}_openorders`);
+  const ordersEl     = document.getElementById(`mc_${suffix}_orders`);
+  const spentEl      = document.getElementById(`mc_${suffix}_spent`);
+  const card         = document.getElementById(`mc_${suffix}`);
 
   if (!session) {
-    phaseEl.textContent  = 'Idle';
-    phaseEl.className    = 'mc-phase';
-    timerEl.textContent  = '--';
-    midEl.textContent    = '--';
-    bidsEl.textContent   = '--';
-    ordersEl.textContent = '--';
-    spentEl.textContent  = '--';
-    card.className       = 'market-card';
+    phaseEl.textContent      = 'Idle';
+    phaseEl.className        = 'mc-phase';
+    timerEl.textContent      = '--';
+    questionEl.textContent   = 'No active market';
+    midEl.textContent        = '--';
+    downMidEl.textContent    = '--';
+    bidsEl.textContent       = '--';
+    openOrdersEl.textContent = '--';
+    ordersEl.textContent     = '--';
+    spentEl.textContent      = '--';
+    card.className           = 'market-card';
     return;
   }
 
@@ -135,20 +141,76 @@ function updateMarketCard(type, sessions) {
     card.className      = 'market-card';
   }
 
-  if (session.lastMid !== null && session.lastMid !== undefined) {
-    const mid = session.lastMid;
-    const spread = 0.06;
-    const bidUp   = (mid - spread / 2).toFixed(3);
-    const bidDown = (1 - mid - spread / 2).toFixed(3);
-    midEl.textContent  = '$' + mid.toFixed(3);
-    bidsEl.innerHTML   = `<span class="positive">UP $${bidUp}</span> / <span class="positive">DOWN $${bidDown}</span>`;
+  questionEl.textContent = session.question || '--';
+
+  const mid = session.lastMid;
+  if (mid !== null && mid !== undefined) {
+    const downMid = 1 - mid;
+    midEl.textContent     = '$' + mid.toFixed(3);
+    downMidEl.textContent = '$' + downMid.toFixed(3);
+
+    if (session.bidsValid && session.bidUp !== null && session.bidDown !== null) {
+      bidsEl.innerHTML = `<span class="positive">UP $${parseFloat(session.bidUp).toFixed(3)}</span> / <span class="positive">DOWN $${parseFloat(session.bidDown).toFixed(3)}</span>`;
+    } else {
+      bidsEl.innerHTML = `<span style="color:#d29922;font-size:12px;">Market too one-sided to quote</span>`;
+    }
   } else {
-    midEl.textContent = '--';
-    bidsEl.textContent = '--';
+    midEl.textContent     = '--';
+    downMidEl.textContent = '--';
+    bidsEl.textContent    = '--';
   }
+
+  const openCount = session.openOrderCount || 0;
+  openOrdersEl.textContent = openCount > 0
+    ? openCount + ' live in book'
+    : '0 (none posted yet)';
+  openOrdersEl.className = 'mc-val ' + (openCount > 0 ? 'positive' : '');
 
   ordersEl.textContent = session.ordersPosted || '0';
   spentEl.textContent  = '$' + (session.totalSpent || 0).toFixed(2);
+}
+
+async function updateWindowBar() {
+  const data = await api('/window-status');
+  if (!data) return;
+
+  const timerEl = document.getElementById('windowTimer');
+  const openEl  = document.getElementById('windowOpen');
+  const leadEl  = document.getElementById('windowLead');
+  const sideEl  = document.getElementById('windowSide');
+  const bar     = document.getElementById('windowBar');
+
+  if (data.secondsLeft !== undefined && data.secondsLeft !== null) {
+    timerEl.textContent = fmtSeconds(data.secondsLeft) + ' left';
+    if (data.secondsLeft <= 30 && data.secondsLeft > 0) {
+      bar.className = 'window-bar window-scalp-zone';
+    } else if (data.secondsLeft <= 90) {
+      bar.className = 'window-bar window-approaching';
+    } else {
+      bar.className = 'window-bar';
+    }
+  } else {
+    timerEl.textContent = '--:--';
+  }
+
+  openEl.textContent = data.openPrice ? '$' + data.openPrice.toLocaleString() : '--';
+
+  if (data.btcVsOpenDollars !== null && data.btcVsOpenDollars !== undefined) {
+    const sign = data.btcVsOpenRaw >= 0 ? '+' : '-';
+    leadEl.textContent  = `${sign}$${Math.abs(data.btcVsOpenDollars).toFixed(0)}`;
+    leadEl.className    = `window-value ${data.btcVsOpenRaw >= 0 ? 'positive' : 'negative'}`;
+  } else {
+    leadEl.textContent = '--';
+    leadEl.className   = 'window-value';
+  }
+
+  if (data.btcLeadingSide) {
+    sideEl.innerHTML = data.btcLeadingSide === 'UP'
+      ? '<span class="dir-badge dir-up">UP</span>'
+      : '<span class="dir-badge dir-down">DOWN</span>';
+  } else {
+    sideEl.textContent = '--';
+  }
 }
 
 async function updateMarketCards(status) {
@@ -399,6 +461,7 @@ async function scanWallet() {
 async function refreshAll() {
   await Promise.all([
     updateBtcTicker(),
+    updateWindowBar(),
     updateStatus(),
     updateStats(),
     updateMMLog(),
