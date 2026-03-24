@@ -184,6 +184,7 @@ function stop() {
 function getStatus() {
   const config = getMMConfig();
   const sessions = Object.values(activeSessions).map(s => s.getStatus());
+  const { getProxyWallet, getEoaAddress } = require('./trader');
 
   return {
     isRunning,
@@ -192,7 +193,9 @@ function getStatus() {
     config,
     activeSessions: sessions,
     windowStatus: krakenFeed.getWindowStatus(),
-    safety: safety.getStatus()
+    safety: safety.getStatus(),
+    proxyWallet: getProxyWallet() || null,
+    eoaAddress:  getEoaAddress()  || null
   };
 }
 

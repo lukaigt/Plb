@@ -167,10 +167,10 @@ async function checkTakeProfit(activeSessions) {
 
     if (ratio >= tpPct) {
       const sellPrice = Math.min(0.97, Math.round((mid - 0.01) * 100) / 100);
-      const sellSize  = Math.max(0.01, parseFloat((pos.filledTokens * 0.95).toFixed(2)));
+      const sellSize  = Math.max(0.01, parseFloat(pos.filledTokens.toFixed(2)));
 
-      logger.addActivity('take_profit', {
-        message: `TAKE PROFIT: ${pos.coin}-${pos.type} ${pos.side} | entry=$${entryPrice.toFixed(3)} mid=$${mid.toFixed(3)} gain=${(ratio * 100).toFixed(0)}% ≥ ${(tpPct * 100).toFixed(0)}% threshold | selling ${sellSize} tokens @ $${sellPrice}`
+      logger.addActivity('mm_takeprofit', {
+        message: `TAKE PROFIT: ${pos.coin}-${pos.type} ${pos.side} | entry=$${entryPrice.toFixed(3)} mid=$${mid.toFixed(3)} gain=${(ratio * 100).toFixed(0)}% ≥ ${(tpPct * 100).toFixed(0)}% | selling ${sellSize} tokens @ $${sellPrice}`
       });
 
       const market   = pos.market || session.market;
@@ -185,17 +185,18 @@ async function checkTakeProfit(activeSessions) {
         pos.takeProfitPrice   = sellPrice;
         pos.status = 'take_profit_sent';
         closedPositions.unshift({ ...pos, closedAt: new Date().toISOString() });
-        logger.addActivity('take_profit', {
+        logger.addActivity('mm_takeprofit', {
           message: `SELL posted: ${pos.coin}-${pos.type} ${pos.side} @ $${sellPrice} | orderId: ${result.orderId?.slice(0, 12)}...`
         });
       } else {
-        logger.addActivity('take_profit_error', {
-          message: `SELL failed: ${pos.coin}-${pos.type} ${pos.side} — ${result.error?.slice(0, 60)}`
+        logger.addActivity('mm_takeprofit', {
+          message: `SELL failed (attempt ${(pos.takeProfitAttempts || 0) + 1}/3): ${pos.coin}-${pos.type} ${pos.side} — ${result.error?.slice(0, 60)}`
         });
         pos.takeProfitAttempts = (pos.takeProfitAttempts || 0) + 1;
         if (pos.takeProfitAttempts >= 3) {
           pos.takeProfitSent = true;
           pos.status = 'tp_failed';
+          closedPositions.unshift({ ...pos, closedAt: new Date().toISOString() });
         }
       }
     }

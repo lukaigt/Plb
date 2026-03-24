@@ -21,10 +21,12 @@ function formatTime(iso) {
 }
 
 function getTypeClass(type) {
-  if (type.includes('mm_error'))   return 'type-error';
-  if (type.includes('mm_close'))   return 'type-safety';
-  if (type.includes('mm_'))        return 'type-mm';
-  if (type.includes('trade'))      return 'type-trade';
+  if (type.includes('mm_error'))      return 'type-error';
+  if (type.includes('mm_takeprofit')) return 'type-trade';
+  if (type.includes('mm_close'))      return 'type-safety';
+  if (type.includes('mm_'))           return 'type-mm';
+  if (type.includes('take_profit'))   return 'type-trade';
+  if (type.includes('trade'))         return 'type-trade';
   if (type.includes('error'))      return 'type-error';
   if (type.includes('safety'))     return 'type-safety';
   if (type.includes('scan'))       return 'type-scan';
@@ -296,7 +298,7 @@ async function updateMMLog() {
   if (!activities || activities.length === 0) return;
 
   const mmEvents = activities.filter(a =>
-    a.type.startsWith('mm_') || a.type === 'scan' || a.type.includes('trade')
+    a.type.startsWith('mm_') || a.type === 'scan' || a.type.includes('trade') || a.type.includes('take_profit')
   );
 
   const panel  = document.getElementById('mmLogPanel');
