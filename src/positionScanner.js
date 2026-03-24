@@ -1,13 +1,13 @@
 const { ethers } = require('ethers');
 const logger = require('./logger');
 const redeemer = require('./redeemer');
+const trader = require('./trader');
 
 const DATA_API = 'https://data-api.polymarket.com';
 const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
 const SAFE_FACTORY_ABI = [
   'function computeProxyAddress(address owner) view returns (address)'
 ];
-const KNOWN_PROXY_WALLET = '0x94eAb3d7352aEb36A7378bc635b97E2968112e7E';
 
 let hasScannedOnStartup = false;
 let lastScanResult = null;
@@ -47,16 +47,20 @@ async function fetchWithTimeout(url, timeout = 15000) {
   }
 }
 
-async function getProxyWallet(eoaAddress) {
+async function resolveProxyWallet(eoaAddress) {
+  const fromTrader = trader.getProxyWallet();
+  if (fromTrader) return fromTrader;
+
+  const envProxy = process.env.PROXY_WALLET_ADDRESS;
+  if (envProxy) return envProxy;
+
   try {
     const rpcUrl = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
     const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
     const factory = new ethers.Contract(SAFE_FACTORY_ADDRESS, SAFE_FACTORY_ABI, provider);
     const computed = await factory.computeProxyAddress(eoaAddress);
     const code = await provider.getCode(computed);
-    if (code !== '0x') {
-      return computed;
-    }
+    if (code !== '0x') return computed;
     return null;
   } catch (err) {
     logger.addActivity('position_scanner', {
@@ -111,14 +115,7 @@ async function scanExistingPositions() {
       message: `Scanning for existing positions on wallet ${eoaAddress.substring(0, 10)}...`
     });
 
-    let proxyWallet = await getProxyWallet(eoaAddress);
-
-    if (!proxyWallet && KNOWN_PROXY_WALLET) {
-      proxyWallet = KNOWN_PROXY_WALLET;
-      logger.addActivity('position_scanner', {
-        message: `Factory lookup failed — using known proxy wallet: ${KNOWN_PROXY_WALLET.substring(0, 10)}...`
-      });
-    }
+    let proxyWallet = await resolveProxyWallet(eoaAddress);
 
     const walletsToCheck = [eoaAddress];
     if (proxyWallet && proxyWallet.toLowerCase() !== eoaAddress.toLowerCase()) {

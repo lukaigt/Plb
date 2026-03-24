@@ -377,6 +377,70 @@ function getRedeemStatusBadge(status) {
   return map[status] || `<span class="badge">${status}</span>`;
 }
 
+function getPositionStatusBadge(status) {
+  const map = {
+    open:               '<span class="badge badge-pending">OPEN</span>',
+    filled:             '<span class="badge badge-pending" style="background:#1f6feb33;color:#79c0ff;">FILLED</span>',
+    take_profit_sent:   '<span class="badge badge-win">TP SENT</span>',
+    cancelled:          '<span class="badge badge-failed">CANCELLED</span>',
+    tp_failed:          '<span class="badge badge-loss">TP FAIL</span>'
+  };
+  return map[status] || `<span class="badge">${status}</span>`;
+}
+
+async function updatePositions() {
+  const data = await api('/positions');
+  if (!data) return;
+
+  const open   = data.open   || [];
+  const closed = data.closed || [];
+
+  const panel   = document.getElementById('positionsPanel');
+  const countEl = document.getElementById('positionsCount');
+  const tpPct   = open.length > 0 ? (open[0].takeProfitPct * 100).toFixed(0) : '50';
+  countEl.textContent = `${open.length} open | ${closed.length} closed | TP at ${tpPct}% of max gain`;
+
+  if (open.length === 0 && closed.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No position fills detected yet. Orders fill when market takers hit our bids.</div>';
+    return;
+  }
+
+  let html = '';
+
+  for (const p of open) {
+    const gain = p.avgFillPrice && p.filledTokens > 0
+      ? `+${((1 - p.avgFillPrice) * p.filledTokens).toFixed(3)} max`
+      : '--';
+    html += `<div class="activity-item position-row">
+      <div class="activity-time">${formatTime(p.addedAt)}</div>
+      ${getPositionStatusBadge(p.status)}
+      <span class="coin-badge-sm coin-btc" style="margin-left:6px;">BTC-${p.type}</span>
+      <span class="pos-side ${p.side === 'UP' ? 'positive' : 'negative'}" style="margin-left:6px;font-weight:700;">${p.side}</span>
+      <span style="margin-left:8px;color:#8b949e;font-size:12px;">entry $${p.avgFillPrice?.toFixed(3) || p.bidPrice?.toFixed(3)} | ${p.filledTokens?.toFixed(2) || '?'} tokens</span>
+      <span style="margin-left:auto;font-size:11px;color:#484f58;">max gain: ${gain}</span>
+    </div>`;
+  }
+
+  if (closed.length > 0) {
+    html += `<div style="font-size:11px;color:#484f58;padding:6px 0 2px;border-top:1px solid #21262d;margin-top:4px;">Recent exits</div>`;
+    for (const p of closed) {
+      const pnlPerToken = p.exitPrice && p.entryPrice ? (p.exitPrice - p.entryPrice) : null;
+      const pnlTotal    = pnlPerToken !== null && p.filledTokens ? pnlPerToken * p.filledTokens : null;
+      const pnlStr      = pnlTotal !== null ? `${pnlTotal > 0 ? '+' : ''}$${pnlTotal.toFixed(3)}` : '--';
+      const pnlCls      = pnlTotal !== null ? (pnlTotal > 0 ? 'positive' : 'negative') : '';
+      html += `<div class="activity-item">
+        <div class="activity-time">${formatTime(p.closedAt)}</div>
+        ${getPositionStatusBadge(p.status)}
+        <span class="coin-badge-sm coin-btc" style="margin-left:6px;">BTC-${p.type}</span>
+        <span style="margin-left:6px;font-size:12px;color:#8b949e;">${p.side} | in $${p.entryPrice?.toFixed(3)} → out $${p.exitPrice?.toFixed(3)}</span>
+        <span class="${pnlCls}" style="margin-left:auto;font-weight:600;">${pnlStr}</span>
+      </div>`;
+    }
+  }
+
+  panel.innerHTML = html;
+}
+
 async function updateRedemptions() {
   const data = await api('/redemptions');
   if (!data) return;
@@ -393,7 +457,9 @@ async function updateRedemptions() {
 
   let html = '';
   if (data.safeAddress) {
-    html += `<div class="activity-item" style="border-left:2px solid #58a6ff;"><div class="activity-type type-bot">safe</div> Proxy wallet: ${data.safeAddress}</div>`;
+    const addr = data.safeAddress;
+    const short = addr.length > 12 ? `${addr.slice(0, 10)}...${addr.slice(-6)}` : addr;
+    html += `<div class="activity-item" style="border-left:2px solid #58a6ff;"><span class="activity-type type-bot">proxy wallet</span> ${short}</div>`;
   }
   for (const p of data.pending) {
     html += `<div class="activity-item">
@@ -467,6 +533,7 @@ async function refreshAll() {
     updateMMLog(),
     updateActivities(),
     updateTrades(),
+    updatePositions(),
     updateRedemptions()
   ]);
 }

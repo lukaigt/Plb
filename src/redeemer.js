@@ -1,5 +1,6 @@
 const { ethers } = require('ethers');
 const logger = require('./logger');
+const trader = require('./trader');
 
 const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
 const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
@@ -12,7 +13,6 @@ const POLYGON_RPCS = [
   'https://polygon.llamarpc.com',
   'https://polygon-mainnet.public.blastapi.io'
 ];
-const KNOWN_PROXY_WALLET = process.env.PROXY_WALLET_ADDRESS || null;
 
 const CTF_ABI = [
   'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
@@ -40,8 +40,41 @@ const SAFE_ABI = [
 const pendingRedemptions = [];
 const redemptionHistory = [];
 let safeAddress = null;
-let safeVerified = false;
 let isChecking = false;
+
+async function getProxyWalletAddress(wallet, provider) {
+  if (safeAddress) return safeAddress;
+
+  const fromTrader = trader.getProxyWallet();
+  if (fromTrader) {
+    safeAddress = fromTrader;
+    logger.addActivity('redeemer', { message: `Using proxy wallet from CLOB API: ${fromTrader.substring(0, 10)}...` });
+    return safeAddress;
+  }
+
+  const envProxy = process.env.PROXY_WALLET_ADDRESS;
+  if (envProxy) {
+    safeAddress = envProxy;
+    logger.addActivity('redeemer', { message: `Using proxy wallet from env: ${envProxy.substring(0, 10)}...` });
+    return safeAddress;
+  }
+
+  try {
+    const factory = new ethers.Contract(SAFE_FACTORY_ADDRESS, SAFE_FACTORY_ABI, provider);
+    const computed = await factory.computeProxyAddress(wallet.address);
+    const code = await provider.getCode(computed);
+    if (code !== '0x') {
+      safeAddress = computed;
+      logger.addActivity('redeemer', { message: `Proxy wallet found via factory: ${computed.substring(0, 10)}...` });
+      return safeAddress;
+    }
+  } catch (err) {
+    logger.addActivity('redeemer', { message: `Factory lookup failed: ${err.message.substring(0, 50)}` });
+  }
+
+  logger.addActivity('redeemer', { message: 'No proxy wallet found — will check EOA only' });
+  return null;
+}
 
 function addPendingRedemption(trade) {
   if (!trade || (!trade.conditionId && !trade.tokenId)) {
@@ -98,78 +131,6 @@ async function getWorkingProvider() {
   return new ethers.providers.JsonRpcProvider(POLYGON_RPCS[0]);
 }
 
-async function discoverSafeAddress(wallet, provider) {
-  if (safeAddress && safeVerified) return safeAddress;
-
-  try {
-    const factory = new ethers.Contract(SAFE_FACTORY_ADDRESS, SAFE_FACTORY_ABI, provider);
-    const computed = await factory.computeProxyAddress(wallet.address);
-    const code = await provider.getCode(computed);
-
-    if (code === '0x') {
-      if (KNOWN_PROXY_WALLET) {
-        const proxyCode = await provider.getCode(KNOWN_PROXY_WALLET);
-        if (proxyCode !== '0x') {
-          logger.addActivity('redeemer', {
-            message: `Factory lookup failed — using known proxy wallet: ${KNOWN_PROXY_WALLET.substring(0, 10)}...`
-          });
-          safeAddress = KNOWN_PROXY_WALLET;
-          return safeAddress;
-        }
-      }
-      logger.addActivity('redeemer', {
-        message: `No deployed Safe found for ${wallet.address.substring(0, 10)}... — will try direct EOA redemption`
-      });
-      return null;
-    }
-
-    const safe = new ethers.Contract(computed, SAFE_ABI, provider);
-    try {
-      const owners = await safe.getOwners();
-      const threshold = await safe.getThreshold();
-      const isOwner = owners.some(o => o.toLowerCase() === wallet.address.toLowerCase());
-
-      if (!isOwner) {
-        logger.addActivity('redeemer_error', {
-          message: `Safe ${computed.substring(0, 10)}... found but EOA is not an owner — cannot sign transactions`
-        });
-        return null;
-      }
-
-      if (threshold.toNumber() > 1) {
-        logger.addActivity('redeemer_error', {
-          message: `Safe ${computed.substring(0, 10)}... requires ${threshold.toString()} signatures — single-sig redemption not possible`
-        });
-        return null;
-      }
-
-      safeAddress = computed;
-      safeVerified = true;
-      logger.addActivity('redeemer', {
-        message: `Safe wallet verified: ${computed.substring(0, 10)}... | Owner confirmed, threshold=1`
-      });
-      return safeAddress;
-    } catch (err) {
-      safeAddress = computed;
-      logger.addActivity('redeemer', {
-        message: `Safe wallet found: ${computed.substring(0, 10)}... (could not verify ownership: ${err.message.substring(0, 40)})`
-      });
-      return safeAddress;
-    }
-  } catch (err) {
-    logger.addActivity('redeemer_error', {
-      message: `Safe discovery error: ${err.message.substring(0, 80)}`
-    });
-    if (KNOWN_PROXY_WALLET) {
-      logger.addActivity('redeemer', {
-        message: `Network error — falling back to known proxy wallet: ${KNOWN_PROXY_WALLET.substring(0, 10)}...`
-      });
-      safeAddress = KNOWN_PROXY_WALLET;
-      return safeAddress;
-    }
-    return null;
-  }
-}
 
 function formatConditionId(rawConditionId) {
   if (!rawConditionId) return null;
@@ -425,7 +386,7 @@ async function checkAndRedeem() {
     const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
     const wallet = new ethers.Wallet(cleanKey, provider);
 
-    const safAddr = await discoverSafeAddress(wallet, provider);
+    const safAddr = await getProxyWalletAddress(wallet, provider);
     const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
     const wrappedCollateral = await getWrappedCollateral(provider);
 
@@ -639,7 +600,7 @@ function getRedemptionStatus() {
       txHash: r.txHash || null,
       redeemedAt: r.redeemedAt
     })),
-    safeAddress: safeAddress ? `${safeAddress.substring(0, 10)}...` : null,
+    safeAddress: safeAddress || null,
     totalRedeemed: redemptionHistory.filter(r => r.status === 'redeemed').length,
     totalLost: redemptionHistory.filter(r => r.status === 'no_payout').length,
     totalErrors: redemptionHistory.filter(r => r.status === 'error').length

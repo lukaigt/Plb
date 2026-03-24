@@ -88,13 +88,13 @@ public/
 - Kraken WebSocket for real BTC price (no API key needed)
 - All credentials in .env only, never in code
 
-## Recent Changes (Mar 24, 2026)
-- **COMPLETE STRATEGY REBUILD**: Old $0.85-$0.95 scalp replaced with Market Making
-  - Old scalp had zero mathematical edge (buying at market probability = break-even)
-  - New strategy: post BUY orders on UP and DOWN tokens slightly below midpoint, earn spread
-  - BTC only (ETH/SOL/XRP too thin for market making)
-  - Both 5-min and 15-min markets scanned simultaneously
-- **New files**: `src/marketMaker.js` (MarketSession class), `src/scanner.js` (rewritten)
-- **Rewritten**: `src/botLoop.js`, `src/safety.js`, `public/index.html`, `public/app.js`
-- **Deleted**: `src/scalpSignal.js`, `src/aiEngine.js`, `src/spikeDetector.js`
-- Dashboard redesigned: market cards with live midpoints, bid quotes, quoting/closing phase display
+## Recent Changes (Mar 24, 2026) — Session 2
+- **COMPLETE STRATEGY REBUILD**: Old $0.85-$0.95 scalp replaced with Market Making (session 1)
+- **Redemption fix**: `trader.js` fetches proxy wallet from CLOB API `/auth/user` with HMAC-SHA256 auth headers. `redeemer.js` and `positionScanner.js` now use `getProxyWallet()` from trader.js instead of broken Safe factory auto-discovery.
+- **Take-profit**: New `src/positionTracker.js` polls CLOB trades API for fills, tracks open positions, posts SELL orders when profit ratio ≥ `MM_TAKE_PROFIT_PCT` (default 50% of max gain = current fill from `mid - 0.01`)
+- **Dashboard positions panel**: "Open Positions & Take-Profit" panel added between MM Activity and Auto-Redeem panels; shows per-position status (OPEN/FILLED/TP SENT), entry price, fill size, max gain, and recent exits with P&L
+- **New file**: `src/positionTracker.js`
+- **Updated**: `src/trader.js` (proxy wallet fetch via CLOB API), `src/redeemer.js` (proxy wallet from trader), `src/positionScanner.js` (proxy wallet from trader), `src/botLoop.js` (integrate positionTracker), `src/marketMaker.js` (postQuotes returns placed orders), `server.js` (/api/positions), `public/index.html`, `public/app.js`
+
+## Configuration Added (Session 2)
+- `MM_TAKE_PROFIT_PCT` - Take-profit at this fraction of max gain (default 0.5 = 50%); set to 0.8 to only sell if 80% of the way to $1.00

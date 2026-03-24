@@ -23,9 +23,10 @@ const botLoop        = require('./src/botLoop');
 const safety         = require('./src/safety');
 const logger         = require('./src/logger');
 const redeemer       = require('./src/redeemer');
-const positionScanner = require('./src/positionScanner');
-const krakenFeed     = require('./src/krakenFeed');
-const { getMMConfig } = require('./src/marketMaker');
+const positionScanner  = require('./src/positionScanner');
+const positionTracker  = require('./src/positionTracker');
+const krakenFeed       = require('./src/krakenFeed');
+const { getMMConfig }  = require('./src/marketMaker');
 
 const app  = express();
 const PORT = parseInt(process.env.PORT) || 4000;
@@ -43,7 +44,11 @@ app.get('/api/trades',      (req, res) => res.json(logger.getTradeHistory(parseI
 app.get('/api/stats',       (req, res) => res.json(logger.getStats()));
 app.get('/api/safety',      (req, res) => res.json(safety.getStatus()));
 app.get('/api/redemptions', (req, res) => res.json(redeemer.getRedemptionStatus()));
-app.get('/api/positions',   (req, res) => res.json(positionScanner.getScanResult()));
+app.get('/api/positions',   (req, res) => res.json({
+  open:   positionTracker.getOpenPositions(),
+  closed: positionTracker.getRecentClosed(),
+  scan:   positionScanner.getScanResult()
+}));
 app.get('/api/btc-price',   (req, res) => res.json(krakenFeed.getPriceContext()));
 app.get('/api/window-status', (req, res) => res.json(krakenFeed.getWindowStatus()));
 app.get('/api/proxy-test',  async (req, res) => res.json(await testProxy()));

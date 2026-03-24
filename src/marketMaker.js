@@ -168,6 +168,8 @@ class MarketSession {
         this.tradeIds.push(logged.id);
       }
     }
+
+    return placed;
   }
 
   async fetchMidpointOnly() {

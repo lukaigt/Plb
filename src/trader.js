@@ -1,11 +1,70 @@
 const { ClobClient, Side, OrderType } = require('@polymarket/clob-client');
 const { Wallet } = require('ethers');
+const crypto = require('crypto');
 const logger = require('./logger');
 
 const CLOB_HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
 
 let clobClient = null;
+let proxyWalletAddress = null;
+let eoaAddress = null;
+
+function buildClobAuthHeaders(method, path) {
+  const apiKey    = process.env.POLY_API_KEY;
+  const apiSecret = process.env.POLY_API_SECRET;
+  const passphrase = process.env.POLY_PASSPHRASE;
+  if (!apiKey || !apiSecret || !passphrase) return null;
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const message   = `${timestamp}${method}${path}`;
+  const sig       = crypto.createHmac('sha256', apiSecret).update(message).digest('base64');
+
+  return {
+    'POLY-API-KEY':    apiKey,
+    'POLY-PASSPHRASE': passphrase,
+    'POLY-TIMESTAMP':  timestamp,
+    'POLY-SIGNATURE':  sig,
+    'Content-Type':    'application/json'
+  };
+}
+
+async function fetchProxyWallet() {
+  try {
+    const envOverride = process.env.PROXY_WALLET_ADDRESS;
+    if (envOverride) {
+      logger.addActivity('trader', { message: `Using PROXY_WALLET_ADDRESS from env: ${envOverride.substring(0, 10)}...` });
+      return envOverride;
+    }
+
+    const headers = buildClobAuthHeaders('GET', '/auth/user');
+    if (!headers) return null;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(`${CLOB_HOST}/auth/user`, { headers, signal: controller.signal });
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      logger.addActivity('trader', { message: `CLOB /auth/user returned ${res.status} — proxy wallet unknown` });
+      return null;
+    }
+
+    const data = await res.json();
+    const proxy = data.proxyWallet || data.proxy_wallet || data.address || null;
+
+    if (proxy) {
+      logger.addActivity('trader', { message: `Proxy wallet from CLOB API: ${proxy.substring(0, 10)}...` });
+      return proxy;
+    }
+
+    logger.addActivity('trader', { message: `CLOB /auth/user response missing proxyWallet: ${JSON.stringify(data).slice(0, 80)}` });
+    return null;
+  } catch (err) {
+    logger.addActivity('trader', { message: `Proxy wallet fetch error: ${err.message.slice(0, 60)}` });
+    return null;
+  }
+}
 
 async function initClient(privateKey) {
   if (clobClient) return clobClient;
@@ -13,9 +72,9 @@ async function initClient(privateKey) {
   try {
     const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
     const signer = new Wallet(cleanKey);
-    const address = signer.address;
+    eoaAddress = signer.address;
 
-    logger.addActivity('trader', { message: `Wallet address: ${address.substring(0, 8)}...${address.substring(address.length - 6)}` });
+    logger.addActivity('trader', { message: `Wallet address: ${eoaAddress.substring(0, 8)}...${eoaAddress.substring(eoaAddress.length - 6)}` });
 
     const apiKey = process.env.POLY_API_KEY;
     const apiSecret = process.env.POLY_API_SECRET;
@@ -26,21 +85,19 @@ async function initClient(privateKey) {
       return null;
     }
 
-    const apiCreds = {
-      key: apiKey,
-      secret: apiSecret,
-      passphrase: passphrase
-    };
+    const apiCreds = { key: apiKey, secret: apiSecret, passphrase };
 
-    clobClient = new ClobClient(
-      CLOB_HOST,
-      CHAIN_ID,
-      signer,
-      apiCreds,
-      0
-    );
+    clobClient = new ClobClient(CLOB_HOST, CHAIN_ID, signer, apiCreds, 0);
 
-    logger.addActivity('trader', { message: 'CLOB client initialized with manual API credentials' });
+    logger.addActivity('trader', { message: 'CLOB client initialized' });
+
+    proxyWalletAddress = await fetchProxyWallet();
+    if (!proxyWalletAddress) {
+      logger.addActivity('trader', { message: `No proxy wallet found — will check EOA only for redemptions. Set PROXY_WALLET_ADDRESS in .env if redemption fails.` });
+    } else {
+      logger.addActivity('trader', { message: `Proxy wallet confirmed: ${proxyWalletAddress.substring(0, 10)}...` });
+    }
+
     return clobClient;
   } catch (err) {
     logger.addActivity('trader_error', { message: `Client init error: ${err.message}` });
@@ -48,21 +105,20 @@ async function initClient(privateKey) {
   }
 }
 
+function getProxyWallet() { return proxyWalletAddress; }
+function getEoaAddress()   { return eoaAddress; }
+
 async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = true, tickSize = '0.01') {
   const client = await initClient(privateKey);
 
   if (!client) {
-    logger.addActivity('trade_error', { message: 'Cannot trade: CLOB client not initialized. Check your POLY_API_KEY, POLY_API_SECRET, POLY_PASSPHRASE in .env' });
+    logger.addActivity('trade_error', { message: 'Cannot trade: CLOB client not initialized' });
     return { success: false, error: 'CLOB client not initialized' };
   }
 
   try {
     const roundedPrice = Math.round(price * 100) / 100;
     const size = parseFloat((amount / roundedPrice).toFixed(2));
-
-    logger.addActivity('trader', { 
-      message: `Order params: tokenID=${tokenId.substring(0, 15)}..., price=${roundedPrice}, size=${size}` 
-    });
 
     let response;
     let lastError = null;
@@ -74,57 +130,73 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
           {
             tokenID: tokenId,
             price: roundedPrice,
-            size: size,
+            size,
             side: Side.BUY,
             feeRateBps: 1000,
             expiration: 0,
-            taker: "0x0000000000000000000000000000000000000000"
+            taker: '0x0000000000000000000000000000000000000000'
           },
-          {
-            tickSize: tickSize,
-            negRisk: negRisk
-          },
+          { tickSize, negRisk },
           OrderType.GTC
         );
 
         if (response && response.orderID) {
           logger.addActivity('trade_executed', {
-            message: `Order CONFIRMED: BUY ${size} shares at $${roundedPrice.toFixed(3)} for $${amount} (orderID: ${response.orderID.substring(0, 12)}...)`,
+            message: `Order CONFIRMED: BUY ${size} at $${roundedPrice.toFixed(3)} (orderID: ${response.orderID.substring(0, 12)}...)`,
             orderId: response.orderID
           });
           return { success: true, data: response, orderId: response.orderID };
-        } else if (response && typeof response === 'object' && !response.orderID) {
-          let errMsg = response.errorMsg || response.error;
-          if (!errMsg) { try { errMsg = JSON.stringify(response).substring(0, 200); } catch(e) { errMsg = 'Unknown error (response not serializable)'; } }
-          logger.addActivity('trade_error', {
-            message: `Order rejected (attempt ${attempt}/${maxRetries}): ${errMsg}`
-          });
+        } else {
+          let errMsg = response?.errorMsg || response?.error;
+          if (!errMsg) { try { errMsg = JSON.stringify(response).substring(0, 200); } catch { errMsg = 'Unknown'; } }
           lastError = errMsg;
-          if (attempt < maxRetries) {
-            await new Promise(r => setTimeout(r, 3000 * attempt));
-          }
+          logger.addActivity('trade_error', { message: `Order rejected (attempt ${attempt}/${maxRetries}): ${errMsg}` });
+          if (attempt < maxRetries) await new Promise(r => setTimeout(r, 3000 * attempt));
         }
       } catch (err) {
         const errStr = err.message || String(err);
         const isCloudflare = errStr.includes('403') || errStr.includes('Forbidden') || errStr.includes('blocked');
         lastError = isCloudflare ? 'Cloudflare rate-limited (403)' : errStr;
-        logger.addActivity('trade_error', { 
-          message: `Trade attempt ${attempt}/${maxRetries} failed: ${lastError}` 
-        });
-        if (attempt < maxRetries) {
-          const delay = 5000 * attempt;
-          logger.addActivity('trader', { message: `Waiting ${delay/1000}s before retry...` });
-          await new Promise(r => setTimeout(r, delay));
-        }
+        logger.addActivity('trade_error', { message: `Trade attempt ${attempt}/${maxRetries} failed: ${lastError}` });
+        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 5000 * attempt));
       }
     }
 
-    logger.addActivity('trade_failed', { 
-      message: `Order FAILED after ${maxRetries} attempts: ${lastError}` 
-    });
     return { success: false, error: lastError };
   } catch (err) {
     logger.addActivity('trade_error', { message: `Trade execution error: ${err.message}` });
+    return { success: false, error: err.message };
+  }
+}
+
+async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '0.01') {
+  const client = clobClient;
+  if (!client) return { success: false, error: 'No CLOB client' };
+
+  try {
+    const roundedPrice = Math.max(0.02, Math.min(0.97, Math.round(price * 100) / 100));
+    const roundedSize  = parseFloat(size.toFixed(2));
+
+    const response = await client.createAndPostOrder(
+      {
+        tokenID: tokenId,
+        price: roundedPrice,
+        size: roundedSize,
+        side: Side.SELL,
+        feeRateBps: 1000,
+        expiration: 0,
+        taker: '0x0000000000000000000000000000000000000000'
+      },
+      { tickSize, negRisk },
+      OrderType.GTC
+    );
+
+    if (response && response.orderID) {
+      return { success: true, orderId: response.orderID };
+    }
+    const errMsg = response?.errorMsg || response?.error || JSON.stringify(response)?.slice(0, 100);
+    return { success: false, error: errMsg };
+  } catch (err) {
     return { success: false, error: err.message };
   }
 }
@@ -145,35 +217,19 @@ async function executeTrade(decision, marketData, tradeSize) {
     return null;
   }
 
-  const negRisk = marketData.market.negRisk !== undefined ? marketData.market.negRisk : true;
+  const negRisk  = marketData.market.negRisk !== undefined ? marketData.market.negRisk : true;
   const tickSize = marketData.market.tickSize || '0.01';
-
-  logger.addActivity('trade_attempt', {
-    message: `Attempting to ${decision.action} on ${marketData.market.coin} | Size: $${tradeSize} | Price: $${price.toFixed(3)} | negRisk=${negRisk} | tickSize=${tickSize}`,
-    coin: marketData.market.coin,
-    action: decision.action,
-    size: tradeSize,
-    price
-  });
 
   const result = await placeOrder(token.token_id, 'BUY', tradeSize, price, privateKey, negRisk, tickSize);
 
   const trade = {
-    coin: 'BTC',
-    question: marketData.market.question,
-    action: decision.action,
-    confidence: decision.confidence,
-    pattern: decision.pattern || 'unknown',
-    reasoning: decision.reasoning,
-    tokenId: token.token_id,
-    side: isYes ? 'YES' : 'NO',
-    size: tradeSize,
-    price,
-    orderId: result.orderId || null,
-    success: result.success,
-    error: result.error || null,
-    result: result.success ? 'pending' : 'failed',
-    pnl: 0,
+    coin: 'BTC', question: marketData.market.question,
+    action: decision.action, confidence: decision.confidence,
+    pattern: decision.pattern || 'unknown', reasoning: decision.reasoning,
+    tokenId: token.token_id, side: isYes ? 'YES' : 'NO',
+    size: tradeSize, price, orderId: result.orderId || null,
+    success: result.success, error: result.error || null,
+    result: result.success ? 'pending' : 'failed', pnl: 0,
     marketEndTime: marketData.market.endTime
   };
 
@@ -182,4 +238,4 @@ async function executeTrade(decision, marketData, tradeSize) {
   return trade;
 }
 
-module.exports = { executeTrade, initClient, placeOrder };
+module.exports = { executeTrade, initClient, placeOrder, placeSellOrder, getProxyWallet, getEoaAddress, buildClobAuthHeaders };

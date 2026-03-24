@@ -5,6 +5,7 @@ const safety                = require('./safety');
 const logger                = require('./logger');
 const redeemer              = require('./redeemer');
 const positionScanner       = require('./positionScanner');
+const positionTracker       = require('./positionTracker');
 const krakenFeed            = require('./krakenFeed');
 
 let isRunning      = false;
@@ -101,7 +102,26 @@ async function runOnce() {
 
       await session.cancelOpenOrders(client);
       await new Promise(r => setTimeout(r, 800));
-      await session.postQuotes(client);
+      const placed = await session.postQuotes(client);
+
+      if (Array.isArray(placed)) {
+        for (const p of placed) {
+          const tokenId = p.side === 'UP' ? session.market.upTokenId : session.market.downTokenId;
+          positionTracker.trackOrder(
+            p.orderId, tokenId, p.side, p.price, p.size,
+            session.market.id, session.market.coin, session.market.type, session.market
+          );
+        }
+      }
+    }
+
+    try {
+      const sessions = Object.values(activeSessions);
+      await positionTracker.pollFills();
+      await positionTracker.checkTakeProfit(sessions);
+      positionTracker.pruneOldPositions();
+    } catch (tpErr) {
+      logger.addActivity('error', { message: `Take-profit check error: ${tpErr.message}` });
     }
 
     safety.resetDailyIfNeeded();
