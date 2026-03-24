@@ -40,9 +40,10 @@ async function fetchOrderStatus(orderId) {
 
 async function fetchFillsForAddress(makerAddress) {
   try {
-    const headers = buildClobAuthHeaders('GET', '/trades');
+    const queryPath = `/trades?maker_address=${makerAddress}&limit=50`;
+    const headers = buildClobAuthHeaders('GET', queryPath);
     if (!headers) return [];
-    const url = `${CLOB_API}/trades?maker_address=${makerAddress}&limit=50`;
+    const url = `${CLOB_API}${queryPath}`;
     const res = await fetchWithTimeout(url, { headers });
     if (!res.ok) return [];
     const data = await res.json();

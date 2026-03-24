@@ -31,37 +31,41 @@ function buildClobAuthHeaders(method, path) {
 
 async function fetchProxyWallet() {
   try {
+    const headers = buildClobAuthHeaders('GET', '/auth/user');
+    if (headers) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      try {
+        const res = await fetch(`${CLOB_HOST}/auth/user`, { headers, signal: controller.signal });
+        clearTimeout(timer);
+
+        if (res.ok) {
+          const data = await res.json();
+          const proxy = data.proxyWallet || data.proxy_wallet || data.address || null;
+          if (proxy) {
+            logger.addActivity('trader', { message: `Proxy wallet from CLOB API: ${proxy.substring(0, 10)}...` });
+            return proxy;
+          }
+          logger.addActivity('trader', { message: `CLOB /auth/user response missing proxyWallet field: ${JSON.stringify(data).slice(0, 80)}` });
+        } else {
+          logger.addActivity('trader', { message: `CLOB /auth/user returned ${res.status} — trying env fallback` });
+        }
+      } catch (fetchErr) {
+        clearTimeout(timer);
+        logger.addActivity('trader', { message: `CLOB /auth/user fetch error: ${fetchErr.message.slice(0, 50)}` });
+      }
+    }
+
     const envOverride = process.env.PROXY_WALLET_ADDRESS;
     if (envOverride) {
-      logger.addActivity('trader', { message: `Using PROXY_WALLET_ADDRESS from env: ${envOverride.substring(0, 10)}...` });
+      logger.addActivity('trader', { message: `Proxy wallet from PROXY_WALLET_ADDRESS env: ${envOverride.substring(0, 10)}...` });
       return envOverride;
     }
 
-    const headers = buildClobAuthHeaders('GET', '/auth/user');
-    if (!headers) return null;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(`${CLOB_HOST}/auth/user`, { headers, signal: controller.signal });
-    clearTimeout(timer);
-
-    if (!res.ok) {
-      logger.addActivity('trader', { message: `CLOB /auth/user returned ${res.status} — proxy wallet unknown` });
-      return null;
-    }
-
-    const data = await res.json();
-    const proxy = data.proxyWallet || data.proxy_wallet || data.address || null;
-
-    if (proxy) {
-      logger.addActivity('trader', { message: `Proxy wallet from CLOB API: ${proxy.substring(0, 10)}...` });
-      return proxy;
-    }
-
-    logger.addActivity('trader', { message: `CLOB /auth/user response missing proxyWallet: ${JSON.stringify(data).slice(0, 80)}` });
+    logger.addActivity('trader', { message: 'No proxy wallet found. Set PROXY_WALLET_ADDRESS in .env if redemption fails.' });
     return null;
   } catch (err) {
-    logger.addActivity('trader', { message: `Proxy wallet fetch error: ${err.message.slice(0, 60)}` });
+    logger.addActivity('trader', { message: `Proxy wallet discovery error: ${err.message.slice(0, 60)}` });
     return null;
   }
 }
