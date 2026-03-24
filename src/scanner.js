@@ -66,6 +66,7 @@ async function scanSingleMarket(config) {
 
       return {
         id: market.conditionId || market.id,
+        conditionId: market.conditionId || null,
         question: market.question || event.title,
         coin,
         type,

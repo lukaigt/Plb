@@ -48,17 +48,30 @@ async function runOnce() {
           session.cancelled = true;
 
           if (session.totalSpent > 0) {
+            const condId = session.market.conditionId || session.market.id;
             redeemer.addPendingRedemption({
-              conditionId:  session.market.id,
-              tokenId:      session.market.upTokenId,
-              negRisk:      session.market.negRisk,
+              conditionId:   condId,
+              tokenId:       session.market.upTokenId,
+              negRisk:       session.market.negRisk,
               marketEndTime: session.market.endTime,
-              action:       'MM',
-              side:         'UP+DOWN',
-              size:         session.totalSpent,
-              price:        0.5,
-              question:     session.market.question,
-              tradeIds:     [...session.tradeIds]
+              action:        'MM',
+              side:          'UP',
+              size:          session.totalSpent / 2,
+              price:         0.5,
+              question:      session.market.question,
+              tradeIds:      [...session.tradeIds]
+            });
+            redeemer.addPendingRedemption({
+              conditionId:   condId,
+              tokenId:       session.market.downTokenId,
+              negRisk:       session.market.negRisk,
+              marketEndTime: session.market.endTime,
+              action:        'MM',
+              side:          'DOWN',
+              size:          session.totalSpent / 2,
+              price:         0.5,
+              question:      session.market.question,
+              tradeIds:      [...session.tradeIds]
             });
           }
         }

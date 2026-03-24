@@ -71,8 +71,9 @@ function addPendingRedemption(trade) {
     return;
   }
 
-  const key = trade.conditionId || trade.tokenId;
-  const existing = pendingRedemptions.find(r => (r.conditionId && r.conditionId === trade.conditionId) || (r.tokenId && r.tokenId === trade.tokenId));
+  const existing = pendingRedemptions.find(r =>
+    r.tokenId && trade.tokenId && r.tokenId === trade.tokenId
+  );
   if (existing) return;
 
   pendingRedemptions.push({
