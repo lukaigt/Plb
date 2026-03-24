@@ -100,6 +100,7 @@ async function runOnce() {
       session.phase = 'active';
 
       await session.cancelOpenOrders(client);
+      await new Promise(r => setTimeout(r, 800));
       await session.postQuotes(client);
     }
 

@@ -225,7 +225,7 @@ class MarketSession {
 function getMMConfig() {
   return {
     spread:       parseFloat(process.env.MM_SPREAD)       || 0.06,
-    orderSize:    parseFloat(process.env.MM_ORDER_SIZE)   || 10,
+    orderSize:    parseFloat(process.env.MM_ORDER_SIZE)   || 5,
     closeSeconds: parseInt(process.env.MM_CLOSE_SECONDS)  || 20,
     maxSeconds:   parseInt(process.env.MM_MAX_SECONDS)    || 240,
     refreshInterval: parseInt(process.env.MM_REFRESH_INTERVAL) || 10
