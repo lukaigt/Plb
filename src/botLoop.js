@@ -8,9 +8,11 @@ const positionScanner       = require('./positionScanner');
 const positionTracker       = require('./positionTracker');
 const krakenFeed            = require('./krakenFeed');
 
-let isRunning      = false;
-let loopInterval   = null;
-let lastScanTime   = null;
+let isRunning            = false;
+let loopInterval         = null;
+let lastScanTime         = null;
+let lastPositionScanTime = 0;
+const POSITION_SCAN_INTERVAL_MS = 5 * 60 * 1000;
 
 const activeSessions = {};
 
@@ -138,6 +140,21 @@ async function runOnce() {
     }
 
     safety.resetDailyIfNeeded();
+
+    const now = Date.now();
+    if (now - lastPositionScanTime >= POSITION_SCAN_INTERVAL_MS) {
+      lastPositionScanTime = now;
+      try {
+        logger.addActivity('position_scanner', { message: 'Periodic wallet scan — checking for redeemable positions...' });
+        const result = await positionScanner.scanExistingPositions();
+        if (result.redeemable > 0) {
+          logger.addActivity('position_scanner', { message: `Periodic scan: ${result.redeemable} position(s) queued for redemption` });
+        }
+      } catch (scanErr) {
+        logger.addActivity('position_scanner_error', { message: `Periodic scan error: ${scanErr.message?.slice(0, 80)}` });
+      }
+    }
+
   } catch (err) {
     logger.addActivity('error', { message: `Bot error: ${err.message}` });
   }
@@ -168,17 +185,17 @@ async function start() {
       `  Daily loss limit: $${safety.dailyLossLimit}`
   });
 
-  if (!positionScanner.hasScanned()) {
-    try {
-      logger.addActivity('bot', { message: 'Scanning wallet for existing unredeemed positions...' });
-      const result = await positionScanner.scanExistingPositions();
-      if (result.redeemable > 0) {
-        logger.addActivity('bot', { message: `Found ${result.redeemable} redeemable position(s) — attempting redemption...` });
-        await redeemer.checkAndRedeem();
-      }
-    } catch (err) {
-      logger.addActivity('bot', { message: `Position scan error (non-fatal): ${err.message}` });
+  try {
+    logger.addActivity('bot', { message: 'Scanning wallet for existing unredeemed positions...' });
+    const result = await positionScanner.scanExistingPositions();
+    if (result.redeemable > 0) {
+      logger.addActivity('bot', { message: `Found ${result.redeemable} redeemable position(s) — attempting redemption...` });
+      await redeemer.checkAndRedeem();
     }
+    lastPositionScanTime = Date.now();
+  } catch (err) {
+    logger.addActivity('bot', { message: `Position scan error (non-fatal): ${err.message}` });
+    lastPositionScanTime = Date.now();
   }
 
   await runOnce();
