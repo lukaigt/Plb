@@ -3,22 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Multi-Coin 5-Min Scalper</title>
+  <title>BTC Market Maker</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="header">
-    <h1>Multi-Coin 5-Min Scalper</h1>
+    <div class="header-left">
+      <h1>BTC Market Maker</h1>
+      <span class="strategy-badge">MARKET MAKING</span>
+    </div>
     <div class="header-controls">
-      <button class="btn btn-blue" onclick="scanNow()">Scan Now</button>
-      <button class="btn btn-green" id="startBtn" onclick="startBot()">Start Bot</button>
-      <button class="btn btn-red" id="stopBtn" onclick="stopBot()">Stop Bot</button>
-      <button class="btn btn-yellow" id="killBtn" onclick="toggleKillSwitch()">Kill Switch</button>
+      <button class="btn btn-blue"   onclick="scanNow()">Scan Now</button>
+      <button class="btn btn-green"  id="startBtn" onclick="startBot()">Start Bot</button>
+      <button class="btn btn-red"    id="stopBtn"  onclick="stopBot()">Stop Bot</button>
+      <button class="btn btn-yellow" id="killBtn"  onclick="toggleKillSwitch()">Kill Switch</button>
       <button class="btn btn-purple" onclick="scanWallet()">Scan Wallet</button>
     </div>
   </div>
 
   <div class="container">
+
     <div id="btcTicker" class="btc-ticker">
       <div class="btc-ticker-left">
         <span class="btc-label">BTC/USD</span>
@@ -26,22 +30,9 @@
         <span class="btc-direction" id="btcDirection">--</span>
       </div>
       <div class="btc-ticker-right">
-        <div class="btc-change-group">
-          <span class="btc-change-label">1m</span>
-          <span class="btc-change-val" id="btcChange1m">--</span>
-        </div>
-        <div class="btc-change-group">
-          <span class="btc-change-label">3m</span>
-          <span class="btc-change-val" id="btcChange3m">--</span>
-        </div>
-        <div class="btc-change-group">
-          <span class="btc-change-label">5m</span>
-          <span class="btc-change-val" id="btcChange5m">--</span>
-        </div>
-        <div class="btc-change-group">
-          <span class="btc-change-label">Vol</span>
-          <span class="btc-change-val" id="btcVolatility">--</span>
-        </div>
+        <div class="btc-change-group"><span class="btc-change-label">1m</span><span class="btc-change-val" id="btcChange1m">--</span></div>
+        <div class="btc-change-group"><span class="btc-change-label">5m</span><span class="btc-change-val" id="btcChange5m">--</span></div>
+        <div class="btc-change-group"><span class="btc-change-label">Vol</span><span class="btc-change-val" id="btcVolatility">--</span></div>
         <div class="kraken-status" id="krakenStatus">
           <span class="kraken-dot" id="krakenDot"></span>
           <span id="krakenText">Kraken</span>
@@ -49,68 +40,57 @@
       </div>
     </div>
 
-    <div id="windowBar" class="window-bar">
-      <div class="window-section">
-        <span class="window-label">5-MIN WINDOW</span>
-        <span class="window-timer" id="windowTimer">--:--</span>
+    <div class="market-grid" id="marketGrid">
+      <div class="market-card" id="mc_5m">
+        <div class="mc-header">
+          <span class="mc-badge mc-5m">5-MIN</span>
+          <span class="mc-phase" id="mc_5m_phase">Idle</span>
+          <span class="mc-timer" id="mc_5m_timer">--</span>
+        </div>
+        <div class="mc-body">
+          <div class="mc-row">
+            <span class="mc-label">Midpoint (UP)</span>
+            <span class="mc-val" id="mc_5m_mid">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">BID UP / BID DOWN</span>
+            <span class="mc-val" id="mc_5m_bids">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Orders Posted</span>
+            <span class="mc-val" id="mc_5m_orders">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Total Spent</span>
+            <span class="mc-val" id="mc_5m_spent">--</span>
+          </div>
+        </div>
       </div>
-      <div class="window-section">
-        <span class="window-label">Open Price</span>
-        <span class="window-value" id="windowOpen">--</span>
-      </div>
-      <div class="window-section">
-        <span class="window-label">BTC vs Open</span>
-        <span class="window-value" id="windowLead">--</span>
-      </div>
-      <div class="window-section">
-        <span class="window-label">Leading Side</span>
-        <span class="window-value" id="windowSide">--</span>
-      </div>
-    </div>
 
-    <div class="multi-coin-grid" id="multiCoinGrid">
-      <div class="coin-card" id="coinCard_BTC">
-        <div class="coin-header"><span class="coin-badge coin-btc">BTC</span><span class="coin-status" id="coinStatus_BTC">--</span></div>
-        <div class="coin-prices">
-          <div class="coin-price-item"><span class="coin-price-label">UP</span><span class="coin-price-val" id="coinUp_BTC">--</span></div>
-          <div class="coin-price-item"><span class="coin-price-label">DOWN</span><span class="coin-price-val" id="coinDown_BTC">--</span></div>
+      <div class="market-card" id="mc_15m">
+        <div class="mc-header">
+          <span class="mc-badge mc-15m">15-MIN</span>
+          <span class="mc-phase" id="mc_15m_phase">Idle</span>
+          <span class="mc-timer" id="mc_15m_timer">--</span>
         </div>
-        <div class="coin-time" id="coinTime_BTC">--</div>
-      </div>
-      <div class="coin-card" id="coinCard_ETH">
-        <div class="coin-header"><span class="coin-badge coin-eth">ETH</span><span class="coin-status" id="coinStatus_ETH">--</span></div>
-        <div class="coin-prices">
-          <div class="coin-price-item"><span class="coin-price-label">UP</span><span class="coin-price-val" id="coinUp_ETH">--</span></div>
-          <div class="coin-price-item"><span class="coin-price-label">DOWN</span><span class="coin-price-val" id="coinDown_ETH">--</span></div>
+        <div class="mc-body">
+          <div class="mc-row">
+            <span class="mc-label">Midpoint (UP)</span>
+            <span class="mc-val" id="mc_15m_mid">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">BID UP / BID DOWN</span>
+            <span class="mc-val" id="mc_15m_bids">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Orders Posted</span>
+            <span class="mc-val" id="mc_15m_orders">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Total Spent</span>
+            <span class="mc-val" id="mc_15m_spent">--</span>
+          </div>
         </div>
-        <div class="coin-time" id="coinTime_ETH">--</div>
-      </div>
-      <div class="coin-card" id="coinCard_SOL">
-        <div class="coin-header"><span class="coin-badge coin-sol">SOL</span><span class="coin-status" id="coinStatus_SOL">--</span></div>
-        <div class="coin-prices">
-          <div class="coin-price-item"><span class="coin-price-label">UP</span><span class="coin-price-val" id="coinUp_SOL">--</span></div>
-          <div class="coin-price-item"><span class="coin-price-label">DOWN</span><span class="coin-price-val" id="coinDown_SOL">--</span></div>
-        </div>
-        <div class="coin-time" id="coinTime_SOL">--</div>
-      </div>
-      <div class="coin-card" id="coinCard_XRP">
-        <div class="coin-header"><span class="coin-badge coin-xrp">XRP</span><span class="coin-status" id="coinStatus_XRP">--</span></div>
-        <div class="coin-prices">
-          <div class="coin-price-item"><span class="coin-price-label">UP</span><span class="coin-price-val" id="coinUp_XRP">--</span></div>
-          <div class="coin-price-item"><span class="coin-price-label">DOWN</span><span class="coin-price-val" id="coinDown_XRP">--</span></div>
-        </div>
-        <div class="coin-time" id="coinTime_XRP">--</div>
-      </div>
-    </div>
-
-    <div id="scalpBar" class="scalp-bar">
-      <div class="scalp-icon" id="scalpIcon">&#9679;</div>
-      <div class="scalp-info">
-        <div class="scalp-label" id="scalpLabel">SCALP DETECTOR</div>
-        <div class="scalp-detail" id="scalpDetail">Waiting for data...</div>
-      </div>
-      <div class="scalp-config" id="scalpConfig">
-        Scalp: Buy $0.85-$0.95 tokens | 15-120s before window ends | BTC, ETH, SOL, XRP
       </div>
     </div>
 
@@ -125,44 +105,42 @@
       </div>
       <div class="safety-item">
         <span class="s-label">Strategy</span>
-        <span class="s-value" style="font-size:12px;color:#58a6ff;">Multi-Coin Scalper</span>
+        <span class="s-value" style="color:#58a6ff;font-size:12px;">Market Maker</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Entry Range</span>
-        <span class="s-value" style="font-size:14px;color:#d29922;">$0.85-$0.95</span>
+        <span class="s-label">Spread</span>
+        <span class="s-value" id="spreadConfig" style="color:#d29922;">6¢ total</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Coins</span>
-        <span class="s-value" style="font-size:12px;color:#79c0ff;">BTC ETH SOL XRP</span>
+        <span class="s-label">Order Size</span>
+        <span class="s-value" id="orderSizeConfig" style="color:#79c0ff;">$10/side</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Today's Record</span>
+        <span class="s-label">Today Record</span>
         <span class="s-value" id="todayRecord">0W / 0L</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Losses Today</span>
-        <span class="s-value" id="dailyLosses">0 / 6</span>
-        <div class="progress-bar">
-          <div class="progress-fill" id="lossProgress" style="width: 0%; background: #3fb950;"></div>
-        </div>
+        <span class="s-label">Daily Loss</span>
+        <span class="s-value" id="dailyLosses">$0.00 / $50.00</span>
+        <div class="progress-bar"><div class="progress-fill" id="lossProgress" style="width:0%;background:#3fb950;"></div></div>
       </div>
       <div class="safety-item">
-        <span class="s-label">Daily P&L</span>
+        <span class="s-label">Daily P&amp;L</span>
         <span class="s-value" id="dailyNetPnL">$0.00</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Money Spent</span>
+        <span class="s-label">Total Spent</span>
         <span class="s-value" id="dailySpent">$0.00</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Trades Today</span>
+        <span class="s-label">Trades</span>
         <span class="s-value" id="tradesToday">0</span>
       </div>
     </div>
 
     <div class="grid-top">
       <div class="stat-card">
-        <div class="label">Total P&L</div>
+        <div class="label">Total P&amp;L</div>
         <div class="value neutral" id="totalPnl">$0.00</div>
         <div class="sub" id="todayPnl">Today: $0.00</div>
       </div>
@@ -179,27 +157,27 @@
       <div class="stat-card">
         <div class="label">Last Scan</div>
         <div class="value neutral" id="lastScan" style="font-size:16px;">Never</div>
-        <div class="sub" id="scanInterval">Every 5s</div>
+        <div class="sub" id="scanConfig">MM mode</div>
       </div>
     </div>
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        Scalp Signal Log
-        <span style="font-size:11px;color:#484f58;" id="scalpLogCount">0 events</span>
+        Market Maker Activity
+        <span style="font-size:11px;color:#484f58;" id="mmLogCount">0 events</span>
       </div>
-      <div class="panel-body" id="scalpLogPanel" style="max-height:400px;">
-        <div class="empty-state">No scalp events yet. Bot scans BTC, ETH, SOL, XRP — buys winning side at $0.85-$0.95 when 15-120 seconds remain.</div>
+      <div class="panel-body" id="mmLogPanel" style="max-height:400px;">
+        <div class="empty-state">No market maker events yet. Start the bot to begin quoting.</div>
       </div>
     </div>
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        Auto-Redeem — Winning Position Collection
+        Auto-Redeem — Position Collection
         <span style="font-size:11px;color:#484f58;" id="redeemCount">0 tracked</span>
       </div>
       <div class="panel-body" id="redeemPanel" style="max-height:300px;">
-        <div class="empty-state">No positions tracked yet. Trades will appear here for auto-redemption.</div>
+        <div class="empty-state">No positions tracked yet.</div>
       </div>
     </div>
 
@@ -224,22 +202,22 @@
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Coin</th>
+                <th>Market</th>
                 <th>Side</th>
-                <th>Entry</th>
+                <th>Price</th>
                 <th>Size</th>
-                <th>Payout</th>
                 <th>Result</th>
-                <th>P&L</th>
+                <th>P&amp;L</th>
               </tr>
             </thead>
             <tbody id="tradeBody">
-              <tr><td colspan="8" class="empty-state">No trades yet</td></tr>
+              <tr><td colspan="7" class="empty-state">No trades yet</td></tr>
             </tbody>
           </table>
         </div>
       </div>
     </div>
+
   </div>
 
   <script src="/app.js"></script>

@@ -2,19 +2,16 @@ const logger = require('./logger');
 
 const GAMMA_API = 'https://gamma-api.polymarket.com';
 
-const COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
-const SLUG_PREFIXES = {
-  BTC: 'btc-updown-5m',
-  ETH: 'eth-updown-5m',
-  SOL: 'sol-updown-5m',
-  XRP: 'xrp-updown-5m'
-};
+const MARKETS_CONFIG = [
+  { coin: 'BTC', type: '5m',  slugPrefix: 'btc-updown-5m',  intervalSeconds: 300 },
+  { coin: 'BTC', type: '15m', slugPrefix: 'btc-updown-15m', intervalSeconds: 900 }
+];
 
-async function fetchWithTimeout(url, options = {}, timeout = 15000) {
+async function fetchWithTimeout(url, timeout = 12000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
+    const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timer);
     return res;
   } catch (err) {
@@ -23,29 +20,18 @@ async function fetchWithTimeout(url, options = {}, timeout = 15000) {
   }
 }
 
-function get5MinSlotTimestamps() {
-  const now = new Date();
-  const nowUnix = Math.floor(now.getTime() / 1000);
-  const slotSeconds = 300;
-  const currentSlot = Math.floor(nowUnix / slotSeconds) * slotSeconds;
-  const timestamps = [];
-
-  for (let offset = -2; offset <= 3; offset++) {
-    timestamps.push(currentSlot + offset * slotSeconds);
-  }
-
-  return timestamps;
+function getSlotTimestamps(intervalSeconds) {
+  const now = Math.floor(Date.now() / 1000);
+  const currentSlot = Math.floor(now / intervalSeconds) * intervalSeconds;
+  return [-1, 0, 1, 2].map(offset => currentSlot + offset * intervalSeconds);
 }
 
-async function scanSingleCoin(coin) {
-  const prefix = SLUG_PREFIXES[coin];
-  if (!prefix) return [];
+async function scanSingleMarket(config) {
+  const { coin, type, slugPrefix, intervalSeconds } = config;
+  const timestamps = getSlotTimestamps(intervalSeconds);
 
-  const timestamps = get5MinSlotTimestamps();
-  const markets = [];
-
-  const fetchPromises = timestamps.map(async (timestamp) => {
-    const slug = `${prefix}-${timestamp}`;
+  const results = await Promise.all(timestamps.map(async (timestamp) => {
+    const slug = `${slugPrefix}-${timestamp}`;
     try {
       const res = await fetchWithTimeout(`${GAMMA_API}/events?slug=${slug}`);
       if (!res.ok) return null;
@@ -58,17 +44,16 @@ async function scanSingleCoin(coin) {
       const market = event.markets?.[0];
       if (!market) return null;
 
-      const windowEnd = (timestamp + 300) * 1000;
-      const now = Date.now();
-      const secondsLeft = Math.max(0, (windowEnd - now) / 1000);
-
-      if (secondsLeft <= 0) return null;
+      const windowEndMs = (timestamp + intervalSeconds) * 1000;
+      const secondsLeft = Math.max(0, (windowEndMs - Date.now()) / 1000);
+      if (secondsLeft <= 0 || secondsLeft > intervalSeconds) return null;
 
       let tokenIds = [];
       if (market.clobTokenIds) {
         tokenIds = typeof market.clobTokenIds === 'string'
           ? JSON.parse(market.clobTokenIds) : market.clobTokenIds;
       }
+      if (tokenIds.length < 2) return null;
 
       let outcomes = ['Up', 'Down'];
       if (market.outcomes) {
@@ -76,86 +61,51 @@ async function scanSingleCoin(coin) {
           ? JSON.parse(market.outcomes) : market.outcomes;
       }
 
-      let outcomePrices = null;
-      if (market.outcomePrices) {
-        outcomePrices = typeof market.outcomePrices === 'string'
-          ? JSON.parse(market.outcomePrices) : market.outcomePrices;
-      }
-
-      if (tokenIds.length < 2) return null;
-
-      const tokens = tokenIds.map((id, i) => ({
-        token_id: id,
-        outcome: outcomes[i] || (i === 0 ? 'Up' : 'Down'),
-        price: outcomePrices ? parseFloat(outcomePrices[i]) : null
-      }));
+      const upTokenId   = tokenIds[0];
+      const downTokenId = tokenIds[1];
 
       return {
         id: market.conditionId || market.id,
         question: market.question || event.title,
         coin,
-        endTime: new Date(windowEnd),
+        type,
+        intervalSeconds,
+        endTime: new Date(windowEndMs),
         windowStartTs: timestamp,
-        windowEndTs: timestamp + 300,
+        windowEndTs: timestamp + intervalSeconds,
         secondsLeft: Math.round(secondsLeft),
-        tokens,
-        outcomePrices,
-        slug: market.slug || slug,
-        description: market.description || event.description || '',
-        liquidity: parseFloat(market.liquidity || event.liquidity || 0),
-        volume: parseFloat(market.volume || event.volume || 0),
+        upTokenId,
+        downTokenId,
+        upOutcome: outcomes[0] || 'Up',
+        downOutcome: outcomes[1] || 'Down',
         negRisk: market.negRisk === true || market.negRisk === 'true' || event.negRisk === true,
         tickSize: market.minimum_tick_size || market.minimumTickSize || '0.01',
-        active: true
+        liquidity: parseFloat(market.liquidity || event.liquidity || 0),
+        volume: parseFloat(market.volume || event.volume || 0),
+        slug: market.slug || slug
       };
-    } catch (err) {
+    } catch {
       return null;
     }
-  });
+  }));
 
-  const results = await Promise.all(fetchPromises);
-  for (const result of results) {
-    if (result) markets.push(result);
+  const found = results.filter(Boolean);
+  found.sort((a, b) => a.secondsLeft - b.secondsLeft);
+  return found[0] || null;
+}
+
+async function scanAllMarkets() {
+  const results = await Promise.all(MARKETS_CONFIG.map(c => scanSingleMarket(c)));
+  const active = results.filter(Boolean);
+
+  if (active.length > 0) {
+    const summary = active.map(m => `${m.coin}-${m.type}(${m.secondsLeft}s)`).join(', ');
+    logger.addActivity('scan', { message: `Found ${active.length} active market(s): ${summary}` });
+  } else {
+    logger.addActivity('scan', { message: 'No active BTC markets found' });
   }
 
-  return markets
-    .filter(m => m.secondsLeft > 0 && m.secondsLeft <= 300)
-    .sort((a, b) => a.secondsLeft - b.secondsLeft);
+  return active;
 }
 
-async function scanAllCoins() {
-  const allMarkets = [];
-  const coinResults = await Promise.all(COINS.map(coin => scanSingleCoin(coin)));
-
-  for (let i = 0; i < COINS.length; i++) {
-    const markets = coinResults[i];
-    if (markets.length > 0) {
-      allMarkets.push(...markets);
-    }
-  }
-
-  const foundCoins = [...new Set(allMarkets.map(m => m.coin))];
-  logger.addActivity('scan', {
-    message: `Scanned ${COINS.length} coins — found ${allMarkets.length} active market(s): ${foundCoins.join(', ') || 'none'}`
-  });
-
-  return allMarkets;
-}
-
-async function scanMarkets() {
-  logger.addActivity('scan', { message: 'Scanning for BTC 5-min Up/Down market...' });
-
-  const markets = await scanSingleCoin('BTC');
-  const best = markets[0] || null;
-
-  logger.addActivity('scan_result', {
-    message: best
-      ? `Found 5-min market: ${best.question} (${best.secondsLeft}s left)`
-      : 'No active BTC 5-min market found',
-    count: markets.length
-  });
-
-  return best;
-}
-
-module.exports = { scanMarkets, scanAllCoins, scanSingleCoin, get5MinSlotTimestamps, COINS, SLUG_PREFIXES };
+module.exports = { scanAllMarkets, MARKETS_CONFIG };

@@ -1,5 +1,4 @@
 const REFRESH_INTERVAL = 3000;
-const COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
 
 async function api(path, method = 'GET', body = null) {
   try {
@@ -18,29 +17,39 @@ async function api(path, method = 'GET', body = null) {
 
 function formatTime(iso) {
   if (!iso) return 'N/A';
-  const d = new Date(iso);
-  return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return new Date(iso).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function getTypeClass(type) {
-  if (type.includes('scalp_signal')) return 'type-scalp-signal';
-  if (type.includes('scalp_trade')) return 'type-trade';
-  if (type.includes('scalp')) return 'type-scalp';
-  if (type.includes('price_check')) return 'type-price';
-  if (type.includes('trade')) return 'type-trade';
-  if (type.includes('error')) return 'type-error';
-  if (type.includes('safety') || type.includes('skip')) return 'type-safety';
-  if (type.includes('scan')) return 'type-scan';
-  if (type.includes('kraken')) return 'type-kraken';
-  if (type.includes('redeem')) return 'type-redeem';
+  if (type.includes('mm_error'))   return 'type-error';
+  if (type.includes('mm_close'))   return 'type-safety';
+  if (type.includes('mm_'))        return 'type-mm';
+  if (type.includes('trade'))      return 'type-trade';
+  if (type.includes('error'))      return 'type-error';
+  if (type.includes('safety'))     return 'type-safety';
+  if (type.includes('scan'))       return 'type-scan';
+  if (type.includes('redeem'))     return 'type-redeem';
+  if (type.includes('kraken'))     return 'type-kraken';
   return 'type-bot';
 }
 
 function getResultBadge(result) {
-  if (result === 'win') return '<span class="badge badge-win">WIN</span>';
-  if (result === 'loss') return '<span class="badge badge-loss">LOSS</span>';
+  if (result === 'win')     return '<span class="badge badge-win">WIN</span>';
+  if (result === 'loss')    return '<span class="badge badge-loss">LOSS</span>';
   if (result === 'pending') return '<span class="badge badge-pending">PENDING</span>';
   return '<span class="badge badge-failed">FAILED</span>';
+}
+
+function fmtSeconds(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+function dirBadge(dir) {
+  if (dir === 'RISING')  return '<span class="dir-badge dir-up">RISING</span>';
+  if (dir === 'FALLING') return '<span class="dir-badge dir-down">FALLING</span>';
+  return '<span class="dir-badge dir-flat">FLAT</span>';
 }
 
 function formatChangeVal(change) {
@@ -51,17 +60,11 @@ function formatChangeVal(change) {
   return `<span class="${cls}">${pct > 0 ? '+' : ''}${dollars}</span>`;
 }
 
-function directionBadge(dir) {
-  if (dir === 'RISING') return '<span class="dir-badge dir-up">RISING</span>';
-  if (dir === 'FALLING') return '<span class="dir-badge dir-down">FALLING</span>';
-  return '<span class="dir-badge dir-flat">FLAT</span>';
-}
-
 async function updateBtcTicker() {
   const data = await api('/btc-price');
   if (!data) return;
 
-  const dot = document.getElementById('krakenDot');
+  const dot  = document.getElementById('krakenDot');
   const text = document.getElementById('krakenText');
 
   if (!data.available) {
@@ -72,186 +75,107 @@ async function updateBtcTicker() {
     return;
   }
 
-  document.getElementById('btcPrice').textContent = '$' + data.currentPrice.toLocaleString();
-  document.getElementById('btcDirection').innerHTML = directionBadge(data.direction);
-
-  document.getElementById('btcChange1m').innerHTML = formatChangeVal(data.change1m);
-  document.getElementById('btcChange3m').innerHTML = formatChangeVal(data.change3m);
-  document.getElementById('btcChange5m').innerHTML = formatChangeVal(data.change5m);
+  document.getElementById('btcPrice').textContent     = '$' + data.currentPrice.toLocaleString();
+  document.getElementById('btcDirection').innerHTML   = dirBadge(data.direction);
+  document.getElementById('btcChange1m').innerHTML    = formatChangeVal(data.change1m);
+  document.getElementById('btcChange5m').innerHTML    = formatChangeVal(data.change5m);
   document.getElementById('btcVolatility').textContent = data.recentVolatility ? '$' + data.recentVolatility : '--';
 
-  dot.className = 'kraken-dot dot-green';
+  dot.className   = 'kraken-dot dot-green';
   text.textContent = 'Kraken Live';
 
   const ticker = document.getElementById('btcTicker');
-  if (data.direction === 'RISING') {
-    ticker.className = 'btc-ticker btc-ticker-up';
-  } else if (data.direction === 'FALLING') {
-    ticker.className = 'btc-ticker btc-ticker-down';
-  } else {
-    ticker.className = 'btc-ticker';
-  }
+  if (data.direction === 'RISING')  ticker.className = 'btc-ticker btc-ticker-up';
+  else if (data.direction === 'FALLING') ticker.className = 'btc-ticker btc-ticker-down';
+  else ticker.className = 'btc-ticker';
 }
 
-async function updateWindowBar() {
-  const data = await api('/window-status');
-  if (!data) return;
+function updateMarketCard(type, sessions) {
+  const session = sessions.find(s => s.type === type);
+  const suffix  = type.replace('-', '');
 
-  const timerEl = document.getElementById('windowTimer');
-  const openEl = document.getElementById('windowOpen');
-  const leadEl = document.getElementById('windowLead');
-  const sideEl = document.getElementById('windowSide');
-  const bar = document.getElementById('windowBar');
+  const phaseEl  = document.getElementById(`mc_${suffix}_phase`);
+  const timerEl  = document.getElementById(`mc_${suffix}_timer`);
+  const midEl    = document.getElementById(`mc_${suffix}_mid`);
+  const bidsEl   = document.getElementById(`mc_${suffix}_bids`);
+  const ordersEl = document.getElementById(`mc_${suffix}_orders`);
+  const spentEl  = document.getElementById(`mc_${suffix}_spent`);
+  const card     = document.getElementById(`mc_${suffix}`);
 
-  if (data.secondsLeft !== undefined && data.secondsLeft !== null) {
-    const min = Math.floor(data.secondsLeft / 60);
-    const sec = Math.floor(data.secondsLeft % 60);
-    timerEl.textContent = `${min}:${String(sec).padStart(2, '0')} left`;
-
-    if (data.secondsLeft <= 90 && data.secondsLeft > 0) {
-      bar.className = 'window-bar window-scalp-zone';
-    } else if (data.secondsLeft <= 120) {
-      bar.className = 'window-bar window-approaching';
-    } else {
-      bar.className = 'window-bar';
-    }
-  } else {
-    timerEl.textContent = '--:--';
+  if (!session) {
+    phaseEl.textContent  = 'Idle';
+    phaseEl.className    = 'mc-phase';
+    timerEl.textContent  = '--';
+    midEl.textContent    = '--';
+    bidsEl.textContent   = '--';
+    ordersEl.textContent = '--';
+    spentEl.textContent  = '--';
+    card.className       = 'market-card';
+    return;
   }
 
-  if (data.openPrice) {
-    openEl.textContent = '$' + data.openPrice.toLocaleString();
+  const phase = session.phase;
+  timerEl.textContent = fmtSeconds(session.secondsLeft) + ' left';
+
+  if (phase === 'closing') {
+    phaseEl.textContent = 'CLOSING';
+    phaseEl.className   = 'mc-phase phase-closing';
+    card.className      = 'market-card market-card-closing';
+  } else if (phase === 'quoting') {
+    phaseEl.textContent = 'QUOTING';
+    phaseEl.className   = 'mc-phase phase-quoting';
+    card.className      = 'market-card market-card-quoting';
+  } else if (phase === 'waiting') {
+    phaseEl.textContent = 'WAITING';
+    phaseEl.className   = 'mc-phase phase-waiting';
+    card.className      = 'market-card';
   } else {
-    openEl.textContent = '--';
+    phaseEl.textContent = phase;
+    phaseEl.className   = 'mc-phase';
+    card.className      = 'market-card';
   }
 
-  if (data.btcVsOpenDollars !== null && data.btcVsOpenDollars !== undefined) {
-    const sign = data.btcVsOpenRaw >= 0 ? '+' : '-';
-    leadEl.textContent = `${sign}$${data.btcVsOpenDollars.toFixed(0)}`;
-    leadEl.className = `window-value ${data.btcVsOpenRaw >= 0 ? 'positive' : 'negative'}`;
+  if (session.lastMid !== null && session.lastMid !== undefined) {
+    const mid = session.lastMid;
+    const spread = 0.06;
+    const bidUp   = (mid - spread / 2).toFixed(3);
+    const bidDown = (1 - mid - spread / 2).toFixed(3);
+    midEl.textContent  = '$' + mid.toFixed(3);
+    bidsEl.innerHTML   = `<span class="positive">UP $${bidUp}</span> / <span class="positive">DOWN $${bidDown}</span>`;
   } else {
-    leadEl.textContent = '--';
-    leadEl.className = 'window-value';
+    midEl.textContent = '--';
+    bidsEl.textContent = '--';
   }
 
-  if (data.btcLeadingSide) {
-    sideEl.innerHTML = data.btcLeadingSide === 'UP'
-      ? '<span class="dir-badge dir-up">UP</span>'
-      : '<span class="dir-badge dir-down">DOWN</span>';
-  } else {
-    sideEl.textContent = '--';
-  }
+  ordersEl.textContent = session.ordersPosted || '0';
+  spentEl.textContent  = '$' + (session.totalSpent || 0).toFixed(2);
 }
 
-function updateMultiCoinCards(status) {
-  if (!status || !status.multiCoinStatus) return;
-
-  const mcs = status.multiCoinStatus;
-
-  for (const coin of COINS) {
-    const card = document.getElementById(`coinCard_${coin}`);
-    const statusEl = document.getElementById(`coinStatus_${coin}`);
-    const upEl = document.getElementById(`coinUp_${coin}`);
-    const downEl = document.getElementById(`coinDown_${coin}`);
-    const timeEl = document.getElementById(`coinTime_${coin}`);
-
-    if (!card) continue;
-
-    const data = mcs[coin];
-    if (!data) {
-      statusEl.textContent = 'Waiting...';
-      statusEl.className = 'coin-status';
-      upEl.textContent = '--';
-      upEl.className = 'coin-price-val';
-      downEl.textContent = '--';
-      downEl.className = 'coin-price-val';
-      timeEl.textContent = '--';
-      card.className = 'coin-card';
-      continue;
-    }
-
-    const sig = data.signal;
-    const sLeft = data.secondsLeft || sig?.secondsLeft;
-
-    if (sig && sig.ready) {
-      statusEl.innerHTML = `<span class="badge badge-win">SCALP ${sig.side}</span>`;
-      card.className = 'coin-card coin-card-active';
-    } else if (sig && sig.reason) {
-      const short = sig.reason.length > 40 ? sig.reason.substring(0, 40) + '...' : sig.reason;
-      statusEl.textContent = short;
-      statusEl.className = 'coin-status';
-      card.className = 'coin-card';
-    } else {
-      statusEl.textContent = 'Monitoring';
-      card.className = 'coin-card';
-    }
-
-    const up = data.liveUpPrice || sig?.upPrice;
-    const down = data.liveDownPrice || sig?.downPrice;
-
-    if (up !== undefined && up !== null) {
-      upEl.textContent = '$' + up.toFixed(3);
-      upEl.className = 'coin-price-val ' + (up >= 0.85 ? 'positive' : '');
-    }
-    if (down !== undefined && down !== null) {
-      downEl.textContent = '$' + down.toFixed(3);
-      downEl.className = 'coin-price-val ' + (down >= 0.85 ? 'positive' : '');
-    }
-
-    if (sLeft !== undefined && sLeft !== null) {
-      const m = Math.floor(sLeft / 60);
-      const s = Math.floor(sLeft % 60);
-      timeEl.textContent = `${m}:${String(s).padStart(2, '0')} left`;
-    }
-  }
-}
-
-async function updateScalpBar() {
-  const status = await api('/status');
+async function updateMarketCards(status) {
   if (!status) return;
-
-  const signal = status.lastSignalStatus;
-  const icon = document.getElementById('scalpIcon');
-  const label = document.getElementById('scalpLabel');
-  const detail = document.getElementById('scalpDetail');
-  const bar = document.getElementById('scalpBar');
-  const config = document.getElementById('scalpConfig');
-
-  updateMultiCoinCards(status);
-
-  if (status.config) {
-    config.textContent = `Entry: $${status.config.minEntry}-$${status.config.maxEntry} | Window: ${status.config.minSeconds}-${status.config.maxSeconds}s | BTC, ETH, SOL, XRP`;
-  }
-
-  if (signal && signal.ready) {
-    const coin = signal.market?.coin || 'BTC';
-    bar.className = 'scalp-bar scalp-active';
-    icon.innerHTML = '&#9889;';
-    icon.className = 'scalp-icon scalp-icon-active';
-    label.textContent = `SCALP READY: BUY ${signal.side} [${coin}]`;
-    label.className = 'scalp-label scalp-label-active';
-    detail.textContent = signal.reason;
-    detail.className = 'scalp-detail scalp-detail-active';
-  } else if (signal) {
-    bar.className = 'scalp-bar';
-    icon.innerHTML = '&#9679;';
-    icon.className = 'scalp-icon';
-    label.textContent = 'WATCHING ALL COINS';
-    label.className = 'scalp-label';
-    detail.textContent = signal.reason || 'Monitoring BTC, ETH, SOL, XRP...';
-    detail.className = 'scalp-detail';
-  }
+  const sessions = status.activeSessions || [];
+  updateMarketCard('5m',  sessions);
+  updateMarketCard('15m', sessions);
 }
 
 async function updateStatus() {
   const status = await api('/status');
   if (!status) return;
 
-  const dot = status.isRunning ? '<span class="status-dot dot-green"></span>Running' : '<span class="status-dot dot-red"></span>Stopped';
+  const dot = status.isRunning
+    ? '<span class="status-dot dot-green"></span>Running'
+    : '<span class="status-dot dot-red"></span>Stopped';
   document.getElementById('botStatus').innerHTML = dot;
 
   if (status.lastScanTime) {
     document.getElementById('lastScan').textContent = formatTime(status.lastScanTime);
+  }
+
+  if (status.config) {
+    const cfg = status.config;
+    document.getElementById('spreadConfig').textContent    = `${(cfg.spread * 100).toFixed(0)}¢ total`;
+    document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize}/side`;
+    document.getElementById('scanConfig').textContent      = `Refresh ${cfg.refreshInterval}s | Close ${cfg.closeSeconds}s | Max ${cfg.maxSeconds}s`;
   }
 
   const safety = status.safety;
@@ -261,31 +185,31 @@ async function updateStatus() {
       : '<span class="positive">OFF</span>';
 
     document.getElementById('todayRecord').textContent = `${safety.dailyWinCount || 0}W / ${safety.dailyLossCount || 0}L`;
-    document.getElementById('dailyLosses').textContent = `${safety.dailyLossCount || 0} / ${safety.maxDailyLosses || 6}`;
+    document.getElementById('dailyLosses').textContent = `$${safety.dailyLoss || '0.00'} / $${safety.dailyLossLimit || '50.00'}`;
 
     const netPnL = parseFloat(safety.dailyNetPnL || 0);
     const pnlEl = document.getElementById('dailyNetPnL');
     pnlEl.textContent = `$${safety.dailyNetPnL || '0.00'}`;
-    pnlEl.className = `s-value ${netPnL > 0 ? 'positive' : netPnL < 0 ? 'negative' : ''}`;
+    pnlEl.className   = `s-value ${netPnL > 0 ? 'positive' : netPnL < 0 ? 'negative' : ''}`;
 
-    document.getElementById('dailySpent').textContent = `$${safety.dailySpent || '0.00'}`;
-    document.getElementById('tradesToday').textContent = safety.dailyTradeCount;
+    document.getElementById('dailySpent').textContent  = `$${safety.dailySpent || '0.00'}`;
+    document.getElementById('tradesToday').textContent = safety.dailyTradeCount || 0;
 
-    const lossPct = safety.maxDailyLosses > 0 ? ((safety.dailyLossCount || 0) / safety.maxDailyLosses * 100) : 0;
-    const progressBar = document.getElementById('lossProgress');
-    progressBar.style.width = `${Math.min(100, lossPct)}%`;
-    progressBar.style.background = lossPct > 80 ? '#f85149' : lossPct > 50 ? '#d29922' : '#3fb950';
+    const lossPct = safety.dailyLossLimit > 0
+      ? (parseFloat(safety.dailyLoss || 0) / parseFloat(safety.dailyLossLimit) * 100) : 0;
+    const pb = document.getElementById('lossProgress');
+    pb.style.width      = `${Math.min(100, lossPct)}%`;
+    pb.style.background = lossPct > 80 ? '#f85149' : lossPct > 50 ? '#d29922' : '#3fb950';
 
-    const safetyBar = document.getElementById('safetyBar');
-    if (safety.killSwitch) {
-      safetyBar.classList.add('kill-switch-active');
-    } else {
-      safetyBar.classList.remove('kill-switch-active');
-    }
+    const sb = document.getElementById('safetyBar');
+    if (safety.killSwitch) sb.classList.add('kill-switch-active');
+    else sb.classList.remove('kill-switch-active');
 
-    document.getElementById('killBtn').textContent = safety.killSwitch ? 'Disable Kill Switch' : 'Kill Switch';
-    document.getElementById('killBtn').className = safety.killSwitch ? 'btn btn-green' : 'btn btn-yellow';
+    document.getElementById('killBtn').textContent  = safety.killSwitch ? 'Disable Kill Switch' : 'Kill Switch';
+    document.getElementById('killBtn').className    = safety.killSwitch ? 'btn btn-green' : 'btn btn-yellow';
   }
+
+  updateMarketCards(status);
 }
 
 async function updateStats() {
@@ -295,41 +219,41 @@ async function updateStats() {
   const pnl = parseFloat(stats.totalPnL);
   const pnlEl = document.getElementById('totalPnl');
   pnlEl.textContent = `$${stats.totalPnL}`;
-  pnlEl.className = `value ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral'}`;
+  pnlEl.className   = `value ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral'}`;
 
-  document.getElementById('todayPnl').textContent = `Today: $${stats.todayPnL}`;
-  document.getElementById('winRate').textContent = `${stats.winRate}%`;
-  document.getElementById('winRate').className = `value ${parseFloat(stats.winRate) >= 50 ? 'positive' : 'negative'}`;
-  document.getElementById('winLoss').textContent = `${stats.wins}W / ${stats.losses}L`;
+  document.getElementById('todayPnl').textContent  = `Today: $${stats.todayPnL}`;
+  document.getElementById('winRate').textContent   = `${stats.winRate}%`;
+  document.getElementById('winRate').className     = `value ${parseFloat(stats.winRate) >= 50 ? 'positive' : 'negative'}`;
+  document.getElementById('winLoss').textContent   = `${stats.wins}W / ${stats.losses}L`;
   document.getElementById('totalTrades').textContent = stats.totalTrades;
   document.getElementById('pendingTrades').textContent = `Pending: ${stats.pendingTrades}`;
 }
 
-async function updateScalpLog() {
-  const activities = await api('/activities?limit=80');
+async function updateMMLog() {
+  const activities = await api('/activities?limit=100');
   if (!activities || activities.length === 0) return;
 
-  const scalpEvents = activities.filter(a =>
-    a.type.includes('scalp') || a.type.includes('trade') || a.type.includes('strategy') || a.type.includes('price_check')
+  const mmEvents = activities.filter(a =>
+    a.type.startsWith('mm_') || a.type === 'scan' || a.type.includes('trade')
   );
 
-  const panel = document.getElementById('scalpLogPanel');
-  const countEl = document.getElementById('scalpLogCount');
-  countEl.textContent = `${scalpEvents.length} events`;
+  const panel  = document.getElementById('mmLogPanel');
+  const countEl = document.getElementById('mmLogCount');
+  countEl.textContent = `${mmEvents.length} events`;
 
-  if (scalpEvents.length === 0) {
-    panel.innerHTML = '<div class="empty-state">No scalp events yet. Bot scans BTC, ETH, SOL, XRP — buys winning side at $0.85-$0.95 when 15-120 seconds remain.</div>';
+  if (mmEvents.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No market maker events yet. Start the bot to begin quoting.</div>';
     return;
   }
 
-  panel.innerHTML = scalpEvents.map(a => {
-    let cls = getTypeClass(a.type);
+  panel.innerHTML = mmEvents.map(a => {
+    const cls  = getTypeClass(a.type);
     let icon = '';
-    if (a.type === 'scalp_signal') icon = '&#9889; ';
-    if (a.type === 'scalp_trade') icon = '&#128176; ';
-    if (a.type === 'trade_success') icon = '&#9989; ';
-    if (a.type === 'scalp_skip') icon = '&#128683; ';
-
+    if (a.type === 'mm_placed') icon = '&#9654; ';
+    if (a.type === 'mm_quote')  icon = '&#8635; ';
+    if (a.type === 'mm_close')  icon = '&#9724; ';
+    if (a.type === 'mm_done')   icon = '&#10003; ';
+    if (a.type === 'mm_error')  icon = '&#9888; ';
     return `<div class="activity-item">
       <div class="activity-time">${formatTime(a.timestamp)}</div>
       <span class="activity-type ${cls}">${a.type}</span>
@@ -362,24 +286,70 @@ async function updateTrades() {
   const tbody = document.getElementById('tradeBody');
 
   tbody.innerHTML = trades.map(t => {
-    const side = t.action === 'BUY_YES' ? 'UP' : 'DOWN';
-    const sideCls = side === 'UP' ? 'action-buy-yes' : 'action-buy-no';
-    const payout = t.price > 0 ? (1 / t.price).toFixed(2) : '?';
-    const pnlStr = t.pnl !== undefined && t.pnl !== 0 ? `$${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}` : '--';
+    const pnlStr = t.pnl !== undefined && t.pnl !== 0
+      ? `$${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}` : '--';
     const pnlCls = t.pnl > 0 ? 'positive' : t.pnl < 0 ? 'negative' : '';
-    const coin = t.coin || 'BTC';
+    const market = t.coin ? `BTC-${t.coin}` : 'BTC';
+    const side = (t.action || 'MM').replace('BUY_', '');
 
     return `<tr>
       <td>${formatTime(t.timestamp)}</td>
-      <td><span class="coin-badge-sm coin-${coin.toLowerCase()}">${coin}</span></td>
-      <td><span class="decision-action ${sideCls}">${side}</span></td>
+      <td><span class="coin-badge-sm coin-btc">${market}</span></td>
+      <td>${side}</td>
       <td>$${t.price?.toFixed(3) || '0.000'}</td>
       <td>$${t.size?.toFixed(2) || '0.00'}</td>
-      <td>${payout}x</td>
       <td>${getResultBadge(t.result)}</td>
       <td class="${pnlCls}">${pnlStr}</td>
     </tr>`;
   }).join('');
+}
+
+function getRedeemStatusBadge(status) {
+  const map = {
+    waiting:   '<span class="badge badge-pending">WAITING</span>',
+    redeeming: '<span class="badge badge-pending">REDEEMING</span>',
+    redeemed:  '<span class="badge badge-win">COLLECTED</span>',
+    no_payout: '<span class="badge badge-loss">LOST</span>',
+    error:     '<span class="badge badge-failed">ERROR</span>'
+  };
+  return map[status] || `<span class="badge">${status}</span>`;
+}
+
+async function updateRedemptions() {
+  const data = await api('/redemptions');
+  if (!data) return;
+
+  document.getElementById('redeemCount').textContent =
+    `${data.pending.length} pending | ${data.totalRedeemed} collected | ${data.totalLost} lost`;
+
+  const panel = document.getElementById('redeemPanel');
+  const total = data.pending.length + data.history.length;
+  if (total === 0) {
+    panel.innerHTML = '<div class="empty-state">No positions tracked yet.</div>';
+    return;
+  }
+
+  let html = '';
+  if (data.safeAddress) {
+    html += `<div class="activity-item" style="border-left:2px solid #58a6ff;"><div class="activity-type type-bot">safe</div> Proxy wallet: ${data.safeAddress}</div>`;
+  }
+  for (const p of data.pending) {
+    html += `<div class="activity-item">
+      <div class="activity-time">${formatTime(p.addedAt)}</div>
+      ${getRedeemStatusBadge(p.status)}
+      <span style="margin-left:6px;">${p.question || 'BTC Trade'}</span>
+      <span style="color:#484f58;font-size:11px;margin-left:auto;">$${p.size?.toFixed(2) || '?'} ${p.side || ''}</span>
+    </div>`;
+  }
+  for (const h of data.history) {
+    html += `<div class="activity-item">
+      <div class="activity-time">${formatTime(h.redeemedAt)}</div>
+      ${getRedeemStatusBadge(h.status)}
+      <span style="margin-left:6px;">${h.question || 'BTC Trade'}</span>
+      <span style="color:#484f58;font-size:11px;margin-left:auto;">$${h.size?.toFixed(2) || '?'}${h.txHash ? ' | TX: ' + h.txHash.slice(0, 12) + '...' : ''}</span>
+    </div>`;
+  }
+  panel.innerHTML = html;
 }
 
 async function startBot() {
@@ -413,85 +383,25 @@ async function scanNow() {
 
 async function scanWallet() {
   const btn = document.querySelector('.btn-purple');
-  btn.textContent = 'Scanning Wallet...';
+  btn.textContent = 'Scanning...';
   btn.disabled = true;
   const res = await api('/scan-positions', 'POST');
   if (res) {
-    if (res.redeemable > 0) {
-      alert(`Found ${res.found} position(s), ${res.redeemable} redeemable! Redeeming now...`);
-    } else if (res.found > 0) {
-      alert(`Found ${res.found} position(s), but none are redeemable right now.`);
-    } else {
-      alert(res.error ? `Scan failed: ${res.error}` : 'No positions found on wallet.');
-    }
+    if (res.redeemable > 0) alert(`Found ${res.found} position(s), ${res.redeemable} redeemable!`);
+    else if (res.found > 0) alert(`Found ${res.found} position(s), none redeemable yet.`);
+    else alert(res.error ? `Scan failed: ${res.error}` : 'No positions found.');
   }
   btn.textContent = 'Scan Wallet';
   btn.disabled = false;
   refreshAll();
 }
 
-function getRedeemStatusBadge(status) {
-  const map = {
-    waiting: '<span class="badge badge-pending">WAITING</span>',
-    redeeming: '<span class="badge badge-pending">REDEEMING</span>',
-    redeemed: '<span class="badge badge-win">COLLECTED</span>',
-    no_payout: '<span class="badge badge-loss">LOST</span>',
-    error: '<span class="badge badge-failed">ERROR</span>'
-  };
-  return map[status] || `<span class="badge">${status}</span>`;
-}
-
-async function updateRedemptions() {
-  const data = await api('/redemptions');
-  if (!data) return;
-
-  document.getElementById('redeemCount').textContent =
-    `${data.pending.length} pending | ${data.totalRedeemed} collected | ${data.totalLost} lost`;
-
-  const panel = document.getElementById('redeemPanel');
-
-  const total = data.pending.length + data.history.length;
-  if (total === 0) {
-    panel.innerHTML = '<div class="empty-state">No positions tracked yet. Trades will appear here for auto-redemption.</div>';
-    return;
-  }
-
-  let html = '';
-
-  if (data.safeAddress) {
-    html += `<div class="activity-item" style="border-left:2px solid #58a6ff;"><div class="activity-type type-bot">safe</div> Proxy wallet: ${data.safeAddress}</div>`;
-  }
-
-  for (const p of data.pending) {
-    const timeStr = p.marketEndTime ? formatTime(p.marketEndTime) : '?';
-    html += `<div class="activity-item">
-      <div class="activity-time">${formatTime(p.addedAt)}</div>
-      ${getRedeemStatusBadge(p.status)}
-      <span style="margin-left:6px;">${p.question || 'Trade'}</span>
-      <span style="color:#484f58;font-size:11px;margin-left:auto;">$${p.size?.toFixed(2) || '?'} ${p.side || ''} | ends ${timeStr}</span>
-    </div>`;
-  }
-
-  for (const h of data.history) {
-    html += `<div class="activity-item">
-      <div class="activity-time">${formatTime(h.redeemedAt)}</div>
-      ${getRedeemStatusBadge(h.status)}
-      <span style="margin-left:6px;">${h.question || 'Trade'}</span>
-      <span style="color:#484f58;font-size:11px;margin-left:auto;">$${h.size?.toFixed(2) || '?'} ${h.side || ''}${h.txHash ? ' | TX: ' + h.txHash.substring(0, 12) + '...' : ''}</span>
-    </div>`;
-  }
-
-  panel.innerHTML = html;
-}
-
 async function refreshAll() {
   await Promise.all([
     updateBtcTicker(),
-    updateWindowBar(),
-    updateScalpBar(),
     updateStatus(),
     updateStats(),
-    updateScalpLog(),
+    updateMMLog(),
     updateActivities(),
     updateTrades(),
     updateRedemptions()
