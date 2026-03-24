@@ -408,16 +408,21 @@ async function updatePositions() {
   let html = '';
 
   for (const p of open) {
-    const gain = p.avgFillPrice && p.filledTokens > 0
-      ? `+${((1 - p.avgFillPrice) * p.filledTokens).toFixed(3)} max`
-      : '--';
+    const entryStr  = p.avgFillPrice != null ? `$${p.avgFillPrice.toFixed(3)}` : `$${p.bidPrice?.toFixed(3)}`;
+    const midStr    = p.currentMid   != null ? `$${p.currentMid.toFixed(3)}`   : '--';
+    let pnlStr = '--'; let pnlCls = '';
+    if (p.unrealizedPnL != null) {
+      pnlStr = (p.unrealizedPnL >= 0 ? '+' : '') + `$${p.unrealizedPnL.toFixed(3)}`;
+      pnlCls = p.unrealizedPnL >= 0 ? 'positive' : 'negative';
+    }
+    const tpPct = p.takeProfitPct != null ? (p.takeProfitPct * 100).toFixed(0) : '50';
     html += `<div class="activity-item position-row">
       <div class="activity-time">${formatTime(p.addedAt)}</div>
       ${getPositionStatusBadge(p.status)}
       <span class="coin-badge-sm coin-btc" style="margin-left:6px;">BTC-${p.type}</span>
-      <span class="pos-side ${p.side === 'UP' ? 'positive' : 'negative'}" style="margin-left:6px;font-weight:700;">${p.side}</span>
-      <span style="margin-left:8px;color:#8b949e;font-size:12px;">entry $${p.avgFillPrice?.toFixed(3) || p.bidPrice?.toFixed(3)} | ${p.filledTokens?.toFixed(2) || '?'} tokens</span>
-      <span style="margin-left:auto;font-size:11px;color:#484f58;">max gain: ${gain}</span>
+      <span class="${p.side === 'UP' ? 'positive' : 'negative'}" style="margin-left:6px;font-weight:700;">${p.side}</span>
+      <span style="margin-left:8px;color:#8b949e;font-size:12px;">in ${entryStr} → now ${midStr} | ${p.filledTokens?.toFixed(2) || '?'} tokens</span>
+      <span class="${pnlCls}" style="margin-left:auto;font-weight:600;font-size:13px;">${pnlStr}</span>
     </div>`;
   }
 

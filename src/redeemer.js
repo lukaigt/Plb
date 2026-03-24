@@ -42,37 +42,24 @@ const redemptionHistory = [];
 let safeAddress = null;
 let isChecking = false;
 
-async function getProxyWalletAddress(wallet, provider) {
+async function getProxyWalletAddress() {
   if (safeAddress) return safeAddress;
 
   const fromTrader = trader.getProxyWallet();
   if (fromTrader) {
     safeAddress = fromTrader;
-    logger.addActivity('redeemer', { message: `Using proxy wallet from CLOB API: ${fromTrader.substring(0, 10)}...` });
+    logger.addActivity('redeemer', { message: `Proxy wallet (CLOB API): ${fromTrader.substring(0, 10)}...` });
     return safeAddress;
   }
 
   const envProxy = process.env.PROXY_WALLET_ADDRESS;
   if (envProxy) {
     safeAddress = envProxy;
-    logger.addActivity('redeemer', { message: `Using proxy wallet from env: ${envProxy.substring(0, 10)}...` });
+    logger.addActivity('redeemer', { message: `Proxy wallet (env): ${envProxy.substring(0, 10)}...` });
     return safeAddress;
   }
 
-  try {
-    const factory = new ethers.Contract(SAFE_FACTORY_ADDRESS, SAFE_FACTORY_ABI, provider);
-    const computed = await factory.computeProxyAddress(wallet.address);
-    const code = await provider.getCode(computed);
-    if (code !== '0x') {
-      safeAddress = computed;
-      logger.addActivity('redeemer', { message: `Proxy wallet found via factory: ${computed.substring(0, 10)}...` });
-      return safeAddress;
-    }
-  } catch (err) {
-    logger.addActivity('redeemer', { message: `Factory lookup failed: ${err.message.substring(0, 50)}` });
-  }
-
-  logger.addActivity('redeemer', { message: 'No proxy wallet found — will check EOA only' });
+  logger.addActivity('redeemer', { message: 'No proxy wallet found — checking EOA only. Set PROXY_WALLET_ADDRESS in .env if fills go to Safe.' });
   return null;
 }
 
@@ -386,7 +373,7 @@ async function checkAndRedeem() {
     const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
     const wallet = new ethers.Wallet(cleanKey, provider);
 
-    const safAddr = await getProxyWalletAddress(wallet, provider);
+    const safAddr = await getProxyWalletAddress();
     const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
     const wrappedCollateral = await getWrappedCollateral(provider);
 

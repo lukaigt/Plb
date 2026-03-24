@@ -1,9 +1,14 @@
-const { Side } = require('@polymarket/clob-client');
 const logger = require('./logger');
 const { getProxyWallet, getEoaAddress, buildClobAuthHeaders, placeSellOrder } = require('./trader');
 
 const CLOB_API = 'https://clob.polymarket.com';
-const TAKE_PROFIT_PCT = parseFloat(process.env.MM_TAKE_PROFIT_PCT) || 0.50;
+
+function getTakeProfitPct() {
+  const raw = process.env.MM_TAKE_PROFIT_PCT;
+  if (raw === undefined || raw === '') return 0.50;
+  const n = parseFloat(raw);
+  return isNaN(n) ? 0.50 : n;
+}
 
 const openPositions = [];
 const closedPositions = [];
@@ -27,8 +32,7 @@ async function fetchOrderStatus(orderId) {
     if (!headers) return null;
     const res = await fetchWithTimeout(`${CLOB_API}/orders/${orderId}`, { headers });
     if (!res.ok) return null;
-    const data = await res.json();
-    return data;
+    return await res.json();
   } catch {
     return null;
   }
@@ -49,8 +53,7 @@ async function fetchFillsForAddress(makerAddress) {
 }
 
 function trackOrder(orderId, tokenId, side, bidPrice, postedSize, marketId, coin, type, market) {
-  const existing = openPositions.find(p => p.orderId === orderId);
-  if (existing) return;
+  if (openPositions.find(p => p.orderId === orderId)) return;
 
   openPositions.push({
     orderId,
@@ -60,6 +63,9 @@ function trackOrder(orderId, tokenId, side, bidPrice, postedSize, marketId, coin
     postedTokens: postedSize,
     filledTokens: 0,
     filledCost: 0,
+    avgFillPrice: null,
+    currentMid: null,
+    unrealizedPnL: null,
     marketId,
     coin,
     type,
@@ -67,7 +73,8 @@ function trackOrder(orderId, tokenId, side, bidPrice, postedSize, marketId, coin
     status: 'open',
     addedAt: new Date().toISOString(),
     lastChecked: null,
-    takeProfitSent: false
+    takeProfitSent: false,
+    takeProfitAttempts: 0
   });
 }
 
@@ -105,9 +112,9 @@ async function pollFills() {
         totalFilledCost   += qty * px;
       }
       if (totalFilledTokens > 0) {
-        pos.filledTokens = totalFilledTokens;
-        pos.filledCost   = totalFilledCost;
-        pos.avgFillPrice = totalFilledCost / totalFilledTokens;
+        pos.filledTokens  = totalFilledTokens;
+        pos.filledCost    = totalFilledCost;
+        pos.avgFillPrice  = totalFilledCost / totalFilledTokens;
         pos.status = 'filled';
         logger.addActivity('position_tracker', {
           message: `Fill detected: ${pos.coin}-${pos.type} ${pos.side} | ${totalFilledTokens.toFixed(2)} tokens @ avg $${pos.avgFillPrice.toFixed(3)}`
@@ -117,16 +124,14 @@ async function pollFills() {
       const orderData = await fetchOrderStatus(pos.orderId);
       if (orderData) {
         const filled = parseFloat(orderData.size_matched || orderData.matched || 0);
-        if (filled > 0) {
-          pos.filledTokens = filled;
-          pos.filledCost   = filled * pos.bidPrice;
-          pos.avgFillPrice = pos.bidPrice;
+        if (filled > 0 && pos.filledTokens === 0) {
+          pos.filledTokens  = filled;
+          pos.filledCost    = filled * pos.bidPrice;
+          pos.avgFillPrice  = pos.bidPrice;
           pos.status = 'filled';
         }
-        if (orderData.status === 'CANCELED' || orderData.status === 'CANCELLED') {
-          if (pos.filledTokens === 0) {
-            pos.status = 'cancelled';
-          }
+        if ((orderData.status === 'CANCELED' || orderData.status === 'CANCELLED') && pos.filledTokens === 0) {
+          pos.status = 'cancelled';
         }
       }
     }
@@ -134,26 +139,30 @@ async function pollFills() {
 }
 
 async function checkTakeProfit(activeSessions) {
+  const tpPct = getTakeProfitPct();
+  if (tpPct <= 0) return;
+
   const filled = openPositions.filter(p => p.status === 'filled' && !p.takeProfitSent && p.filledTokens > 0);
   if (filled.length === 0) return;
-
-  const tpPct = parseFloat(process.env.MM_TAKE_PROFIT_PCT) || TAKE_PROFIT_PCT;
 
   for (const pos of filled) {
     const session = activeSessions.find(s => s.market && s.market.id === pos.marketId);
     if (!session) continue;
 
-    const mid = pos.side === 'UP'
-      ? session.lastMid
-      : (session.lastMid !== null ? 1 - session.lastMid : null);
+    const upMid = session.lastMid;
+    if (upMid === null || upMid === undefined) continue;
 
-    if (mid === null || mid === undefined) continue;
+    const mid = pos.side === 'UP' ? upMid : (1 - upMid);
+
+    pos.currentMid = mid;
 
     const entryPrice = pos.avgFillPrice || pos.bidPrice;
     const maxGain    = 1.0 - entryPrice;
     if (maxGain <= 0) continue;
 
     const currentGain = mid - entryPrice;
+    pos.unrealizedPnL = parseFloat((currentGain * pos.filledTokens).toFixed(4));
+
     const ratio = currentGain / maxGain;
 
     if (ratio >= tpPct) {
@@ -161,19 +170,19 @@ async function checkTakeProfit(activeSessions) {
       const sellSize  = Math.max(0.01, parseFloat((pos.filledTokens * 0.95).toFixed(2)));
 
       logger.addActivity('take_profit', {
-        message: `TAKE PROFIT: ${pos.coin}-${pos.type} ${pos.side} | entry=$${entryPrice.toFixed(3)} mid=$${mid.toFixed(3)} gain=${(ratio * 100).toFixed(0)}% ≥ ${(tpPct * 100).toFixed(0)}% | selling ${sellSize} tokens @ $${sellPrice}`
+        message: `TAKE PROFIT: ${pos.coin}-${pos.type} ${pos.side} | entry=$${entryPrice.toFixed(3)} mid=$${mid.toFixed(3)} gain=${(ratio * 100).toFixed(0)}% ≥ ${(tpPct * 100).toFixed(0)}% threshold | selling ${sellSize} tokens @ $${sellPrice}`
       });
 
-      const market = pos.market || session.market;
+      const market   = pos.market || session.market;
       const negRisk  = market ? market.negRisk : true;
       const tickSize = market ? market.tickSize : '0.01';
 
       const result = await placeSellOrder(pos.tokenId, sellSize, sellPrice, negRisk, tickSize);
 
       if (result.success) {
-        pos.takeProfitSent = true;
+        pos.takeProfitSent    = true;
         pos.takeProfitOrderId = result.orderId;
-        pos.takeProfitPrice = sellPrice;
+        pos.takeProfitPrice   = sellPrice;
         pos.status = 'take_profit_sent';
         closedPositions.unshift({ ...pos, closedAt: new Date().toISOString() });
         logger.addActivity('take_profit', {
@@ -195,32 +204,31 @@ async function checkTakeProfit(activeSessions) {
 
 function pruneOldPositions() {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const before = openPositions.length;
   for (let i = openPositions.length - 1; i >= 0; i--) {
     const p = openPositions[i];
-    const age = new Date(p.addedAt).getTime();
-    const isOld = age < cutoff;
-    const isDone = p.status === 'take_profit_sent' || p.status === 'cancelled' || p.status === 'tp_failed';
-    if (isOld || isDone) {
-      openPositions.splice(i, 1);
-    }
+    const age  = new Date(p.addedAt).getTime();
+    const done = p.status === 'take_profit_sent' || p.status === 'cancelled' || p.status === 'tp_failed';
+    if (age < cutoff || done) openPositions.splice(i, 1);
   }
 }
 
 function getOpenPositions() {
+  const tpPct = getTakeProfitPct();
   return openPositions.map(p => ({
-    orderId:     p.orderId?.slice(0, 12) + '...',
-    tokenId:     p.tokenId?.slice(0, 10) + '...',
-    side:        p.side,
-    coin:        p.coin,
-    type:        p.type,
-    bidPrice:    p.bidPrice,
-    filledTokens: p.filledTokens,
-    avgFillPrice: p.avgFillPrice || p.bidPrice,
-    status:      p.status,
-    addedAt:     p.addedAt,
-    lastChecked: p.lastChecked,
-    takeProfitPct: parseFloat(process.env.MM_TAKE_PROFIT_PCT) || TAKE_PROFIT_PCT
+    orderId:        p.orderId?.slice(0, 12) + '...',
+    tokenId:        p.tokenId?.slice(0, 10) + '...',
+    side:           p.side,
+    coin:           p.coin,
+    type:           p.type,
+    bidPrice:       p.bidPrice,
+    filledTokens:   p.filledTokens,
+    avgFillPrice:   p.avgFillPrice,
+    currentMid:     p.currentMid,
+    unrealizedPnL:  p.unrealizedPnL,
+    status:         p.status,
+    addedAt:        p.addedAt,
+    lastChecked:    p.lastChecked,
+    takeProfitPct:  tpPct
   }));
 }
 

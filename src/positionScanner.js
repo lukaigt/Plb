@@ -4,10 +4,6 @@ const redeemer = require('./redeemer');
 const trader = require('./trader');
 
 const DATA_API = 'https://data-api.polymarket.com';
-const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
-const SAFE_FACTORY_ABI = [
-  'function computeProxyAddress(address owner) view returns (address)'
-];
 
 let hasScannedOnStartup = false;
 let lastScanResult = null;
@@ -47,27 +43,14 @@ async function fetchWithTimeout(url, timeout = 15000) {
   }
 }
 
-async function resolveProxyWallet(eoaAddress) {
+function resolveProxyWallet() {
   const fromTrader = trader.getProxyWallet();
   if (fromTrader) return fromTrader;
 
   const envProxy = process.env.PROXY_WALLET_ADDRESS;
   if (envProxy) return envProxy;
 
-  try {
-    const rpcUrl = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
-    const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-    const factory = new ethers.Contract(SAFE_FACTORY_ADDRESS, SAFE_FACTORY_ABI, provider);
-    const computed = await factory.computeProxyAddress(eoaAddress);
-    const code = await provider.getCode(computed);
-    if (code !== '0x') return computed;
-    return null;
-  } catch (err) {
-    logger.addActivity('position_scanner', {
-      message: `Could not find proxy wallet: ${err.message.substring(0, 60)}`
-    });
-    return null;
-  }
+  return null;
 }
 
 async function fetchPositions(walletAddress) {
@@ -115,7 +98,7 @@ async function scanExistingPositions() {
       message: `Scanning for existing positions on wallet ${eoaAddress.substring(0, 10)}...`
     });
 
-    let proxyWallet = await resolveProxyWallet(eoaAddress);
+    let proxyWallet = resolveProxyWallet();
 
     const walletsToCheck = [eoaAddress];
     if (proxyWallet && proxyWallet.toLowerCase() !== eoaAddress.toLowerCase()) {
