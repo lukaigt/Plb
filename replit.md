@@ -98,3 +98,5 @@ public/
 
 ## Configuration Added (Session 2)
 - `MM_TAKE_PROFIT_PCT` - Take-profit at this fraction of max gain (default 0.5 = 50%); set to 0.8 to only sell if 80% of the way to $1.00
+- `MM_MID_MIN` - Skip quoting if UP midpoint is below this (default 0.20); prevents buying heavily skewed markets
+- `MM_MID_MAX` - Skip quoting if UP midpoint is above this (default 0.80); symmetric upper bound

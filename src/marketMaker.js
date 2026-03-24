@@ -69,11 +69,20 @@ class MarketSession {
     const bidDown = Math.round(((1 - mid) - halfSpread) * 100) / 100;
     const orderSize = this.config.orderSize;
 
+    const midMin = this.config.midMin;
+    const midMax = this.config.midMax;
+    if (mid < midMin || mid > midMax) {
+      logger.addActivity('mm_skip', {
+        message: `[${this.market.coin}-${this.market.type}] Mid=$${mid.toFixed(3)} out of safe range [${midMin}–${midMax}] — skipping skewed market`
+      });
+      return [];
+    }
+
     if (bidUp < 0.02 || bidDown < 0.02 || bidUp > 0.97 || bidDown > 0.97) {
       logger.addActivity('mm_skip', {
         message: `[${this.market.coin}-${this.market.type}] Bids out of range (UP bid=$${bidUp}, DOWN bid=$${bidDown}), skipping`
       });
-      return;
+      return [];
     }
 
     const label = `[${this.market.coin}-${this.market.type}]`;
@@ -201,7 +210,8 @@ class MarketSession {
     const spread = this.config.spread;
     const rawBidUp   = mid !== null ? Math.round((mid - spread / 2) * 100) / 100 : null;
     const rawBidDown = mid !== null ? Math.round(((1 - mid) - spread / 2) * 100) / 100 : null;
-    const bidsValid  = rawBidUp !== null && rawBidUp >= 0.02 && rawBidUp <= 0.97
+    const midInRange = mid !== null && mid >= this.config.midMin && mid <= this.config.midMax;
+    const bidsValid  = midInRange && rawBidUp !== null && rawBidUp >= 0.02 && rawBidUp <= 0.97
                     && rawBidDown >= 0.02 && rawBidDown <= 0.97;
     return {
       marketId:       this.marketId,
@@ -230,7 +240,9 @@ function getMMConfig() {
     orderSize:    parseFloat(process.env.MM_ORDER_SIZE)   || 5,
     closeSeconds: parseInt(process.env.MM_CLOSE_SECONDS)  || 20,
     maxSeconds:   parseInt(process.env.MM_MAX_SECONDS)    || 240,
-    refreshInterval: parseInt(process.env.MM_REFRESH_INTERVAL) || 10
+    refreshInterval: parseInt(process.env.MM_REFRESH_INTERVAL) || 10,
+    midMin:       parseFloat(process.env.MM_MID_MIN)      || 0.20,
+    midMax:       parseFloat(process.env.MM_MID_MAX)      || 0.80
   };
 }
 
