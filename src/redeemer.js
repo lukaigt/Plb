@@ -12,7 +12,7 @@ const POLYGON_RPCS = [
   'https://polygon.llamarpc.com',
   'https://polygon-mainnet.public.blastapi.io'
 ];
-const KNOWN_PROXY_WALLET = '0x94eAb3d7352aEb36A7378bc635b97E2968112e7E';
+const KNOWN_PROXY_WALLET = process.env.PROXY_WALLET_ADDRESS || null;
 
 const CTF_ABI = [
   'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
@@ -433,7 +433,7 @@ async function checkAndRedeem() {
     const ready = pendingRedemptions.filter(r => {
       if (r.status !== 'waiting') return false;
       const endTime = new Date(r.marketEndTime);
-      return now >= new Date(endTime.getTime() + 2 * 60 * 1000);
+      return now >= new Date(endTime.getTime() + 30 * 1000);
     });
 
     if (ready.length === 0) {
@@ -490,9 +490,8 @@ async function checkAndRedeem() {
           redemption.status = 'no_payout';
           redemption.redeemedAt = new Date().toISOString();
           redemptionHistory.push({ ...redemption });
-          if (redemption.tradeId) {
-            logger.updateTrade(redemption.tradeId, { result: 'loss', pnl: -(redemption.size || 0) });
-          }
+          const noBalIds = redemption.tradeIds || (redemption.tradeId ? [redemption.tradeId] : []);
+          for (const tid of noBalIds) logger.updateTrade(tid, { result: 'loss', pnl: 0 });
           logger.addActivity('redeemer', {
             message: `No token balance on EOA or Safe (lost): ${redemption.question || 'BTC trade'}`
           });
@@ -551,11 +550,9 @@ async function checkAndRedeem() {
             redemptionHistory.push({ ...redemption });
             redeemed = true;
 
-            if (redemption.tradeId) {
-              logger.updateTrade(redemption.tradeId, {
-                result: 'win',
-                pnl: (redemption.size || 0) * ((1 / (redemption.price || 0.5)) - 1)
-              });
+            const winIds = redemption.tradeIds || (redemption.tradeId ? [redemption.tradeId] : []);
+            for (const tid of winIds) {
+              logger.updateTrade(tid, { result: 'win', pnl: 0 });
             }
 
             logger.addActivity('redeem_success', {
@@ -577,9 +574,8 @@ async function checkAndRedeem() {
             redemption.status = 'no_payout';
             redemption.redeemedAt = new Date().toISOString();
             redemptionHistory.push({ ...redemption });
-            if (redemption.tradeId) {
-              logger.updateTrade(redemption.tradeId, { result: 'loss', pnl: -(redemption.size || 0) });
-            }
+            const nopayIds = redemption.tradeIds || (redemption.tradeId ? [redemption.tradeId] : []);
+            for (const tid of nopayIds) logger.updateTrade(tid, { result: 'loss', pnl: 0 });
             logger.addActivity('redeemer', {
               message: `No payout (lost): ${redemption.question || 'BTC trade'}`
             });

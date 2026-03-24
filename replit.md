@@ -65,6 +65,7 @@ public/
 - `PORT` - Dashboard port (5000 on Replit, 4000 on VPS)
 - `PROXY_URL` - FlashProxy SOCKS5 proxy URL (optional)
 - `POLYGON_RPC_URL` - Polygon RPC URL for contract calls (optional)
+- `PROXY_WALLET_ADDRESS` - Your Polymarket proxy/Safe wallet address if known (optional, auto-discovered if omitted)
 
 ## CRITICAL: Always Use CLOB API for Live Prices
 - **NEVER use Gamma API outcomePrices for trading** — they are cached/stale (~$0.50/$0.50)

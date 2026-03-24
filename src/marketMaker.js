@@ -28,6 +28,7 @@ class MarketSession {
     this.lastMid        = null;
     this.lastQuoteTime  = null;
     this.openOrderIds   = [];
+    this.tradeIds       = [];
     this.cancelled      = false;
   }
 
@@ -144,6 +145,28 @@ class MarketSession {
       logger.addActivity('mm_placed', {
         message: `${label} Posted ${placed.length} order(s): ${placed.map(p => `${p.side}@$${p.price}`).join(', ')}`
       });
+
+      for (const p of placed) {
+        const logged = logger.addTrade({
+          coin:        this.market.coin,
+          question:    this.market.question,
+          action:      `MM_BUY_${p.side}`,
+          confidence:  null,
+          pattern:     'market_making',
+          reasoning:   `MM quote: mid=$${mid.toFixed(3)}, bid=$${p.price}`,
+          tokenId:     p.side === 'UP' ? this.market.upTokenId : this.market.downTokenId,
+          side:        p.side,
+          size:        this.config.orderSize,
+          price:       p.price,
+          orderId:     p.orderId,
+          success:     true,
+          error:       null,
+          result:      'pending',
+          pnl:         0,
+          marketEndTime: this.market.endTime
+        });
+        this.tradeIds.push(logged.id);
+      }
     }
   }
 

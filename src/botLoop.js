@@ -48,15 +48,16 @@ async function runOnce() {
 
           if (session.totalSpent > 0) {
             redeemer.addPendingRedemption({
-              conditionId: session.market.id,
-              tokenId:     session.market.upTokenId,
-              negRisk:     session.market.negRisk,
+              conditionId:  session.market.id,
+              tokenId:      session.market.upTokenId,
+              negRisk:      session.market.negRisk,
               marketEndTime: session.market.endTime,
-              action:      'MM',
-              side:        'UP+DOWN',
-              size:        session.totalSpent,
-              price:       0.5,
-              question:    session.market.question
+              action:       'MM',
+              side:         'UP+DOWN',
+              size:         session.totalSpent,
+              price:        0.5,
+              question:     session.market.question,
+              tradeIds:     [...session.tradeIds]
             });
           }
         }
