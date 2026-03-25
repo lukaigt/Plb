@@ -1,12 +1,12 @@
-const { scanAllMarkets }    = require('./scanner');
-const { MarketSession, getMMConfig } = require('./marketMaker');
-const { initClient }        = require('./trader');
-const safety                = require('./safety');
-const logger                = require('./logger');
-const redeemer              = require('./redeemer');
-const positionScanner       = require('./positionScanner');
-const positionTracker       = require('./positionTracker');
-const krakenFeed            = require('./krakenFeed');
+const { scanAllMarkets }      = require('./scanner');
+const { MomentumSession,
+        getMomentumConfig }   = require('./momentumStrategy');
+const { initClient }          = require('./trader');
+const safety                  = require('./safety');
+const logger                  = require('./logger');
+const redeemer                = require('./redeemer');
+const positionScanner         = require('./positionScanner');
+const krakenFeed              = require('./krakenFeed');
 
 let isRunning            = false;
 let loopInterval         = null;
@@ -33,7 +33,7 @@ async function runOnce() {
       return;
     }
 
-    const config  = getMMConfig();
+    const config  = getMomentumConfig();
     const client  = await getClient();
     const markets = await scanAllMarkets();
 
@@ -43,35 +43,22 @@ async function runOnce() {
       if (!seenIds.has(marketId)) {
         const session = activeSessions[marketId];
         if (!session.cancelled) {
-          logger.addActivity('mm_done', {
-            message: `[${session.market.coin}-${session.market.type}] Market resolved. Orders posted: ${session.ordersPosted} | Spent: $${session.totalSpent.toFixed(2)}`
-          });
-          await session.cancelOpenOrders(client);
           session.cancelled = true;
+          logger.addActivity('mom_done', {
+            message: `[${session.market.coin}-${session.market.type}] Market resolved | signal=${session.signal || 'none'} | spent=$${session.totalSpent.toFixed(2)} | P&L=${session.pnl !== null ? '$' + session.pnl.toFixed(3) : 'held to resolution'}`
+          });
 
-          if (session.totalSpent > 0) {
+          if (session.totalSpent > 0 && session.tokenId) {
             const condId = session.market.conditionId || session.market.id;
             redeemer.addPendingRedemption({
               conditionId:   condId,
-              tokenId:       session.market.upTokenId,
+              tokenId:       session.tokenId,
               negRisk:       session.market.negRisk,
               marketEndTime: session.market.endTime,
-              action:        'MM',
-              side:          'UP',
-              size:          session.totalSpent / 2,
-              price:         0.5,
-              question:      session.market.question,
-              tradeIds:      [...session.tradeIds]
-            });
-            redeemer.addPendingRedemption({
-              conditionId:   condId,
-              tokenId:       session.market.downTokenId,
-              negRisk:       session.market.negRisk,
-              marketEndTime: session.market.endTime,
-              action:        'MM',
-              side:          'DOWN',
-              size:          session.totalSpent / 2,
-              price:         0.5,
+              action:        'MOMENTUM',
+              side:          session.signal,
+              size:          session.totalSpent,
+              price:         session.entryPrice || 0.5,
               question:      session.market.question,
               tradeIds:      [...session.tradeIds]
             });
@@ -82,10 +69,12 @@ async function runOnce() {
     }
 
     for (const market of markets) {
+      if (market.type !== config.marketType) continue;
+
       if (!activeSessions[market.id]) {
-        activeSessions[market.id] = new MarketSession(market, config);
-        logger.addActivity('mm_start', {
-          message: `[${market.coin}-${market.type}] New market session — ${Math.round(market.secondsLeft)}s left | ${market.question}`
+        activeSessions[market.id] = new MomentumSession(market, config);
+        logger.addActivity('mom_start', {
+          message: `[${market.coin}-${market.type}] New session — ${Math.round(market.secondsLeft)}s left | ${market.question}`
         });
       }
 
@@ -93,50 +82,39 @@ async function runOnce() {
       session.market = market;
 
       if (session.isClosing()) {
-        if (!session.cancelled) {
-          logger.addActivity('mm_close', {
-            message: `[${market.coin}-${market.type}] Closing phase (${Math.round(session.secondsLeft)}s left) — cancelling all open orders`
-          });
-          await session.cancelOpenOrders(client);
-          session.cancelled = true;
-          session.phase = 'closing';
-        }
+        await session.handleClosingPhase(client);
         continue;
       }
 
       if (session.isTooEarly()) {
-        logger.addActivity('mm_wait', {
-          message: `[${market.coin}-${market.type}] Too early to quote (${Math.round(session.secondsLeft)}s left, starts at ${config.maxSeconds}s)`
+        const ctx = krakenFeed.getPriceContext();
+        const change = ctx.change3m?.percent || '?';
+        logger.addActivity('mom_wait', {
+          message: `[${market.coin}-${market.type}] Gathering momentum data (${Math.round(session.secondsLeft)}s left) | BTC 3m: ${change}%`
         });
-        await session.fetchMidpointOnly();
         continue;
       }
 
-      session.cancelled = false;
-      session.phase = 'active';
-
-      await session.cancelOpenOrders(client);
-      await new Promise(r => setTimeout(r, 800));
-      const placed = await session.postQuotes(client);
-
-      if (Array.isArray(placed)) {
-        for (const p of placed) {
-          const tokenId = p.side === 'UP' ? session.market.upTokenId : session.market.downTokenId;
-          positionTracker.trackOrder(
-            p.orderId, tokenId, p.side, p.price, p.size,
-            session.market.id, session.market.coin, session.market.type, session.market
-          );
-        }
+      if (session.phase === 'waiting') {
+        await session.attemptEntry(client);
+        continue;
       }
-    }
 
-    try {
-      const sessions = Object.values(activeSessions);
-      await positionTracker.pollFills();
-      await positionTracker.checkTakeProfit(sessions);
-      positionTracker.pruneOldPositions();
-    } catch (tpErr) {
-      logger.addActivity('error', { message: `Take-profit check error: ${tpErr.message}` });
+      if (session.phase === 'entering') {
+        await session.checkEntryFill();
+        if (session.entryFilled) {
+          await session.postTakeProfitSell();
+        }
+        continue;
+      }
+
+      if (session.phase === 'managing') {
+        if (!session.sellOrderId) {
+          await session.postTakeProfitSell();
+        }
+        await session.checkManaging(client);
+        continue;
+      }
     }
 
     safety.resetDailyIfNeeded();
@@ -171,17 +149,19 @@ async function start() {
   isRunning = true;
   safety.reload();
 
-  const config   = getMMConfig();
+  const config   = getMomentumConfig();
   const interval = config.refreshInterval * 1000;
 
   logger.addActivity('bot', {
-    message: `Bot started — BTC MARKET MAKER MODE\n` +
-      `  Markets: BTC 5-min + BTC 15-min\n` +
-      `  Spread: ${(config.spread * 100).toFixed(0)}¢ (${(config.spread / 2 * 100).toFixed(0)}¢ each side)\n` +
-      `  Order size: $${config.orderSize} per side\n` +
-      `  Quote refresh: every ${config.refreshInterval}s\n` +
-      `  Quoting window: up to ${config.maxSeconds}s before end\n` +
-      `  Closing phase: final ${config.closeSeconds}s — no new orders\n` +
+    message: `Bot started — BTC MOMENTUM STRATEGY\n` +
+      `  Market:          ${config.marketType}\n` +
+      `  Order size:      $${config.orderSize}\n` +
+      `  Take profit:     +${(config.takeProfitCents * 100).toFixed(0)}¢ from entry\n` +
+      `  Stop loss:       -${(config.stopLossCents * 100).toFixed(0)}¢ from entry\n` +
+      `  Momentum signal: ±${config.momentumThreshold}% BTC 3-min change\n` +
+      `  Mid range:       $${config.midMin} – $${config.midMax}\n` +
+      `  Entry after:     ${config.entryAfterSeconds}s into window\n` +
+      `  Closing phase:   final ${config.closeSeconds}s — hold to resolution\n` +
       `  Daily loss limit: $${safety.dailyLossLimit}`
   });
 
@@ -212,20 +192,22 @@ function stop() {
 }
 
 function getStatus() {
-  const config = getMMConfig();
+  const config   = getMomentumConfig();
   const sessions = Object.values(activeSessions).map(s => s.getStatus());
   const { getProxyWallet, getEoaAddress } = require('./trader');
+  const btcCtx = krakenFeed.getPriceContext();
 
   return {
     isRunning,
     lastScanTime,
-    strategy: 'MARKET_MAKER',
+    strategy: 'MOMENTUM',
     config,
     activeSessions: sessions,
-    windowStatus: krakenFeed.getWindowStatus(),
-    safety: safety.getStatus(),
-    proxyWallet: getProxyWallet() || null,
-    eoaAddress:  getEoaAddress()  || null
+    windowStatus:   krakenFeed.getWindowStatus(),
+    btcContext:     btcCtx,
+    safety:         safety.getStatus(),
+    proxyWallet:    getProxyWallet() || null,
+    eoaAddress:     getEoaAddress()  || null
   };
 }
 

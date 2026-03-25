@@ -24,9 +24,8 @@ const safety         = require('./src/safety');
 const logger         = require('./src/logger');
 const redeemer       = require('./src/redeemer');
 const positionScanner  = require('./src/positionScanner');
-const positionTracker  = require('./src/positionTracker');
-const krakenFeed       = require('./src/krakenFeed');
-const { getMMConfig }  = require('./src/marketMaker');
+const krakenFeed           = require('./src/krakenFeed');
+const { getMomentumConfig } = require('./src/momentumStrategy');
 
 const app  = express();
 const PORT = parseInt(process.env.PORT) || 4000;
@@ -45,8 +44,6 @@ app.get('/api/stats',       (req, res) => res.json(logger.getStats()));
 app.get('/api/safety',      (req, res) => res.json(safety.getStatus()));
 app.get('/api/redemptions', (req, res) => res.json(redeemer.getRedemptionStatus()));
 app.get('/api/positions',   (req, res) => res.json({
-  open:   positionTracker.getOpenPositions(),
-  closed: positionTracker.getRecentClosed(),
   scan:   positionScanner.getScanResult()
 }));
 app.get('/api/btc-price',   (req, res) => res.json(krakenFeed.getPriceContext()));
@@ -98,16 +95,18 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  const cfg = getMMConfig();
+  const cfg = getMomentumConfig();
   console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
-  console.log('Starting BTC Market Maker Bot...');
-  console.log(`Markets:       BTC 5-min + BTC 15-min`);
+  console.log('Starting BTC Momentum Trader...');
+  console.log(`Market:        BTC ${cfg.marketType}`);
   console.log(`Wallet Key:    ${process.env.WALLET_PRIVATE_KEY ? 'SET' : 'NOT SET'}`);
   console.log(`CLOB API Key:  ${process.env.POLY_API_KEY ? 'SET' : 'NOT SET'}`);
-  console.log(`Spread:        ${(cfg.spread * 100).toFixed(0)}¢ total (${(cfg.spread / 2 * 100).toFixed(0)}¢ each side)`);
-  console.log(`Order size:    $${cfg.orderSize} per side`);
-  console.log(`Refresh:       every ${cfg.refreshInterval}s`);
-  console.log(`Quote window:  up to ${cfg.maxSeconds}s before close`);
+  console.log(`Order size:    $${cfg.orderSize} per trade`);
+  console.log(`Take profit:   +${(cfg.takeProfitCents * 100).toFixed(0)}¢ from entry`);
+  console.log(`Stop loss:     -${(cfg.stopLossCents * 100).toFixed(0)}¢ from entry`);
+  console.log(`Signal:        ±${cfg.momentumThreshold}% BTC 3-min change`);
+  console.log(`Mid range:     $${cfg.midMin} – $${cfg.midMax}`);
+  console.log(`Entry after:   ${cfg.entryAfterSeconds}s into window`);
   console.log(`Closing phase: final ${cfg.closeSeconds}s`);
   console.log(`Daily loss limit: $${process.env.DAILY_LOSS_LIMIT || 50}`);
   console.log(`Proxy:         ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);

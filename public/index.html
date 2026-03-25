@@ -9,8 +9,8 @@
 <body>
   <div class="header">
     <div class="header-left">
-      <h1>BTC Market Maker</h1>
-      <span class="strategy-badge">MARKET MAKING</span>
+      <h1>BTC Momentum Trader</h1>
+      <span class="strategy-badge">MOMENTUM STRATEGY</span>
     </div>
     <div class="header-controls">
       <button class="btn btn-blue"   onclick="scanNow()">Scan Now</button>
@@ -60,72 +60,56 @@
     </div>
 
     <div class="market-grid" id="marketGrid">
-      <div class="market-card" id="mc_5m">
-        <div class="mc-header">
-          <span class="mc-badge mc-5m">5-MIN</span>
-          <span class="mc-phase" id="mc_5m_phase">Idle</span>
-          <span class="mc-timer" id="mc_5m_timer">--</span>
-        </div>
-        <div class="mc-question" id="mc_5m_question">No active market</div>
-        <div class="mc-body">
-          <div class="mc-row">
-            <span class="mc-label">UP Midpoint</span>
-            <span class="mc-val" id="mc_5m_mid">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">DOWN Midpoint</span>
-            <span class="mc-val" id="mc_5m_downmid">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">BID UP / BID DOWN</span>
-            <span class="mc-val" id="mc_5m_bids">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Open Orders</span>
-            <span class="mc-val" id="mc_5m_openorders">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Orders Posted</span>
-            <span class="mc-val" id="mc_5m_orders">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Total Committed</span>
-            <span class="mc-val" id="mc_5m_spent">--</span>
-          </div>
-        </div>
-      </div>
-
       <div class="market-card" id="mc_15m">
         <div class="mc-header">
-          <span class="mc-badge mc-15m">15-MIN</span>
+          <span class="mc-badge mc-15m">15-MIN ACTIVE</span>
           <span class="mc-phase" id="mc_15m_phase">Idle</span>
           <span class="mc-timer" id="mc_15m_timer">--</span>
         </div>
         <div class="mc-question" id="mc_15m_question">No active market</div>
         <div class="mc-body">
           <div class="mc-row">
-            <span class="mc-label">UP Midpoint</span>
+            <span class="mc-label">BTC Signal</span>
+            <span class="mc-val" id="mc_15m_signal">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">BTC 3m Change</span>
+            <span class="mc-val" id="mc_15m_btcchange">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Token Mid</span>
             <span class="mc-val" id="mc_15m_mid">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">DOWN Midpoint</span>
-            <span class="mc-val" id="mc_15m_downmid">--</span>
+            <span class="mc-label">Entry Price</span>
+            <span class="mc-val" id="mc_15m_entry">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">BID UP / BID DOWN</span>
-            <span class="mc-val" id="mc_15m_bids">--</span>
+            <span class="mc-label">Take Profit / Stop Loss</span>
+            <span class="mc-val" id="mc_15m_tpsl">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">Open Orders</span>
-            <span class="mc-val" id="mc_15m_openorders">--</span>
+            <span class="mc-label">Unrealized P&amp;L</span>
+            <span class="mc-val" id="mc_15m_pnl">--</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="market-card" id="mc_5m" style="opacity:0.45;">
+        <div class="mc-header">
+          <span class="mc-badge mc-5m">5-MIN</span>
+          <span class="mc-phase" style="color:#484f58;">Not traded</span>
+          <span class="mc-timer" id="mc_5m_timer">--</span>
+        </div>
+        <div class="mc-question" id="mc_5m_question">Monitoring only — strategy uses 15-min</div>
+        <div class="mc-body">
+          <div class="mc-row">
+            <span class="mc-label">UP Midpoint</span>
+            <span class="mc-val" id="mc_5m_mid">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">Orders Posted</span>
-            <span class="mc-val" id="mc_15m_orders">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Total Committed</span>
-            <span class="mc-val" id="mc_15m_spent">--</span>
+            <span class="mc-label">Time Left</span>
+            <span class="mc-val" id="mc_5m_timeleft">--</span>
           </div>
         </div>
       </div>
@@ -142,15 +126,15 @@
       </div>
       <div class="safety-item">
         <span class="s-label">Strategy</span>
-        <span class="s-value" style="color:#58a6ff;font-size:12px;">Market Maker</span>
+        <span class="s-value" style="color:#58a6ff;font-size:12px;">Momentum</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Spread</span>
-        <span class="s-value" id="spreadConfig" style="color:#d29922;">6¢ total</span>
+        <span class="s-label">TP / SL</span>
+        <span class="s-value" id="spreadConfig" style="color:#d29922;">+12¢ / -12¢</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Order Size</span>
-        <span class="s-value" id="orderSizeConfig" style="color:#79c0ff;">$10/side</span>
+        <span class="s-value" id="orderSizeConfig" style="color:#79c0ff;">$10 / trade</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Today Record</span>
@@ -200,21 +184,11 @@
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        Market Maker Activity
+        Momentum Activity
         <span style="font-size:11px;color:#484f58;" id="mmLogCount">0 events</span>
       </div>
       <div class="panel-body" id="mmLogPanel" style="max-height:400px;">
-        <div class="empty-state">No market maker events yet. Start the bot to begin quoting.</div>
-      </div>
-    </div>
-
-    <div class="panel" style="margin-bottom:20px;">
-      <div class="panel-header">
-        Open Positions &amp; Take-Profit
-        <span style="font-size:11px;color:#484f58;" id="positionsCount">0 tracked</span>
-      </div>
-      <div class="panel-body" id="positionsPanel" style="max-height:280px;">
-        <div class="empty-state">No open positions tracked yet.</div>
+        <div class="empty-state">No momentum events yet. Start the bot to begin trading.</div>
       </div>
     </div>
 

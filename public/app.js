@@ -21,6 +21,14 @@ function formatTime(iso) {
 }
 
 function getTypeClass(type) {
+  if (type.includes('mom_error'))     return 'type-error';
+  if (type.includes('mom_tp_hit'))    return 'type-trade';
+  if (type.includes('mom_sl'))        return 'type-safety';
+  if (type.includes('mom_tp'))        return 'type-mm';
+  if (type.includes('mom_filled'))    return 'type-trade';
+  if (type.includes('mom_entry'))     return 'type-mm';
+  if (type.includes('mom_signal'))    return 'type-mm';
+  if (type.includes('mom_'))          return 'type-bot';
   if (type.includes('mm_error'))      return 'type-error';
   if (type.includes('mm_takeprofit')) return 'type-trade';
   if (type.includes('mm_close'))      return 'type-safety';
@@ -92,84 +100,106 @@ async function updateBtcTicker() {
   else ticker.className = 'btc-ticker';
 }
 
-function updateMarketCard(type, sessions) {
-  const session  = sessions.find(s => s.type === type);
-  const suffix   = type.replace('-', '');
+function signalBadge(signal) {
+  if (signal === 'UP')   return '<span class="dir-badge dir-up">UP</span>';
+  if (signal === 'DOWN') return '<span class="dir-badge dir-down">DOWN</span>';
+  return '<span class="dir-badge dir-flat">NONE</span>';
+}
 
-  const phaseEl      = document.getElementById(`mc_${suffix}_phase`);
-  const timerEl      = document.getElementById(`mc_${suffix}_timer`);
-  const questionEl   = document.getElementById(`mc_${suffix}_question`);
-  const midEl        = document.getElementById(`mc_${suffix}_mid`);
-  const downMidEl    = document.getElementById(`mc_${suffix}_downmid`);
-  const bidsEl       = document.getElementById(`mc_${suffix}_bids`);
-  const openOrdersEl = document.getElementById(`mc_${suffix}_openorders`);
-  const ordersEl     = document.getElementById(`mc_${suffix}_orders`);
-  const spentEl      = document.getElementById(`mc_${suffix}_spent`);
-  const card         = document.getElementById(`mc_${suffix}`);
+function phaseBadge(phase) {
+  const map = {
+    waiting:   { label: 'WAITING',   cls: 'phase-waiting' },
+    entering:  { label: 'ENTERING',  cls: 'phase-quoting' },
+    managing:  { label: 'MANAGING',  cls: 'phase-quoting' },
+    closing:   { label: 'CLOSING',   cls: 'phase-closing' },
+    done:      { label: 'DONE',      cls: 'phase-closing' },
+    no_signal: { label: 'NO SIGNAL', cls: '' },
+  };
+  return map[phase] || { label: phase?.toUpperCase() || 'IDLE', cls: '' };
+}
+
+function updateMarketCard15m(sessions) {
+  const session  = sessions.find(s => s.type === '15m');
+  const card     = document.getElementById('mc_15m');
+  const phaseEl  = document.getElementById('mc_15m_phase');
+  const timerEl  = document.getElementById('mc_15m_timer');
+  const qEl      = document.getElementById('mc_15m_question');
+  const sigEl    = document.getElementById('mc_15m_signal');
+  const btcEl    = document.getElementById('mc_15m_btcchange');
+  const midEl    = document.getElementById('mc_15m_mid');
+  const entryEl  = document.getElementById('mc_15m_entry');
+  const tpslEl   = document.getElementById('mc_15m_tpsl');
+  const pnlEl    = document.getElementById('mc_15m_pnl');
 
   if (!session) {
-    phaseEl.textContent      = 'Idle';
-    phaseEl.className        = 'mc-phase';
-    timerEl.textContent      = '--';
-    questionEl.textContent   = 'No active market';
-    midEl.textContent        = '--';
-    downMidEl.textContent    = '--';
-    bidsEl.textContent       = '--';
-    openOrdersEl.textContent = '--';
-    ordersEl.textContent     = '--';
-    spentEl.textContent      = '--';
-    card.className           = 'market-card';
+    phaseEl.textContent = 'Idle';  phaseEl.className = 'mc-phase';
+    timerEl.textContent = '--';    qEl.textContent   = 'No active 15-min market';
+    sigEl.innerHTML = '--';   btcEl.textContent = '--';
+    midEl.textContent = '--'; entryEl.textContent = '--';
+    tpslEl.textContent = '--'; pnlEl.textContent = '--';
+    card.className = 'market-card';
     return;
   }
 
-  const phase = session.phase;
   timerEl.textContent = fmtSeconds(session.secondsLeft) + ' left';
+  qEl.textContent = session.question || '--';
 
-  if (phase === 'closing') {
-    phaseEl.textContent = 'CLOSING';
-    phaseEl.className   = 'mc-phase phase-closing';
-    card.className      = 'market-card market-card-closing';
-  } else if (phase === 'quoting') {
-    phaseEl.textContent = 'QUOTING';
-    phaseEl.className   = 'mc-phase phase-quoting';
-    card.className      = 'market-card market-card-quoting';
-  } else if (phase === 'waiting') {
-    phaseEl.textContent = 'WAITING';
-    phaseEl.className   = 'mc-phase phase-waiting';
-    card.className      = 'market-card';
+  const pb = phaseBadge(session.phase);
+  phaseEl.textContent = pb.label;
+  phaseEl.className   = `mc-phase ${pb.cls}`;
+
+  const isActive = ['entering', 'managing'].includes(session.phase);
+  card.className = isActive ? 'market-card market-card-quoting' : 'market-card';
+
+  sigEl.innerHTML = session.signal ? signalBadge(session.signal) : '<span class="dir-badge dir-flat">WAITING</span>';
+
+  if (session.btcChange3m !== null && session.btcChange3m !== undefined) {
+    const pct = parseFloat(session.btcChange3m);
+    const cls = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
+    btcEl.innerHTML = `<span class="${cls}">${pct > 0 ? '+' : ''}${pct.toFixed(3)}%</span>`;
   } else {
-    phaseEl.textContent = phase;
-    phaseEl.className   = 'mc-phase';
-    card.className      = 'market-card';
+    btcEl.textContent = '--';
   }
 
-  questionEl.textContent = session.question || '--';
+  midEl.textContent   = session.lastMid   !== null ? '$' + session.lastMid.toFixed(3)   : '--';
+  entryEl.textContent = session.entryPrice !== null ? `$${session.entryPrice.toFixed(3)} (${session.signal || '--'})` : '--';
 
-  const mid = session.lastMid;
-  if (mid !== null && mid !== undefined) {
-    const downMid = 1 - mid;
-    midEl.textContent     = '$' + mid.toFixed(3);
-    downMidEl.textContent = '$' + downMid.toFixed(3);
-
-    if (session.bidsValid && session.bidUp !== null && session.bidDown !== null) {
-      bidsEl.innerHTML = `<span class="positive">UP $${parseFloat(session.bidUp).toFixed(3)}</span> / <span class="positive">DOWN $${parseFloat(session.bidDown).toFixed(3)}</span>`;
-    } else {
-      bidsEl.innerHTML = `<span style="color:#d29922;font-size:12px;">Market too one-sided to quote</span>`;
-    }
+  if (session.takeProfitPrice && session.stopLossPrice) {
+    tpslEl.innerHTML = `<span class="positive">TP $${session.takeProfitPrice.toFixed(3)}</span> / <span class="negative">SL $${session.stopLossPrice.toFixed(3)}</span>`;
   } else {
-    midEl.textContent     = '--';
-    downMidEl.textContent = '--';
-    bidsEl.textContent    = '--';
+    tpslEl.textContent = '--';
   }
 
-  const openCount = session.openOrderCount || 0;
-  openOrdersEl.textContent = openCount > 0
-    ? openCount + ' live in book'
-    : '0 (none posted yet)';
-  openOrdersEl.className = 'mc-val ' + (openCount > 0 ? 'positive' : '');
+  if (session.unrealizedPnL !== null && session.unrealizedPnL !== undefined) {
+    const val = session.unrealizedPnL;
+    const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
+    pnlEl.innerHTML = `<span class="${cls}">${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
+  } else if (session.pnl !== null && session.pnl !== undefined) {
+    const val = session.pnl;
+    const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
+    pnlEl.innerHTML = `<span class="${cls}">CLOSED ${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
+  } else {
+    pnlEl.textContent = '--';
+  }
+}
 
-  ordersEl.textContent = session.ordersPosted || '0';
-  spentEl.textContent  = '$' + (session.totalSpent || 0).toFixed(2);
+function updateMarketCard5m(sessions) {
+  const session = sessions.find(s => s.type === '5m');
+  const timerEl = document.getElementById('mc_5m_timer');
+  const qEl     = document.getElementById('mc_5m_question');
+  const midEl   = document.getElementById('mc_5m_mid');
+  const tlEl    = document.getElementById('mc_5m_timeleft');
+
+  if (!session) {
+    timerEl.textContent = '--';
+    qEl.textContent = 'Monitoring only — strategy uses 15-min';
+    if (midEl) midEl.textContent = '--';
+    if (tlEl) tlEl.textContent = '--';
+    return;
+  }
+  timerEl.textContent = fmtSeconds(session.secondsLeft) + ' left';
+  if (midEl) midEl.textContent = session.lastMid ? '$' + session.lastMid.toFixed(3) : '--';
+  if (tlEl) tlEl.textContent = fmtSeconds(session.secondsLeft);
 }
 
 async function updateWindowBar() {
@@ -218,8 +248,8 @@ async function updateWindowBar() {
 async function updateMarketCards(status) {
   if (!status) return;
   const sessions = status.activeSessions || [];
-  updateMarketCard('5m',  sessions);
-  updateMarketCard('15m', sessions);
+  updateMarketCard15m(sessions);
+  updateMarketCard5m(sessions);
 }
 
 async function updateStatus() {
@@ -237,9 +267,10 @@ async function updateStatus() {
 
   if (status.config) {
     const cfg = status.config;
-    document.getElementById('spreadConfig').textContent    = `${(cfg.spread * 100).toFixed(0)}¢ total`;
-    document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize}/side`;
-    document.getElementById('scanConfig').textContent      = `Refresh ${cfg.refreshInterval}s | Close ${cfg.closeSeconds}s | Max ${cfg.maxSeconds}s`;
+    const spreadEl = document.getElementById('spreadConfig');
+    if (spreadEl) spreadEl.textContent = `TP +${(cfg.takeProfitCents * 100).toFixed(0)}¢ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
+    document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize} / trade`;
+    document.getElementById('scanConfig').textContent      = `Momentum ${cfg.marketType} | Threshold ±${cfg.momentumThreshold}% | Entry after ${cfg.entryAfterSeconds}s`;
   }
 
   const safety = status.safety;
@@ -298,7 +329,8 @@ async function updateMMLog() {
   if (!activities || activities.length === 0) return;
 
   const mmEvents = activities.filter(a =>
-    a.type.startsWith('mm_') || a.type === 'scan' || a.type.includes('trade') || a.type.includes('take_profit')
+    a.type.startsWith('mom_') || a.type.startsWith('mm_') ||
+    a.type === 'scan' || a.type.includes('trade') || a.type.includes('take_profit')
   );
 
   const panel  = document.getElementById('mmLogPanel');
