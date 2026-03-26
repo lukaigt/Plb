@@ -287,10 +287,7 @@ class MomentumSession {
     const stopLossPrice = Math.max(0.02, this.entryPrice - this.config.stopLossCents);
 
     if (this.secondsLeft <= 60 && this.secondsLeft > this.config.closeSeconds) {
-      logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] TIME EXIT — ${Math.round(this.secondsLeft)}s left | selling ${this.signal} at mid=$${mid.toFixed(3)} | entry=$${this.entryPrice.toFixed(3)}`
-      });
-      await this._postExitSell(client, mid, 'trailing_stop');
+      await this._postExitSell(client, mid, 'time_exit');
       return;
     }
 
@@ -322,7 +319,7 @@ class MomentumSession {
   }
 
   async _postExitSell(client, mid, reason) {
-    if (this.phase !== 'managing' || !this.holdingToken || this.exitOrderId || this._exitInFlight) return;
+    if (this.phase !== 'managing' || !this.holdingToken || this.exitOrderId || this._exitInFlight) return false;
 
     this._exitInFlight = true;
 
@@ -330,10 +327,17 @@ class MomentumSession {
       const exitSize  = this.filledSize || this.entrySizeTokens;
       const exitPrice = Math.max(0.02, Math.min(0.97, Math.round(mid * 100) / 100));
 
-      const label = reason === 'trailing_stop' ? 'TRAILING STOP' : 'STOP LOSS';
+      const labels = {
+        trailing_stop:   'TRAILING STOP',
+        stop_loss:       'STOP LOSS',
+        time_exit:       'TIME EXIT',
+        closing_cashout: 'CLOSING CASHOUT'
+      };
+      const label = labels[reason] || reason.toUpperCase();
       const peakStr = this.peakMid ? ` | peak was $${this.peakMid.toFixed(3)}` : '';
+      const activityType = (reason === 'stop_loss') ? 'mom_sl' : 'mom_tp_hit';
 
-      logger.addActivity(reason === 'trailing_stop' ? 'mom_tp_hit' : 'mom_sl', {
+      logger.addActivity(activityType, {
         message: `[${this.market.coin}-${this.market.type}] ${label} TRIGGERED | ${this.signal} mid=$${mid.toFixed(3)}${peakStr} | posting sell @ $${exitPrice}`
       });
 
@@ -349,7 +353,7 @@ class MomentumSession {
         logger.addActivity('mom_error', {
           message: `[${this.market.coin}-${this.market.type}] Exit sell POST failed: ${result.error?.slice(0, 80)} — will retry next tick`
         });
-        return;
+        return false;
       }
 
       this.exitOrderId     = result.orderId;
@@ -358,9 +362,10 @@ class MomentumSession {
       this.exitFilledSoFar = 0;
       this.phase           = 'exiting';
 
-      logger.addActivity(reason === 'trailing_stop' ? 'mom_tp_hit' : 'mom_sl', {
+      logger.addActivity(activityType, {
         message: `[${this.market.coin}-${this.market.type}] Exit sell posted @ $${exitPrice} | orderId: ${result.orderId?.slice(0, 14)}... | waiting for fill`
       });
+      return true;
     } finally {
       this._exitInFlight = false;
     }
@@ -436,11 +441,10 @@ class MomentumSession {
         logger.addActivity('mom_close', {
           message: `[${this.market.coin}-${this.market.type}] Closing — cashing out ${this.signal} at mid=$${mid.toFixed(3)} | entry=$${this.entryPrice.toFixed(3)} | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
         });
-        try {
-          await this._postExitSell(client, mid, 'trailing_stop');
-        } catch (err) {
+        const sold = await this._postExitSell(client, mid, 'closing_cashout');
+        if (!sold) {
           logger.addActivity('mom_close', {
-            message: `[${this.market.coin}-${this.market.type}] Closing — sell failed (${err.message?.slice(0, 60)}) | holding to resolution`
+            message: `[${this.market.coin}-${this.market.type}] Closing — sell failed, holding to resolution`
           });
         }
       } else {
