@@ -24,7 +24,9 @@ function getTypeClass(type) {
   if (type.includes('mom_error'))     return 'type-error';
   if (type.includes('mom_tp_hit'))    return 'type-trade';
   if (type.includes('mom_sl'))        return 'type-safety';
-  if (type.includes('mom_tp'))        return 'type-mm';
+  if (type.includes('mom_flip'))      return 'type-trade';
+  if (type.includes('mom_peak'))      return 'type-mm';
+  if (type.includes('mom_trailing'))  return 'type-mm';
   if (type.includes('mom_filled'))    return 'type-trade';
   if (type.includes('mom_entry'))     return 'type-mm';
   if (type.includes('mom_signal'))    return 'type-mm';
@@ -111,6 +113,7 @@ function phaseBadge(phase) {
     waiting:   { label: 'WAITING',   cls: 'phase-waiting' },
     entering:  { label: 'ENTERING',  cls: 'phase-quoting' },
     managing:  { label: 'MANAGING',  cls: 'phase-quoting' },
+    flipping:  { label: 'FLIPPING',  cls: 'phase-quoting' },
     closing:   { label: 'CLOSING',   cls: 'phase-closing' },
     done:      { label: 'DONE',      cls: 'phase-closing' },
     no_signal: { label: 'NO SIGNAL', cls: '' },
@@ -128,15 +131,24 @@ function updateMarketCard15m(sessions) {
   const btcEl    = document.getElementById('mc_15m_btcchange');
   const midEl    = document.getElementById('mc_15m_mid');
   const entryEl  = document.getElementById('mc_15m_entry');
-  const tpslEl   = document.getElementById('mc_15m_tpsl');
+  const peakEl   = document.getElementById('mc_15m_peak');
+  const trailEl  = document.getElementById('mc_15m_trail');
+  const slEl     = document.getElementById('mc_15m_sl');
+  const flipEl   = document.getElementById('mc_15m_flips');
   const pnlEl    = document.getElementById('mc_15m_pnl');
+  const cpnlEl   = document.getElementById('mc_15m_cpnl');
 
   if (!session) {
     phaseEl.textContent = 'Idle';  phaseEl.className = 'mc-phase';
     timerEl.textContent = '--';    qEl.textContent   = 'No active 15-min market';
-    sigEl.innerHTML = '--';   btcEl.textContent = '--';
-    midEl.textContent = '--'; entryEl.textContent = '--';
-    tpslEl.textContent = '--'; pnlEl.textContent = '--';
+    sigEl.innerHTML = '--';       btcEl.textContent = '--';
+    midEl.textContent = '--';     entryEl.textContent = '--';
+    if (peakEl)  peakEl.textContent  = '--';
+    if (trailEl) trailEl.textContent = '--';
+    if (slEl)    slEl.textContent    = '--';
+    if (flipEl)  flipEl.textContent  = '0';
+    pnlEl.textContent  = '--';
+    if (cpnlEl) cpnlEl.textContent = '--';
     card.className = 'market-card';
     return;
   }
@@ -148,7 +160,7 @@ function updateMarketCard15m(sessions) {
   phaseEl.textContent = pb.label;
   phaseEl.className   = `mc-phase ${pb.cls}`;
 
-  const isActive = ['entering', 'managing'].includes(session.phase);
+  const isActive = ['entering', 'managing', 'flipping'].includes(session.phase);
   card.className = isActive ? 'market-card market-card-quoting' : 'market-card';
 
   sigEl.innerHTML = session.signal ? signalBadge(session.signal) : '<span class="dir-badge dir-flat">WAITING</span>';
@@ -164,22 +176,55 @@ function updateMarketCard15m(sessions) {
   midEl.textContent   = session.lastMid   !== null ? '$' + session.lastMid.toFixed(3)   : '--';
   entryEl.textContent = session.entryPrice !== null ? `$${session.entryPrice.toFixed(3)} (${session.signal || '--'})` : '--';
 
-  if (session.takeProfitPrice && session.stopLossPrice) {
-    tpslEl.innerHTML = `<span class="positive">TP $${session.takeProfitPrice.toFixed(3)}</span> / <span class="negative">SL $${session.stopLossPrice.toFixed(3)}</span>`;
-  } else {
-    tpslEl.textContent = '--';
+  if (peakEl) {
+    if (session.peakMid !== null && session.peakMid !== undefined) {
+      const trailingActive = session.trailingActive;
+      peakEl.innerHTML = trailingActive
+        ? `<span class="positive">$${session.peakMid.toFixed(3)}</span>`
+        : `<span class="neutral">$${session.peakMid.toFixed(3)} (not yet active)</span>`;
+    } else {
+      peakEl.textContent = '--';
+    }
+  }
+
+  if (trailEl) {
+    if (session.trailingStopLevel !== null && session.trailingStopLevel !== undefined) {
+      trailEl.innerHTML = `<span class="negative">$${session.trailingStopLevel.toFixed(3)}</span>`;
+    } else {
+      trailEl.textContent = session.entryPrice ? `activates at $${(session.entryPrice + 0.02).toFixed(3)}` : '--';
+    }
+  }
+
+  if (slEl) {
+    slEl.textContent = session.stopLossPrice !== null && session.stopLossPrice !== undefined
+      ? `$${session.stopLossPrice.toFixed(3)}`
+      : '--';
+  }
+
+  if (flipEl) {
+    flipEl.textContent = `${session.flipCount || 0} / ${3}`;
   }
 
   if (session.unrealizedPnL !== null && session.unrealizedPnL !== undefined) {
     const val = session.unrealizedPnL;
     const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
     pnlEl.innerHTML = `<span class="${cls}">${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
-  } else if (session.pnl !== null && session.pnl !== undefined) {
-    const val = session.pnl;
+  } else if (session.tradePnl !== null && session.tradePnl !== undefined && session.phase !== 'managing') {
+    const val = session.tradePnl;
     const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
-    pnlEl.innerHTML = `<span class="${cls}">CLOSED ${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
+    pnlEl.innerHTML = `<span class="${cls}">LAST ${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
   } else {
     pnlEl.textContent = '--';
+  }
+
+  if (cpnlEl) {
+    const cum = session.cumulativePnl || 0;
+    if (cum !== 0) {
+      const cls = cum > 0 ? 'positive' : 'negative';
+      cpnlEl.innerHTML = `<span class="${cls}">${cum >= 0 ? '+' : ''}$${cum.toFixed(3)}</span>`;
+    } else {
+      cpnlEl.textContent = '$0.00';
+    }
   }
 }
 
@@ -268,9 +313,9 @@ async function updateStatus() {
   if (status.config) {
     const cfg = status.config;
     const spreadEl = document.getElementById('spreadConfig');
-    if (spreadEl) spreadEl.textContent = `TP +${(cfg.takeProfitCents * 100).toFixed(0)}¢ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
+    if (spreadEl) spreadEl.textContent = `Trail ${(cfg.trailingStop * 100).toFixed(0)}¢ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
     document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize} / trade`;
-    document.getElementById('scanConfig').textContent      = `Momentum ${cfg.marketType} | Threshold ±${cfg.momentumThreshold}% | Entry after ${cfg.entryAfterSeconds}s`;
+    document.getElementById('scanConfig').textContent      = `Swing ${cfg.marketType} | ±${cfg.momentumThreshold}% signal | ${cfg.maxFlips} flips max`;
   }
 
   const safety = status.safety;

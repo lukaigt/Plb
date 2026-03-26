@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTC Market Maker</title>
+  <title>BTC Swing Trader</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="header">
     <div class="header-left">
-      <h1>BTC Momentum Trader</h1>
-      <span class="strategy-badge">MOMENTUM STRATEGY</span>
+      <h1>BTC Swing Trader</h1>
+      <span class="strategy-badge">SWING TRADER — TRAILING STOP + FLIP</span>
     </div>
     <div class="header-controls">
       <button class="btn btn-blue"   onclick="scanNow()">Scan Now</button>
@@ -85,12 +85,28 @@
             <span class="mc-val" id="mc_15m_entry">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">Take Profit / Stop Loss</span>
-            <span class="mc-val" id="mc_15m_tpsl">--</span>
+            <span class="mc-label">Peak Price</span>
+            <span class="mc-val" id="mc_15m_peak">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Trailing Stop</span>
+            <span class="mc-val" id="mc_15m_trail">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Stop Loss</span>
+            <span class="mc-val" id="mc_15m_sl">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Flips This Window</span>
+            <span class="mc-val" id="mc_15m_flips">0</span>
           </div>
           <div class="mc-row">
             <span class="mc-label">Unrealized P&amp;L</span>
             <span class="mc-val" id="mc_15m_pnl">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Cumulative P&amp;L</span>
+            <span class="mc-val" id="mc_15m_cpnl">--</span>
           </div>
         </div>
       </div>
@@ -126,11 +142,11 @@
       </div>
       <div class="safety-item">
         <span class="s-label">Strategy</span>
-        <span class="s-value" style="color:#58a6ff;font-size:12px;">Momentum</span>
+        <span class="s-value" style="color:#58a6ff;font-size:12px;">Swing Trader</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">TP / SL</span>
-        <span class="s-value" id="spreadConfig" style="color:#d29922;">+12¢ / -12¢</span>
+        <span class="s-label">Trail / SL</span>
+        <span class="s-value" id="spreadConfig" style="color:#d29922;">5¢ / -12¢</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Order Size</span>

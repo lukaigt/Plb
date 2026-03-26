@@ -97,19 +97,21 @@ app.get('/', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   const cfg = getMomentumConfig();
   console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
-  console.log('Starting BTC Momentum Trader...');
-  console.log(`Market:        BTC ${cfg.marketType}`);
-  console.log(`Wallet Key:    ${process.env.WALLET_PRIVATE_KEY ? 'SET' : 'NOT SET'}`);
-  console.log(`CLOB API Key:  ${process.env.POLY_API_KEY ? 'SET' : 'NOT SET'}`);
-  console.log(`Order size:    $${cfg.orderSize} per trade`);
-  console.log(`Take profit:   +${(cfg.takeProfitCents * 100).toFixed(0)}¢ from entry`);
-  console.log(`Stop loss:     -${(cfg.stopLossCents * 100).toFixed(0)}¢ from entry`);
-  console.log(`Signal:        ±${cfg.momentumThreshold}% BTC 3-min change`);
-  console.log(`Mid range:     $${cfg.midMin} – $${cfg.midMax}`);
-  console.log(`Entry after:   ${cfg.entryAfterSeconds}s into window`);
-  console.log(`Closing phase: final ${cfg.closeSeconds}s`);
+  console.log('Starting BTC Swing Trader...');
+  console.log(`Market:         BTC ${cfg.marketType}`);
+  console.log(`Wallet Key:     ${process.env.WALLET_PRIVATE_KEY ? 'SET' : 'NOT SET'}`);
+  console.log(`CLOB API Key:   ${process.env.POLY_API_KEY ? 'SET' : 'NOT SET'}`);
+  console.log(`Order size:     $${cfg.orderSize} per trade`);
+  console.log(`Trailing stop:  ${(cfg.trailingStop * 100).toFixed(0)}¢ below peak (activates ${(cfg.trailingActivate * 100).toFixed(0)}¢ above entry)`);
+  console.log(`Stop loss:      -${(cfg.stopLossCents * 100).toFixed(0)}¢ from entry`);
+  console.log(`Max flips:      ${cfg.maxFlips} per window`);
+  console.log(`Flip min time:  ${cfg.flipMinSeconds}s remaining`);
+  console.log(`Signal:         ±${cfg.momentumThreshold}% BTC 3-min change`);
+  console.log(`Mid range:      $${cfg.midMin} – $${cfg.midMax}`);
+  console.log(`Entry after:    ${cfg.entryAfterSeconds}s into window`);
+  console.log(`Closing phase:  final ${cfg.closeSeconds}s`);
   console.log(`Daily loss limit: $${process.env.DAILY_LOSS_LIMIT || 50}`);
-  console.log(`Proxy:         ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
+  console.log(`Proxy:          ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
 
   testProxy().then(result => {
     console.log(`Outgoing IP: ${result.ip} (proxy ${result.proxyActive ? 'ACTIVE' : 'NOT active'})`);

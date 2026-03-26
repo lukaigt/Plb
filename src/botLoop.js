@@ -10,16 +10,31 @@ const krakenFeed              = require('./krakenFeed');
 
 let isRunning            = false;
 let loopInterval         = null;
+let fastLoopInterval     = null;
 let lastScanTime         = null;
 let lastPositionScanTime = 0;
 const POSITION_SCAN_INTERVAL_MS = 5 * 60 * 1000;
 
 const activeSessions = {};
 
-function getClient() {
+async function getClient() {
   const key = process.env.WALLET_PRIVATE_KEY;
   if (!key) return null;
   return initClient(key);
+}
+
+async function runFast() {
+  if (!isRunning) return;
+  try {
+    const client = await getClient();
+    for (const session of Object.values(activeSessions)) {
+      if (session.phase === 'managing') {
+        await session.checkTrailingStop(client);
+      }
+    }
+  } catch (err) {
+    logger.addActivity('error', { message: `Fast loop error: ${err.message?.slice(0, 80)}` });
+  }
 }
 
 async function runOnce() {
@@ -45,10 +60,10 @@ async function runOnce() {
         if (!session.cancelled) {
           session.cancelled = true;
           logger.addActivity('mom_done', {
-            message: `[${session.market.coin}-${session.market.type}] Market resolved | signal=${session.signal || 'none'} | spent=$${session.totalSpent.toFixed(2)} | P&L=${session.pnl !== null ? '$' + session.pnl.toFixed(3) : 'held to resolution'}`
+            message: `[${session.market.coin}-${session.market.type}] Market resolved | flips=${session.flipCount} | total spent=$${session.totalSpent.toFixed(2)} | cumulative P&L=${session.cumulativePnl >= 0 ? '+' : ''}$${session.cumulativePnl.toFixed(3)}`
           });
 
-          if (session.totalSpent > 0 && session.tokenId) {
+          if (session.holdingToken && session.tokenId) {
             const condId = session.market.conditionId || session.market.id;
             redeemer.addPendingRedemption({
               conditionId:   condId,
@@ -102,17 +117,15 @@ async function runOnce() {
 
       if (session.phase === 'entering') {
         await session.checkEntryFill();
-        if (session.entryFilled) {
-          await session.postTakeProfitSell();
-        }
         continue;
       }
 
       if (session.phase === 'managing') {
-        if (!session.sellOrderId) {
-          await session.postTakeProfitSell();
-        }
-        await session.checkManaging(client);
+        continue;
+      }
+
+      if (session.phase === 'flipping') {
+        await session.attemptFlip(client);
         continue;
       }
     }
@@ -153,15 +166,18 @@ async function start() {
   const interval = config.refreshInterval * 1000;
 
   logger.addActivity('bot', {
-    message: `Bot started — BTC MOMENTUM STRATEGY\n` +
-      `  Market:          ${config.marketType}\n` +
-      `  Order size:      $${config.orderSize}\n` +
-      `  Take profit:     +${(config.takeProfitCents * 100).toFixed(0)}¢ from entry\n` +
-      `  Stop loss:       -${(config.stopLossCents * 100).toFixed(0)}¢ from entry\n` +
-      `  Momentum signal: ±${config.momentumThreshold}% BTC 3-min change\n` +
-      `  Mid range:       $${config.midMin} – $${config.midMax}\n` +
-      `  Entry after:     ${config.entryAfterSeconds}s into window\n` +
-      `  Closing phase:   final ${config.closeSeconds}s — hold to resolution\n` +
+    message: `Bot started — BTC SWING TRADER\n` +
+      `  Market:           ${config.marketType}\n` +
+      `  Order size:       $${config.orderSize}\n` +
+      `  Trailing stop:    ${(config.trailingStop * 100).toFixed(0)}¢ below peak (activates ${(config.trailingActivate * 100).toFixed(0)}¢ above entry)\n` +
+      `  Stop loss:        -${(config.stopLossCents * 100).toFixed(0)}¢ from entry\n` +
+      `  Max flips:        ${config.maxFlips} per window\n` +
+      `  Flip min time:    ${config.flipMinSeconds}s remaining required\n` +
+      `  Momentum signal:  ±${config.momentumThreshold}% BTC 3-min change\n` +
+      `  Mid range:        $${config.midMin} – $${config.midMax}\n` +
+      `  Entry after:      ${config.entryAfterSeconds}s into window\n` +
+      `  Closing phase:    final ${config.closeSeconds}s — hold to resolution\n` +
+      `  Price check:      every 5s (trailing stop) + every ${config.refreshInterval}s (main loop)\n` +
       `  Daily loss limit: $${safety.dailyLossLimit}`
   });
 
@@ -179,7 +195,8 @@ async function start() {
   }
 
   await runOnce();
-  loopInterval = setInterval(runOnce, interval);
+  loopInterval     = setInterval(runOnce, interval);
+  fastLoopInterval = setInterval(runFast, 5000);
 }
 
 function stop() {
@@ -187,6 +204,10 @@ function stop() {
   if (loopInterval) {
     clearInterval(loopInterval);
     loopInterval = null;
+  }
+  if (fastLoopInterval) {
+    clearInterval(fastLoopInterval);
+    fastLoopInterval = null;
   }
   logger.addActivity('bot', { message: 'Bot stopped' });
 }
@@ -200,7 +221,7 @@ function getStatus() {
   return {
     isRunning,
     lastScanTime,
-    strategy: 'MOMENTUM',
+    strategy: 'SWING_TRADER',
     config,
     activeSessions: sessions,
     windowStatus:   krakenFeed.getWindowStatus(),
