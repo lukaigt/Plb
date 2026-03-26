@@ -30,6 +30,8 @@ async function runFast() {
     for (const session of Object.values(activeSessions)) {
       if (session.phase === 'managing') {
         await session.checkTrailingStop(client);
+      } else if (session.phase === 'exiting') {
+        await session.checkExitFill();
       }
     }
   } catch (err) {
@@ -121,6 +123,10 @@ async function runOnce() {
       }
 
       if (session.phase === 'managing') {
+        continue;
+      }
+
+      if (session.phase === 'exiting') {
         continue;
       }
 

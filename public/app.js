@@ -113,6 +113,7 @@ function phaseBadge(phase) {
     waiting:   { label: 'WAITING',   cls: 'phase-waiting' },
     entering:  { label: 'ENTERING',  cls: 'phase-quoting' },
     managing:  { label: 'MANAGING',  cls: 'phase-quoting' },
+    exiting:   { label: 'EXITING',   cls: 'phase-quoting' },
     flipping:  { label: 'FLIPPING',  cls: 'phase-quoting' },
     closing:   { label: 'CLOSING',   cls: 'phase-closing' },
     done:      { label: 'DONE',      cls: 'phase-closing' },
@@ -160,7 +161,7 @@ function updateMarketCard15m(sessions) {
   phaseEl.textContent = pb.label;
   phaseEl.className   = `mc-phase ${pb.cls}`;
 
-  const isActive = ['entering', 'managing', 'flipping'].includes(session.phase);
+  const isActive = ['entering', 'managing', 'exiting', 'flipping'].includes(session.phase);
   card.className = isActive ? 'market-card market-card-quoting' : 'market-card';
 
   sigEl.innerHTML = session.signal ? signalBadge(session.signal) : '<span class="dir-badge dir-flat">WAITING</span>';

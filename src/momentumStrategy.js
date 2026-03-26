@@ -7,19 +7,19 @@ const CLOB_API = 'https://clob.polymarket.com';
 
 function getMomentumConfig() {
   return {
-    orderSize:          parseFloat(process.env.MOM_ORDER_SIZE)         || 10,
-    trailingStop:       parseFloat(process.env.MOM_TRAILING_STOP)      || 0.05,
-    trailingActivate:   parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.02,
-    stopLossCents:      parseFloat(process.env.MOM_STOP_LOSS)          || 0.12,
-    momentumThreshold:  parseFloat(process.env.MOM_THRESHOLD)          || 0.05,
-    midMin:             parseFloat(process.env.MOM_MID_MIN)            || 0.35,
-    midMax:             parseFloat(process.env.MOM_MID_MAX)            || 0.65,
-    entryAfterSeconds:  parseInt(process.env.MOM_ENTRY_AFTER_SECONDS)  || 180,
-    closeSeconds:       parseInt(process.env.MOM_CLOSE_SECONDS)        || 30,
-    refreshInterval:    parseInt(process.env.MM_REFRESH_INTERVAL)      || 10,
-    marketType:         process.env.MOM_MARKET_TYPE                    || '15m',
-    maxFlips:           parseInt(process.env.MOM_MAX_FLIPS)            || 3,
-    flipMinSeconds:     parseInt(process.env.MOM_FLIP_MIN_SECONDS)     || 90
+    orderSize:         parseFloat(process.env.MOM_ORDER_SIZE)         || 10,
+    trailingStop:      parseFloat(process.env.MOM_TRAILING_STOP)      || 0.05,
+    trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.02,
+    stopLossCents:     parseFloat(process.env.MOM_STOP_LOSS)          || 0.12,
+    momentumThreshold: parseFloat(process.env.MOM_THRESHOLD)          || 0.05,
+    midMin:            parseFloat(process.env.MOM_MID_MIN)            || 0.35,
+    midMax:            parseFloat(process.env.MOM_MID_MAX)            || 0.65,
+    entryAfterSeconds: parseInt(process.env.MOM_ENTRY_AFTER_SECONDS)  || 180,
+    closeSeconds:      parseInt(process.env.MOM_CLOSE_SECONDS)        || 30,
+    refreshInterval:   parseInt(process.env.MM_REFRESH_INTERVAL)      || 10,
+    marketType:        process.env.MOM_MARKET_TYPE                    || '15m',
+    maxFlips:          parseInt(process.env.MOM_MAX_FLIPS)            || 3,
+    flipMinSeconds:    parseInt(process.env.MOM_FLIP_MIN_SECONDS)     || 90
   };
 }
 
@@ -57,9 +57,9 @@ class MomentumSession {
     this.market  = market;
     this.config  = config;
 
-    this.phase           = 'waiting';
-    this.cancelled       = false;
-    this.entryAttempted  = false;
+    this.phase          = 'waiting';
+    this.cancelled      = false;
+    this.entryAttempted = false;
 
     this._resetTradeLeg();
 
@@ -69,8 +69,6 @@ class MomentumSession {
     this.tradeIds      = [];
     this.btcChange3m   = null;
     this.lastMid       = null;
-
-    this._exiting = false;
   }
 
   _resetTradeLeg() {
@@ -82,13 +80,14 @@ class MomentumSession {
     this.entryFilled     = false;
     this.holdingToken    = false;
     this.filledSize      = null;
+    this.exitOrderId     = null;
+    this.exitPostedPrice = null;
     this.exitPrice       = null;
     this.tradePnl        = null;
 
     this.peakMid           = null;
     this.trailingStopLevel = null;
     this.trailingActive    = false;
-    this._exiting          = false;
   }
 
   get marketId()    { return this.market.id; }
@@ -202,7 +201,7 @@ class MomentumSession {
     }
 
     logger.addActivity('mom_entry', {
-      message: `[${this.market.coin}-${this.market.type}] BUY ${side} @ $${this.entryPrice} | ${this.entrySizeTokens} tokens | trailing stop: ${(this.config.trailingStop * 100).toFixed(0)}¢ below peak | SL: -${(this.config.stopLossCents * 100).toFixed(0)}¢`
+      message: `[${this.market.coin}-${this.market.type}] BUY ${side} @ $${this.entryPrice} | ${this.entrySizeTokens} tokens | trailing stop: ${(this.config.trailingStop * 100).toFixed(0)}¢ below peak (activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry) | SL: -${(this.config.stopLossCents * 100).toFixed(0)}¢`
     });
 
     this.phase = 'entering';
@@ -257,11 +256,11 @@ class MomentumSession {
       this.peakMid      = this.entryPrice;
       this.phase        = 'managing';
       logger.addActivity('mom_filled', {
-        message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trailing stop: ${(this.config.trailingStop * 100).toFixed(0)}¢ below peak | activates when price is ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry`
+        message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)})`
       });
     } else if (status.status === 'CANCELED' || status.status === 'CANCELLED') {
       logger.addActivity('mom_error', {
-        message: `[${this.market.coin}-${this.market.type}] Entry order cancelled — ${this.flipCount > 0 ? 'done' : 'no entry this window'}`
+        message: `[${this.market.coin}-${this.market.type}] Entry order cancelled`
       });
       this.phase = 'done';
     }
@@ -270,7 +269,6 @@ class MomentumSession {
   async checkTrailingStop(client) {
     if (this.phase !== 'managing') return;
     if (!this.entryFilled || !this.holdingToken) return;
-    if (this._exiting) return;
 
     const mid = await fetchMidpoint(this.tokenId);
     if (mid === null) return;
@@ -284,44 +282,39 @@ class MomentumSession {
       this.peakMid           = mid;
       this.trailingStopLevel = Math.max(0.02, mid - this.config.trailingStop);
       logger.addActivity('mom_trailing', {
-        message: `[${this.market.coin}-${this.market.type}] Trailing stop ACTIVATED | peak=$${mid.toFixed(3)} | stop level=$${this.trailingStopLevel.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] Trailing stop ACTIVATED | peak=$${mid.toFixed(3)} | stop=$${this.trailingStopLevel.toFixed(3)}`
       });
     } else if (this.trailingActive) {
       if (mid > this.peakMid) {
         this.peakMid           = mid;
         this.trailingStopLevel = Math.max(0.02, mid - this.config.trailingStop);
         logger.addActivity('mom_peak', {
-          message: `[${this.market.coin}-${this.market.type}] New peak=$${mid.toFixed(3)} | trailing stop=$${this.trailingStopLevel.toFixed(3)} | P&L so far: +$${((mid - this.entryPrice) * (this.filledSize || this.entrySizeTokens)).toFixed(3)}`
+          message: `[${this.market.coin}-${this.market.type}] New peak=$${mid.toFixed(3)} | trailing stop=$${this.trailingStopLevel.toFixed(3)} | unrealized: +$${((mid - this.entryPrice) * (this.filledSize || this.entrySizeTokens)).toFixed(3)}`
         });
       }
 
       if (mid <= this.trailingStopLevel) {
-        await this._executeExit(client, mid, 'trailing_stop');
+        await this._postExitSell(client, mid, 'trailing_stop');
         return;
       }
     }
 
     if (mid <= stopLossPrice) {
-      await this._executeExit(client, mid, 'stop_loss');
+      await this._postExitSell(client, mid, 'stop_loss');
     }
   }
 
-  async _executeExit(client, mid, reason) {
-    if (!this.holdingToken || this._exiting) return;
-    this._exiting     = true;
-    this.holdingToken = false;
+  async _postExitSell(client, mid, reason) {
+    if (this.phase !== 'managing' || !this.holdingToken || this.exitOrderId) return;
 
     const exitSize  = this.filledSize || this.entrySizeTokens;
     const exitPrice = Math.max(0.02, Math.min(0.97, Math.round(mid * 100) / 100));
-    this.exitPrice  = exitPrice;
-    this.tradePnl   = parseFloat(((exitPrice - this.entryPrice) * exitSize).toFixed(4));
-    this.cumulativePnl = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
 
     const label = reason === 'trailing_stop' ? 'TRAILING STOP' : 'STOP LOSS';
     const peakStr = this.peakMid ? ` | peak was $${this.peakMid.toFixed(3)}` : '';
 
     logger.addActivity(reason === 'trailing_stop' ? 'mom_tp_hit' : 'mom_sl', {
-      message: `[${this.market.coin}-${this.market.type}] ${label} EXIT | ${this.signal} | mid=$${mid.toFixed(3)}${peakStr} | sell @ $${exitPrice} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | flip#${this.flipCount}`
+      message: `[${this.market.coin}-${this.market.type}] ${label} TRIGGERED | ${this.signal} mid=$${mid.toFixed(3)}${peakStr} | posting sell @ $${exitPrice}`
     });
 
     const result = await placeSellOrder(
@@ -334,23 +327,65 @@ class MomentumSession {
 
     if (!result.success) {
       logger.addActivity('mom_error', {
-        message: `[${this.market.coin}-${this.market.type}] Exit sell failed: ${result.error?.slice(0, 80)} — token may still be held`
+        message: `[${this.market.coin}-${this.market.type}] Exit sell POST failed: ${result.error?.slice(0, 80)} — will retry next tick`
       });
-      this.holdingToken = true;
-      this._exiting = false;
       return;
     }
 
-    logger.addActivity(reason === 'trailing_stop' ? 'mom_tp_hit' : 'mom_sl', {
-      message: `[${this.market.coin}-${this.market.type}] Exit sell posted | cumulative P&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
-    });
+    this.exitOrderId     = result.orderId;
+    this.exitPostedPrice = exitPrice;
+    this.phase           = 'exiting';
 
-    this.phase = 'flipping';
+    logger.addActivity(reason === 'trailing_stop' ? 'mom_tp_hit' : 'mom_sl', {
+      message: `[${this.market.coin}-${this.market.type}] Exit sell posted @ $${exitPrice} | orderId: ${result.orderId?.slice(0, 14)}... | waiting for fill`
+    });
+  }
+
+  async checkExitFill() {
+    if (this.phase !== 'exiting' || !this.exitOrderId) return;
+
+    const status = await fetchOrderStatus(this.exitOrderId);
+    if (!status) return;
+
+    const matched = parseFloat(status.size_matched || 0);
+
+    if (matched > 0) {
+      const fillPrice = this.exitPostedPrice;
+      this.holdingToken  = false;
+      this.exitPrice     = fillPrice;
+      this.tradePnl      = parseFloat(((fillPrice - this.entryPrice) * matched).toFixed(4));
+      this.cumulativePnl = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
+      this.exitOrderId   = null;
+      this.phase         = 'flipping';
+
+      logger.addActivity('mom_tp_hit', {
+        message: `[${this.market.coin}-${this.market.type}] Exit CONFIRMED — sold ${matched} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+      });
+      return;
+    }
+
+    if (status.status === 'CANCELED' || status.status === 'CANCELLED') {
+      this.exitOrderId = null;
+      this.phase       = 'managing';
+      logger.addActivity('mom_error', {
+        message: `[${this.market.coin}-${this.market.type}] Exit order was cancelled externally — returning to managing to retry`
+      });
+    }
   }
 
   async handleClosingPhase(client) {
     if (this.cancelled) return;
     this.cancelled = true;
+
+    if (this.exitOrderId && client) {
+      try {
+        await client.cancelOrder({ orderID: this.exitOrderId });
+        logger.addActivity('mom_close', {
+          message: `[${this.market.coin}-${this.market.type}] Closing — cancelled pending exit sell, holding ${this.signal} to resolution`
+        });
+      } catch {}
+      this.exitOrderId = null;
+    }
 
     if (!this.entryFilled && this.entryOrderId && client) {
       try { await client.cancelOrder({ orderID: this.entryOrderId }); } catch {}
@@ -361,7 +396,7 @@ class MomentumSession {
 
     if (this.entryFilled && this.holdingToken) {
       logger.addActivity('mom_close', {
-        message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} token to resolution | cumulative P&L (not counting resolution): ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} token to resolution | cumulative P&L so far: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
       });
     }
   }
@@ -388,6 +423,7 @@ class MomentumSession {
       entryFilled:       this.entryFilled,
       holdingToken:      this.holdingToken,
       filledSize:        this.filledSize,
+      exitOrderId:       this.exitOrderId || null,
       unrealizedPnL,
       tradePnl:          this.tradePnl,
       cumulativePnl:     this.cumulativePnl,
