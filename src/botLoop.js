@@ -182,7 +182,7 @@ async function start() {
       `  Momentum signal:  ±${config.momentumThreshold}% BTC 3-min change\n` +
       `  Mid range:        $${config.midMin} – $${config.midMax}\n` +
       `  Entry after:      ${config.entryAfterSeconds}s into window\n` +
-      `  Closing phase:    final ${config.closeSeconds}s — hold to resolution\n` +
+      `  Closing phase:    final ${config.closeSeconds}s — cash out (forced exit at 60s)\n` +
       `  Price check:      every 5s (trailing stop) + every ${config.refreshInterval}s (main loop)\n` +
       `  Daily loss limit: $${safety.dailyLossLimit}`
   });

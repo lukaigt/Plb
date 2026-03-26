@@ -192,7 +192,7 @@ function updateMarketCard15m(sessions) {
     if (session.trailingStopLevel !== null && session.trailingStopLevel !== undefined) {
       trailEl.innerHTML = `<span class="negative">$${session.trailingStopLevel.toFixed(3)}</span>`;
     } else {
-      const activateOffset = (window._botConfig && window._botConfig.trailingActivate) ? window._botConfig.trailingActivate : 0.02;
+      const activateOffset = (window._botConfig && window._botConfig.trailingActivate) ? window._botConfig.trailingActivate : 0.01;
       trailEl.textContent = session.entryPrice ? `activates at $${(session.entryPrice + activateOffset).toFixed(3)}` : '--';
     }
   }

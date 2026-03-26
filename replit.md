@@ -97,8 +97,8 @@ public/
 - `WALLET_PRIVATE_KEY` - MetaMask wallet private key
 - `POLY_API_KEY` / `POLY_API_SECRET` / `POLY_PASSPHRASE` - CLOB API credentials
 - `MOM_ORDER_SIZE` - USDC per trade (default 10)
-- `MOM_TRAILING_STOP` - Trailing stop distance in dollars (default 0.05 = 5¢ below peak)
-- `MOM_TRAILING_ACTIVATE` - Trailing stop activation threshold above entry (default 0.02 = 2¢)
+- `MOM_TRAILING_STOP` - Trailing stop distance in dollars (default 0.02 = 2¢ below peak)
+- `MOM_TRAILING_ACTIVATE` - Trailing stop activation threshold above entry (default 0.01 = 1¢)
 - `MOM_STOP_LOSS` - Stop loss in dollars below entry (default 0.12 = 12¢)
 - `MOM_THRESHOLD` - BTC 3-min % change needed for signal (default 0.05)
 - `MOM_MID_MIN` - Skip if token mid below this (default 0.35)
@@ -107,7 +107,7 @@ public/
 - `MOM_CLOSE_SECONDS` - Final seconds to hold to resolution (default 30)
 - `MOM_MARKET_TYPE` - Market type to trade (default '15m')
 - `MOM_MAX_FLIPS` - Max flips per window (default 3)
-- `MOM_FLIP_MIN_SECONDS` - Minimum seconds remaining to attempt a flip (default 90)
+- `MOM_FLIP_MIN_SECONDS` - Minimum seconds remaining to attempt a flip (default 45)
 - `MM_REFRESH_INTERVAL` - Seconds between main bot loop iterations (default 10)
 - `DAILY_LOSS_LIMIT` - Max daily loss in dollars (default 50)
 - `MAX_DAILY_LOSSES` - Max losing trades per day (default 10)
@@ -139,6 +139,14 @@ public/
 - All credentials in .env only, never in code
 
 ## Change History
+
+### Session 4 (Mar 26, 2026) — Fix Cashout: Bot Actually Sells Now
+- **Tightened trailing stop defaults**: trailingStop 5¢→2¢, trailingActivate 2¢→1¢, flipMinSeconds 90→45
+- **Removed isClosing() guard**: trailing stop exits now work at ALL times including last 30 seconds
+- **Added forced time exit**: if still holding at 60s left, forced sell at current mid price
+- **Closing phase sells**: handleClosingPhase now posts a sell order instead of holding to resolution
+- **Fallback only**: holds to resolution only if sell order POST itself fails or no mid available
+- **Files changed**: `src/momentumStrategy.js`, `src/botLoop.js`, `public/app.js`
 
 ### Session 3 (Mar 26, 2026) — Swing Trader Rebuild
 - **COMPLETE STRATEGY REBUILD**: Old momentum/market-making strategy replaced with Swing Trader
