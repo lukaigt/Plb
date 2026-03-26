@@ -140,6 +140,12 @@ public/
 
 ## Change History
 
+### Session 5 (Mar 26, 2026) — Fix Signal Retry: Check Every 10s
+- **Removed one-shot gate**: `entryAttempted` flag deleted — bot retries signal check every 10s instead of once per window
+- **Stay in waiting phase**: when no signal found, phase stays `waiting` (not `no_signal`) so main loop retries
+- **Log throttle**: "no signal" logged once per 60s instead of every tick to prevent spam
+- **Files changed**: `src/momentumStrategy.js`
+
 ### Session 4 (Mar 26, 2026) — Fix Cashout: Bot Actually Sells Now
 - **Tightened trailing stop defaults**: trailingStop 5¢→2¢, trailingActivate 2¢→1¢, flipMinSeconds 90→45
 - **Removed isClosing() guard**: trailing stop exits now work at ALL times including last 30 seconds

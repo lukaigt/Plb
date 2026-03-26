@@ -59,7 +59,7 @@ class MomentumSession {
 
     this.phase          = 'waiting';
     this.cancelled      = false;
-    this.entryAttempted = false;
+    this.lastNoSignalLog = 0;
 
     this._resetTradeLeg();
 
@@ -113,24 +113,24 @@ class MomentumSession {
   }
 
   async attemptEntry(client) {
-    if (this.entryAttempted) return;
-    this.entryAttempted = true;
-
     if (!client) {
       logger.addActivity('mom_skip', {
         message: `[${this.market.coin}-${this.market.type}] No CLOB client — set WALLET_PRIVATE_KEY + POLY_API_KEY`
       });
-      this.phase = 'no_signal';
+      this.phase = 'done';
       return;
     }
 
     const signal = this.getSignal();
     if (!signal) {
-      const ctx = krakenFeed.getPriceContext();
-      logger.addActivity('mom_skip', {
-        message: `[${this.market.coin}-${this.market.type}] No momentum signal — BTC 3m: ${ctx.change3m?.percent || '?'}% (need ±${this.config.momentumThreshold}%) | skipping`
-      });
-      this.phase = 'no_signal';
+      const now = Date.now();
+      if (now - this.lastNoSignalLog >= 60000) {
+        const ctx = krakenFeed.getPriceContext();
+        logger.addActivity('mom_skip', {
+          message: `[${this.market.coin}-${this.market.type}] No momentum signal — BTC 3m: ${ctx.change3m?.percent || '?'}% (need ±${this.config.momentumThreshold}%) | retrying every 10s | ${Math.round(this.secondsLeft)}s left`
+        });
+        this.lastNoSignalLog = now;
+      }
       return;
     }
 
@@ -171,7 +171,7 @@ class MomentumSession {
       logger.addActivity('mom_skip', {
         message: `[${this.market.coin}-${this.market.type}] Could not fetch midpoint for ${side} — skipping`
       });
-      this.phase = reason === 'flip' ? 'done' : 'no_signal';
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
       return;
     }
 
@@ -181,7 +181,7 @@ class MomentumSession {
       logger.addActivity('mom_skip', {
         message: `[${this.market.coin}-${this.market.type}] ${side} mid=$${mid.toFixed(3)} outside [${this.config.midMin}–${this.config.midMax}] — ${reason === 'flip' ? 'skipping flip' : 'skipping entry'}`
       });
-      this.phase = reason === 'flip' ? 'done' : 'no_signal';
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
       return;
     }
 
@@ -241,13 +241,13 @@ class MomentumSession {
         logger.addActivity('mom_error', {
           message: `[${this.market.coin}-${this.market.type}] BUY failed: ${err}`
         });
-        this.phase = reason === 'flip' ? 'done' : 'no_signal';
+        this.phase = reason === 'flip' ? 'done' : 'waiting';
       }
     } catch (err) {
       logger.addActivity('mom_error', {
         message: `[${this.market.coin}-${this.market.type}] BUY error: ${err.message?.slice(0, 80)}`
       });
-      this.phase = reason === 'flip' ? 'done' : 'no_signal';
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
     }
   }
 
