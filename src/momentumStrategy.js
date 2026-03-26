@@ -191,9 +191,8 @@ class MomentumSession {
     this.entrySizeTokens = parseFloat((this.config.orderSize / this.entryPrice).toFixed(2));
 
     if (reason === 'flip') {
-      this.flipCount++;
       logger.addActivity('mom_flip', {
-        message: `[${this.market.coin}-${this.market.type}] FLIP #${this.flipCount} → ${side} | mid=$${mid.toFixed(3)} | ${Math.round(this.secondsLeft)}s left | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] FLIP attempt → ${side} | mid=$${mid.toFixed(3)} | ${Math.round(this.secondsLeft)}s left | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
       });
     } else {
       const ctx = krakenFeed.getPriceContext();
@@ -226,9 +225,16 @@ class MomentumSession {
       if (order && order.orderID) {
         this.entryOrderId = order.orderID;
         this.totalSpent  += this.config.orderSize;
-        logger.addActivity('mom_entry', {
-          message: `[${this.market.coin}-${this.market.type}] BUY order posted | orderId: ${order.orderID.slice(0, 14)}...`
-        });
+        if (reason === 'flip') {
+          this.flipCount++;
+          logger.addActivity('mom_flip', {
+            message: `[${this.market.coin}-${this.market.type}] FLIP #${this.flipCount} CONFIRMED → ${side} BUY posted | orderId: ${order.orderID.slice(0, 14)}...`
+          });
+        } else {
+          logger.addActivity('mom_entry', {
+            message: `[${this.market.coin}-${this.market.type}] BUY order posted | orderId: ${order.orderID.slice(0, 14)}...`
+          });
+        }
       } else {
         const err = order?.errorMsg || order?.error || JSON.stringify(order)?.slice(0, 60);
         logger.addActivity('mom_error', {
@@ -271,6 +277,7 @@ class MomentumSession {
   async checkTrailingStop(client) {
     if (this.phase !== 'managing') return;
     if (!this.entryFilled || !this.holdingToken) return;
+    if (this.isClosing()) return;
 
     const mid = await fetchMidpoint(this.tokenId);
     if (mid === null) return;

@@ -192,7 +192,8 @@ function updateMarketCard15m(sessions) {
     if (session.trailingStopLevel !== null && session.trailingStopLevel !== undefined) {
       trailEl.innerHTML = `<span class="negative">$${session.trailingStopLevel.toFixed(3)}</span>`;
     } else {
-      trailEl.textContent = session.entryPrice ? `activates at $${(session.entryPrice + 0.02).toFixed(3)}` : '--';
+      const activateOffset = (window._botConfig && window._botConfig.trailingActivate) ? window._botConfig.trailingActivate : 0.02;
+      trailEl.textContent = session.entryPrice ? `activates at $${(session.entryPrice + activateOffset).toFixed(3)}` : '--';
     }
   }
 
@@ -203,7 +204,8 @@ function updateMarketCard15m(sessions) {
   }
 
   if (flipEl) {
-    flipEl.textContent = `${session.flipCount || 0} / ${3}`;
+    const maxFlips = (window._botConfig && window._botConfig.maxFlips) ? window._botConfig.maxFlips : 3;
+    flipEl.textContent = `${session.flipCount || 0} / ${maxFlips}`;
   }
 
   if (session.unrealizedPnL !== null && session.unrealizedPnL !== undefined) {
@@ -313,6 +315,7 @@ async function updateStatus() {
 
   if (status.config) {
     const cfg = status.config;
+    window._botConfig = cfg;
     const spreadEl = document.getElementById('spreadConfig');
     if (spreadEl) spreadEl.textContent = `Trail ${(cfg.trailingStop * 100).toFixed(0)}¢ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
     document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize} / trade`;
