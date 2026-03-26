@@ -82,6 +82,8 @@ class MomentumSession {
     this.filledSize      = null;
     this.exitOrderId     = null;
     this.exitPostedPrice = null;
+    this.exitSize        = null;
+    this.exitFilledSoFar = 0;
     this.exitPrice       = null;
     this.tradePnl        = null;
 
@@ -334,6 +336,8 @@ class MomentumSession {
 
     this.exitOrderId     = result.orderId;
     this.exitPostedPrice = exitPrice;
+    this.exitSize        = exitSize;
+    this.exitFilledSoFar = 0;
     this.phase           = 'exiting';
 
     logger.addActivity(reason === 'trailing_stop' ? 'mom_tp_hit' : 'mom_sl', {
@@ -347,19 +351,32 @@ class MomentumSession {
     const status = await fetchOrderStatus(this.exitOrderId);
     if (!status) return;
 
-    const matched = parseFloat(status.size_matched || 0);
+    const totalMatched = parseFloat(status.size_matched || 0);
+    if (totalMatched > this.exitFilledSoFar) {
+      this.exitFilledSoFar = totalMatched;
+    }
 
-    if (matched > 0) {
+    const remaining = (this.exitSize || 0) - this.exitFilledSoFar;
+    const fullyFilled = this.exitFilledSoFar > 0 && remaining <= 0.01;
+
+    if (fullyFilled) {
       const fillPrice = this.exitPostedPrice;
       this.holdingToken  = false;
       this.exitPrice     = fillPrice;
-      this.tradePnl      = parseFloat(((fillPrice - this.entryPrice) * matched).toFixed(4));
+      this.tradePnl      = parseFloat(((fillPrice - this.entryPrice) * this.exitFilledSoFar).toFixed(4));
       this.cumulativePnl = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
       this.exitOrderId   = null;
       this.phase         = 'flipping';
 
       logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] Exit CONFIRMED — sold ${matched} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] Exit FULLY FILLED — sold ${this.exitFilledSoFar} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+      });
+      return;
+    }
+
+    if (this.exitFilledSoFar > 0 && remaining > 0.01) {
+      logger.addActivity('mom_tp_hit', {
+        message: `[${this.market.coin}-${this.market.type}] Partial exit: ${this.exitFilledSoFar.toFixed(2)}/${this.exitSize?.toFixed(2)} tokens filled — ${remaining.toFixed(2)} remaining, waiting for full fill`
       });
       return;
     }
@@ -368,7 +385,7 @@ class MomentumSession {
       this.exitOrderId = null;
       this.phase       = 'managing';
       logger.addActivity('mom_error', {
-        message: `[${this.market.coin}-${this.market.type}] Exit order was cancelled externally — returning to managing to retry`
+        message: `[${this.market.coin}-${this.market.type}] Exit order cancelled externally — returning to managing to retry exit`
       });
     }
   }
@@ -378,13 +395,20 @@ class MomentumSession {
     this.cancelled = true;
 
     if (this.exitOrderId && client) {
-      try {
-        await client.cancelOrder({ orderID: this.exitOrderId });
-        logger.addActivity('mom_close', {
-          message: `[${this.market.coin}-${this.market.type}] Closing — cancelled pending exit sell, holding ${this.signal} to resolution`
-        });
-      } catch {}
+      try { await client.cancelOrder({ orderID: this.exitOrderId }); } catch {}
       this.exitOrderId = null;
+
+      const remaining = (this.exitSize || 0) - (this.exitFilledSoFar || 0);
+      if (remaining <= 0.01) {
+        this.holdingToken = false;
+        logger.addActivity('mom_close', {
+          message: `[${this.market.coin}-${this.market.type}] Closing — exit sell was essentially filled (${this.exitFilledSoFar?.toFixed(2)} tokens) | nothing to hold to resolution`
+        });
+      } else {
+        logger.addActivity('mom_close', {
+          message: `[${this.market.coin}-${this.market.type}] Closing — cancelled exit sell (${(this.exitFilledSoFar || 0).toFixed(2)} of ${(this.exitSize || 0).toFixed(2)} filled) | holding remaining ${remaining.toFixed(2)} ${this.signal} tokens to resolution`
+        });
+      }
     }
 
     if (!this.entryFilled && this.entryOrderId && client) {
