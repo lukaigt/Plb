@@ -227,7 +227,7 @@ function getStatus() {
   return {
     isRunning,
     lastScanTime,
-    strategy: 'SWING_TRADER',
+    strategy: 'HYBRID_HOLD',
     config,
     activeSessions: sessions,
     windowStatus:   krakenFeed.getWindowStatus(),
