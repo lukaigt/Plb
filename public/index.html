@@ -208,6 +208,21 @@
       </div>
     </div>
 
+    <div class="panel error-panel" style="margin-bottom:20px;">
+      <div class="panel-header" style="background:#da363315;border-bottom-color:#da363344;">
+        <span style="color:#f85149;">Errors &amp; Debug Log</span>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span style="font-size:11px;color:#484f58;" id="errorCount">0 events</span>
+          <button class="btn btn-copy" id="copyErrorsBtn" onclick="copyErrors()">Copy All</button>
+          <button class="btn btn-copy" onclick="clearErrorPanel()" style="background:#21262d;">Clear</button>
+        </div>
+      </div>
+      <div class="panel-body" id="errorPanel" style="max-height:350px;">
+        <div class="empty-state">No errors or debug logs yet.</div>
+      </div>
+      <div id="copyToast" class="copy-toast">Copied to clipboard</div>
+    </div>
+
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
         Auto-Redeem — Position Collection

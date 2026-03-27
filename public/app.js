@@ -612,6 +612,79 @@ async function scanWallet() {
   refreshAll();
 }
 
+let _errorPanelCleared = false;
+
+function getErrorTypeClass(type) {
+  if (type.includes('error')) return 'error-type-error';
+  if (type.includes('fill_debug')) return 'error-type-debug';
+  if (type.includes('safety') || type.includes('mom_sl')) return 'error-type-warn';
+  return 'error-type-debug';
+}
+
+async function updateErrorPanel() {
+  if (_errorPanelCleared) return;
+  const errors = await api('/errors?limit=200');
+  if (!errors) return;
+
+  const panel = document.getElementById('errorPanel');
+  const countEl = document.getElementById('errorCount');
+  countEl.textContent = `${errors.length} events`;
+
+  if (errors.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No errors or debug logs yet.</div>';
+    return;
+  }
+
+  panel.innerHTML = errors.map(e => {
+    const shortType = e.type.replace('fill_debug', 'DEBUG').replace('mom_error', 'ERROR').replace('mm_error', 'ERROR').replace('safety_block', 'SAFETY').replace('data_error', 'DATA_ERR');
+    return `<div class="error-item">
+      <span class="error-time">${formatTime(e.timestamp)}</span>
+      <span class="error-type ${getErrorTypeClass(e.type)}">${shortType}</span>
+      ${e.message || ''}
+    </div>`;
+  }).join('');
+}
+
+function copyErrors() {
+  const panel = document.getElementById('errorPanel');
+  const items = panel.querySelectorAll('.error-item');
+  if (items.length === 0) {
+    alert('No errors to copy');
+    return;
+  }
+
+  const lines = Array.from(items).map(item => {
+    const time = item.querySelector('.error-time')?.textContent || '';
+    const type = item.querySelector('.error-type')?.textContent || '';
+    const msg = item.textContent.replace(time, '').replace(type, '').trim();
+    return `[${time}] [${type.trim()}] ${msg}`;
+  });
+
+  const text = lines.join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    const toast = document.getElementById('copyToast');
+    toast.className = 'copy-toast show';
+    setTimeout(() => { toast.className = 'copy-toast'; }, 1500);
+  }).catch(() => {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    const toast = document.getElementById('copyToast');
+    toast.className = 'copy-toast show';
+    setTimeout(() => { toast.className = 'copy-toast'; }, 1500);
+  });
+}
+
+function clearErrorPanel() {
+  _errorPanelCleared = true;
+  document.getElementById('errorPanel').innerHTML = '<div class="empty-state">Cleared. New errors will appear on next refresh.</div>';
+  document.getElementById('errorCount').textContent = 'cleared';
+  setTimeout(() => { _errorPanelCleared = false; }, 30000);
+}
+
 async function refreshAll() {
   await Promise.all([
     updateBtcTicker(),
@@ -622,7 +695,8 @@ async function refreshAll() {
     updateActivities(),
     updateTrades(),
     updatePositions(),
-    updateRedemptions()
+    updateRedemptions(),
+    updateErrorPanel()
   ]);
 }
 

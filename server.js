@@ -39,6 +39,13 @@ app.use((req, res, next) => {
 
 app.get('/api/status',      (req, res) => res.json(botLoop.getStatus()));
 app.get('/api/activities',  (req, res) => res.json(logger.getActivities(parseInt(req.query.limit) || 60)));
+app.get('/api/errors',      (req, res) => {
+  const limit = parseInt(req.query.limit) || 200;
+  const all = logger.getActivities(limit);
+  const errorTypes = ['error', 'mom_error', 'mm_error', 'fill_debug', 'safety_block', 'mom_sl', 'data_error', 'position_scanner_error'];
+  const errors = all.filter(a => errorTypes.some(t => a.type.includes(t)) || (a.message && /error|fail|null|timeout|cancel/i.test(a.message)));
+  res.json(errors);
+});
 app.get('/api/trades',      (req, res) => res.json(logger.getTradeHistory(parseInt(req.query.limit) || 50)));
 app.get('/api/stats',       (req, res) => res.json(logger.getStats()));
 app.get('/api/safety',      (req, res) => res.json(safety.getStatus()));
