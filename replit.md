@@ -140,6 +140,17 @@ public/
 
 ## Change History
 
+### Session 6 (Mar 27, 2026) — Fix Fill Detection: SDK + Debug Logging
+- **SDK fill detection**: `checkEntryFill()` and `checkExitFill()` now use SDK `client.getOrder()` as primary method, with raw REST API as fallback
+- **Both methods tried**: `fetchOrderStatus(client, orderId)` tries SDK first, falls back to raw REST if SDK fails — logs which failed and why
+- **MATCHED status handling**: Added detection for `status === 'MATCHED'` in both entry and exit fill checks (in addition to `size_matched > 0`)
+- **Fast loop entry fill check**: Entry fills now checked every 5s in fast loop (was only 10s in main loop)
+- **Comprehensive debug logging**: Every step logs what the API returns, throttled to once per 15s to avoid spam:
+  - `fill_debug` logs for: entry fill check result, exit fill check result, midpoint fetch failures, trailing stop state
+  - Logs SDK errors and REST API errors separately with details
+- **Client passed everywhere**: `checkEntryFill(client)` and `checkExitFill(client)` now receive SDK client from both main loop and fast loop
+- **Files changed**: `src/momentumStrategy.js`, `src/botLoop.js`
+
 ### Session 5 (Mar 26, 2026) — Fix Signal Retry: Check Every 10s
 - **Removed one-shot gate**: `entryAttempted` flag deleted — bot retries signal check every 10s instead of once per window
 - **Stay in waiting phase**: when no signal found, phase stays `waiting` (not `no_signal`) so main loop retries

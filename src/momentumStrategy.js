@@ -37,19 +37,42 @@ async function fetchMidpoint(tokenId) {
   }
 }
 
-async function fetchOrderStatus(orderId) {
+async function fetchOrderStatusRaw(orderId) {
   try {
     const headers = buildClobAuthHeaders('GET', `/orders/${orderId}`);
-    if (!headers) return null;
+    if (!headers) {
+      logger.addActivity('fill_debug', { message: `[fetchOrderStatus] No auth headers — CLOB creds missing` });
+      return null;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     const res = await fetch(`${CLOB_API}/orders/${orderId}`, { headers, signal: controller.signal });
     clearTimeout(timer);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      logger.addActivity('fill_debug', { message: `[fetchOrderStatus] REST returned ${res.status} for order ${orderId.slice(0, 14)}` });
+      return null;
+    }
     return await res.json();
-  } catch {
+  } catch (err) {
+    logger.addActivity('fill_debug', { message: `[fetchOrderStatus] REST error: ${err.message?.slice(0, 60)}` });
     return null;
   }
+}
+
+async function fetchOrderStatusSDK(client, orderId) {
+  try {
+    const order = await client.getOrder(orderId);
+    return order || null;
+  } catch (err) {
+    logger.addActivity('fill_debug', { message: `[fetchOrderSDK] SDK error: ${err.message?.slice(0, 60)}` });
+    return null;
+  }
+}
+
+async function fetchOrderStatus(client, orderId) {
+  const sdkResult = client ? await fetchOrderStatusSDK(client, orderId) : null;
+  if (sdkResult) return sdkResult;
+  return await fetchOrderStatusRaw(orderId);
 }
 
 class MomentumSession {
@@ -91,6 +114,11 @@ class MomentumSession {
     this.peakMid           = null;
     this.trailingStopLevel = null;
     this.trailingActive    = false;
+
+    this._lastFillDebugLog  = 0;
+    this._lastMidDebugLog   = 0;
+    this._lastTrailingLog   = 0;
+    this._lastExitDebugLog  = 0;
   }
 
   get marketId()    { return this.market.id; }
@@ -251,13 +279,34 @@ class MomentumSession {
     }
   }
 
-  async checkEntryFill() {
+  async checkEntryFill(client) {
     if (!this.entryOrderId || this.entryFilled) return;
 
-    const status = await fetchOrderStatus(this.entryOrderId);
-    if (!status) return;
+    const status = await fetchOrderStatus(client, this.entryOrderId);
+
+    if (!status) {
+      const now = Date.now();
+      if (!this._lastFillDebugLog || now - this._lastFillDebugLog >= 15000) {
+        this._lastFillDebugLog = now;
+        logger.addActivity('fill_debug', {
+          message: `[${this.market.coin}-${this.market.type}] Entry fill check — API returned NULL for order ${this.entryOrderId.slice(0, 14)}... | phase=${this.phase} | ${Math.round(this.secondsLeft)}s left`
+        });
+      }
+      return;
+    }
 
     const matched = parseFloat(status.size_matched || 0);
+    const origSize = parseFloat(status.original_size || 0);
+    const orderStatus = String(status.status || '').toUpperCase();
+
+    const now2 = Date.now();
+    if (!this._lastFillDebugLog || now2 - this._lastFillDebugLog >= 15000) {
+      this._lastFillDebugLog = now2;
+      logger.addActivity('fill_debug', {
+        message: `[${this.market.coin}-${this.market.type}] Entry fill check — status=${orderStatus} | matched=${matched} | original=${origSize} | order=${this.entryOrderId.slice(0, 14)}...`
+      });
+    }
+
     if (matched > 0) {
       this.entryFilled  = true;
       this.holdingToken = true;
@@ -267,11 +316,20 @@ class MomentumSession {
       logger.addActivity('mom_filled', {
         message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)})`
       });
-    } else if (status.status === 'CANCELED' || status.status === 'CANCELLED') {
+    } else if (orderStatus === 'CANCELED' || orderStatus === 'CANCELLED') {
       logger.addActivity('mom_error', {
         message: `[${this.market.coin}-${this.market.type}] Entry order cancelled`
       });
       this.phase = 'done';
+    } else if (orderStatus === 'MATCHED') {
+      this.entryFilled  = true;
+      this.holdingToken = true;
+      this.filledSize   = origSize > 0 ? origSize : this.entrySizeTokens;
+      this.peakMid      = this.entryPrice;
+      this.phase        = 'managing';
+      logger.addActivity('mom_filled', {
+        message: `[${this.market.coin}-${this.market.type}] BUY FILLED (status=MATCHED) — ${this.signal} ${this.filledSize} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)})`
+      });
     }
   }
 
@@ -280,9 +338,27 @@ class MomentumSession {
     if (!this.entryFilled || !this.holdingToken) return;
 
     const mid = await fetchMidpoint(this.tokenId);
-    if (mid === null) return;
+    if (mid === null) {
+      const now = Date.now();
+      if (!this._lastMidDebugLog || now - this._lastMidDebugLog >= 15000) {
+        this._lastMidDebugLog = now;
+        logger.addActivity('fill_debug', {
+          message: `[${this.market.coin}-${this.market.type}] Trailing stop — midpoint fetch returned NULL | tokenId=${this.tokenId?.slice(0, 14)}... | ${Math.round(this.secondsLeft)}s left`
+        });
+      }
+      return;
+    }
 
     this.lastMid = mid;
+
+    const now3 = Date.now();
+    if (!this._lastTrailingLog || now3 - this._lastTrailingLog >= 15000) {
+      this._lastTrailingLog = now3;
+      const stopLoss = Math.max(0.02, this.entryPrice - this.config.stopLossCents);
+      logger.addActivity('fill_debug', {
+        message: `[${this.market.coin}-${this.market.type}] Trailing monitor — mid=$${mid.toFixed(3)} | entry=$${this.entryPrice} | peak=$${(this.peakMid || 0).toFixed(3)} | active=${this.trailingActive} | stop=${(this.trailingStopLevel || 0).toFixed(3)} | SL=$${stopLoss.toFixed(3)} | ${Math.round(this.secondsLeft)}s left`
+      });
+    }
 
     const stopLossPrice = Math.max(0.02, this.entryPrice - this.config.stopLossCents);
 
@@ -371,11 +447,21 @@ class MomentumSession {
     }
   }
 
-  async checkExitFill() {
+  async checkExitFill(client) {
     if (this.phase !== 'exiting' || !this.exitOrderId) return;
 
-    const status = await fetchOrderStatus(this.exitOrderId);
-    if (!status) return;
+    const status = await fetchOrderStatus(client, this.exitOrderId);
+
+    if (!status) {
+      const now = Date.now();
+      if (!this._lastExitDebugLog || now - this._lastExitDebugLog >= 15000) {
+        this._lastExitDebugLog = now;
+        logger.addActivity('fill_debug', {
+          message: `[${this.market.coin}-${this.market.type}] Exit fill check — API returned NULL for order ${this.exitOrderId.slice(0, 14)}... | ${Math.round(this.secondsLeft)}s left`
+        });
+      }
+      return;
+    }
 
     const totalMatched = parseFloat(status.size_matched || 0);
     if (totalMatched > this.exitFilledSoFar) {
@@ -384,6 +470,15 @@ class MomentumSession {
 
     const remaining = (this.exitSize || 0) - this.exitFilledSoFar;
     const fullyFilled = this.exitFilledSoFar > 0 && remaining <= 0.01;
+    const exitStatus = String(status.status || '').toUpperCase();
+
+    const now2 = Date.now();
+    if (!this._lastExitDebugLog || now2 - this._lastExitDebugLog >= 15000) {
+      this._lastExitDebugLog = now2;
+      logger.addActivity('fill_debug', {
+        message: `[${this.market.coin}-${this.market.type}] Exit fill check — status=${exitStatus} | matched=${totalMatched} | exitSize=${(this.exitSize || 0).toFixed(2)} | remaining=${remaining.toFixed(2)}`
+      });
+    }
 
     if (fullyFilled) {
       const fillPrice = this.exitPostedPrice;
@@ -400,6 +495,23 @@ class MomentumSession {
       return;
     }
 
+    if (exitStatus === 'MATCHED') {
+      const fillPrice = this.exitPostedPrice;
+      const exitAmt = this.exitSize || totalMatched || this.filledSize || this.entrySizeTokens;
+      this.exitFilledSoFar = exitAmt;
+      this.holdingToken  = false;
+      this.exitPrice     = fillPrice;
+      this.tradePnl      = parseFloat(((fillPrice - this.entryPrice) * exitAmt).toFixed(4));
+      this.cumulativePnl = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
+      this.exitOrderId   = null;
+      this.phase         = 'flipping';
+
+      logger.addActivity('mom_tp_hit', {
+        message: `[${this.market.coin}-${this.market.type}] Exit FILLED (status=MATCHED) — sold ${exitAmt} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+      });
+      return;
+    }
+
     if (this.exitFilledSoFar > 0 && remaining > 0.01) {
       logger.addActivity('mom_tp_hit', {
         message: `[${this.market.coin}-${this.market.type}] Partial exit: ${this.exitFilledSoFar.toFixed(2)}/${this.exitSize?.toFixed(2)} tokens filled — ${remaining.toFixed(2)} remaining, waiting for full fill`
@@ -407,7 +519,7 @@ class MomentumSession {
       return;
     }
 
-    if (status.status === 'CANCELED' || status.status === 'CANCELLED') {
+    if (exitStatus === 'CANCELED' || exitStatus === 'CANCELLED') {
       this.exitOrderId = null;
       this.phase       = 'managing';
       logger.addActivity('mom_error', {

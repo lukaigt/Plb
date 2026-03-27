@@ -28,10 +28,12 @@ async function runFast() {
   try {
     const client = await getClient();
     for (const session of Object.values(activeSessions)) {
-      if (session.phase === 'managing') {
+      if (session.phase === 'entering') {
+        await session.checkEntryFill(client);
+      } else if (session.phase === 'managing') {
         await session.checkTrailingStop(client);
       } else if (session.phase === 'exiting') {
-        await session.checkExitFill();
+        await session.checkExitFill(client);
       }
     }
   } catch (err) {
@@ -118,7 +120,7 @@ async function runOnce() {
       }
 
       if (session.phase === 'entering') {
-        await session.checkEntryFill();
+        await session.checkEntryFill(client);
         continue;
       }
 
