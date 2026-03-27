@@ -140,6 +140,18 @@ public/
 
 ## Change History
 
+### Session 7 (Mar 27, 2026) — Fix Sell Allowance + Dashboard Error Panel
+- **ROOT CAUSE**: Sell orders failing with "not enough balance / allowance" — CLOB exchange contract wasn't approved to transfer conditional tokens (ERC-1155). Balance existed (1590178 units) but allowance was 0
+- **Fix**: `initClient()` now calls `client.updateBalanceAllowance()` for both COLLATERAL (USDC, for buys) and CONDITIONAL (tokens, for sells) after client init
+- **Import**: Added `AssetType` to imports from `@polymarket/clob-client`
+- **Non-blocking**: Each allowance call wrapped in try/catch — if already set, logs and continues
+- **Dashboard error/debug panel**: New panel at bottom of dashboard shows all errors, debug logs, fill checks
+  - `/api/errors` endpoint filters activity log for error/debug/safety/cancel types
+  - Color-coded badges: red (ERROR), blue (DEBUG), yellow (SAFETY/WARN)
+  - "Copy All" button — copies all errors as clean text for pasting
+  - "Clear" button — hides panel for 30s then resumes auto-refresh
+- **Files changed**: `src/trader.js`, `public/index.html`, `public/app.js`, `public/style.css`, `server.js`
+
 ### Session 6 (Mar 27, 2026) — Fix Fill Detection: SDK + Debug Logging
 - **SDK fill detection**: `checkEntryFill()` and `checkExitFill()` now use SDK `client.getOrder()` as primary method, with raw REST API as fallback
 - **Both methods tried**: `fetchOrderStatus(client, orderId)` tries SDK first, falls back to raw REST if SDK fails — logs which failed and why

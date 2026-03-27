@@ -614,6 +614,12 @@ async function scanWallet() {
 
 let _errorPanelCleared = false;
 
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 function getErrorTypeClass(type) {
   if (type.includes('error')) return 'error-type-error';
   if (type.includes('fill_debug')) return 'error-type-debug';
@@ -638,9 +644,9 @@ async function updateErrorPanel() {
   panel.innerHTML = errors.map(e => {
     const shortType = e.type.replace('fill_debug', 'DEBUG').replace('mom_error', 'ERROR').replace('mm_error', 'ERROR').replace('safety_block', 'SAFETY').replace('data_error', 'DATA_ERR');
     return `<div class="error-item">
-      <span class="error-time">${formatTime(e.timestamp)}</span>
-      <span class="error-type ${getErrorTypeClass(e.type)}">${shortType}</span>
-      ${e.message || ''}
+      <span class="error-time">${escapeHtml(formatTime(e.timestamp))}</span>
+      <span class="error-type ${getErrorTypeClass(e.type)}">${escapeHtml(shortType)}</span>
+      ${escapeHtml(e.message || '')}
     </div>`;
   }).join('');
 }

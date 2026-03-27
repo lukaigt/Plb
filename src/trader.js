@@ -1,4 +1,4 @@
-const { ClobClient, Side, OrderType } = require('@polymarket/clob-client');
+const { ClobClient, Side, OrderType, AssetType } = require('@polymarket/clob-client');
 const { Wallet } = require('ethers');
 const crypto = require('crypto');
 const logger = require('./logger');
@@ -94,6 +94,20 @@ async function initClient(privateKey) {
     clobClient = new ClobClient(CLOB_HOST, CHAIN_ID, signer, apiCreds, 0);
 
     logger.addActivity('trader', { message: 'CLOB client initialized' });
+
+    try {
+      await clobClient.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+      logger.addActivity('trader', { message: 'COLLATERAL (USDC) allowance approved' });
+    } catch (err) {
+      logger.addActivity('trader', { message: `COLLATERAL allowance call failed (may already be set): ${err.message?.slice(0, 80)}` });
+    }
+
+    try {
+      await clobClient.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
+      logger.addActivity('trader', { message: 'CONDITIONAL (token) allowance approved — sells enabled' });
+    } catch (err) {
+      logger.addActivity('trader', { message: `CONDITIONAL allowance call failed (may already be set): ${err.message?.slice(0, 80)}` });
+    }
 
     proxyWalletAddress = await fetchProxyWallet();
     if (!proxyWalletAddress) {
