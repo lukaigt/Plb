@@ -69,10 +69,27 @@ async function fetchOrderStatusSDK(client, orderId) {
   }
 }
 
+let _lastFetchSourceLog = 0;
+
 async function fetchOrderStatus(client, orderId) {
   const sdkResult = client ? await fetchOrderStatusSDK(client, orderId) : null;
-  if (sdkResult) return sdkResult;
-  return await fetchOrderStatusRaw(orderId);
+  if (sdkResult) {
+    const now = Date.now();
+    if (now - _lastFetchSourceLog >= 30000) {
+      _lastFetchSourceLog = now;
+      logger.addActivity('fill_debug', { message: `[fetchOrderStatus] SDK succeeded for order ${orderId.slice(0, 14)}...` });
+    }
+    return sdkResult;
+  }
+  const rawResult = await fetchOrderStatusRaw(orderId);
+  if (rawResult) {
+    const now = Date.now();
+    if (now - _lastFetchSourceLog >= 30000) {
+      _lastFetchSourceLog = now;
+      logger.addActivity('fill_debug', { message: `[fetchOrderStatus] REST fallback succeeded for order ${orderId.slice(0, 14)}...` });
+    }
+  }
+  return rawResult;
 }
 
 class MomentumSession {
