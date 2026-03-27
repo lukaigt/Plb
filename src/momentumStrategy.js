@@ -512,10 +512,10 @@ class MomentumSession {
       this.tradePnl      = parseFloat(((fillPrice - this.entryPrice) * this.exitFilledSoFar).toFixed(4));
       this.cumulativePnl = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
       this.exitOrderId   = null;
-      this.phase         = 'flipping';
+      this.phase         = this.tradePnl > 0 ? 'flipping' : 'done';
 
       logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] Exit FULLY FILLED — sold ${this.exitFilledSoFar} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] Exit FULLY FILLED — sold ${this.exitFilledSoFar} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
       });
       return;
     }
@@ -529,10 +529,10 @@ class MomentumSession {
       this.tradePnl      = parseFloat(((fillPrice - this.entryPrice) * exitAmt).toFixed(4));
       this.cumulativePnl = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
       this.exitOrderId   = null;
-      this.phase         = 'flipping';
+      this.phase         = this.tradePnl > 0 ? 'flipping' : 'done';
 
       logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] Exit FILLED (status=MATCHED) — sold ${exitAmt} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] Exit FILLED (status=MATCHED) — sold ${exitAmt} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
       });
       return;
     }
@@ -573,9 +573,22 @@ class MomentumSession {
     }
 
     if (this.entryFilled && this.holdingToken && this.phase === 'managing') {
-      logger.addActivity('mom_close', {
-        message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} to resolution | entry=$${this.entryPrice.toFixed(3)} | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
-      });
+      const mid = await fetchMidpoint(this.tokenId);
+      if (mid !== null && mid > this.entryPrice) {
+        logger.addActivity('mom_close', {
+          message: `[${this.market.coin}-${this.market.type}] Closing — in profit, selling ${this.signal} at mid=$${mid.toFixed(3)} | entry=$${this.entryPrice.toFixed(3)} | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+        });
+        const sold = await this._postExitSell(client, mid, 'closing_cashout');
+        if (!sold) {
+          logger.addActivity('mom_close', {
+            message: `[${this.market.coin}-${this.market.type}] Closing — sell failed, holding to resolution`
+          });
+        }
+      } else {
+        logger.addActivity('mom_close', {
+          message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} to resolution | entry=$${this.entryPrice.toFixed(3)} | mid=${mid !== null ? '$' + mid.toFixed(3) : 'N/A'}`
+        });
+      }
     } else if (this.entryFilled && this.holdingToken) {
       logger.addActivity('mom_close', {
         message: `[${this.market.coin}-${this.market.type}] Closing — phase=${this.phase}, letting exit complete | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
