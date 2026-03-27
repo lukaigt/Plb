@@ -88,8 +88,6 @@ async function runOnce() {
     }
 
     for (const market of markets) {
-      if (market.type !== config.marketType) continue;
-
       if (!activeSessions[market.id]) {
         activeSessions[market.id] = new MomentumSession(market, config);
         logger.addActivity('mom_start', {
@@ -174,18 +172,18 @@ async function start() {
   const interval = config.refreshInterval * 1000;
 
   logger.addActivity('bot', {
-    message: `Bot started — BTC SWING TRADER\n` +
-      `  Market:           ${config.marketType}\n` +
+    message: `Bot started — BTC HYBRID TRADER (hold-to-resolution + profit protection)\n` +
+      `  Markets:          5m + 15m (both active)\n` +
       `  Order size:       $${config.orderSize}\n` +
-      `  Trailing stop:    ${(config.trailingStop * 100).toFixed(0)}¢ below peak (activates ${(config.trailingActivate * 100).toFixed(0)}¢ above entry)\n` +
-      `  Stop loss:        -${(config.stopLossCents * 100).toFixed(0)}¢ from entry\n` +
-      `  Max flips:        ${config.maxFlips} per window\n` +
-      `  Flip min time:    ${config.flipMinSeconds}s remaining required\n` +
+      `  Strategy:         Hold to resolution by default\n` +
+      `  Profit protect:   trailing stop activates ${(config.trailingActivate * 100).toFixed(0)}¢ above entry, trails ${(config.trailingStop * 100).toFixed(0)}¢ below peak (floor = entry price)\n` +
+      `  Stop loss:        -${(config.stopLossCents * 100).toFixed(0)}¢ from entry (safety net)\n` +
+      `  Re-entry:         after profitable exit, re-enter on live BTC signal (max ${config.maxFlips} per window)\n` +
       `  Momentum signal:  ±${config.momentumThreshold}% BTC 3-min change\n` +
       `  Mid range:        $${config.midMin} – $${config.midMax}\n` +
-      `  Entry after:      ${config.entryAfterSeconds}s into window\n` +
-      `  Closing phase:    final ${config.closeSeconds}s — cash out (forced exit at 60s)\n` +
-      `  Price check:      every 5s (trailing stop) + every ${config.refreshInterval}s (main loop)\n` +
+      `  15m timing:       entry after ${config.entryAfterSeconds}s | close final ${config.closeSeconds}s\n` +
+      `  5m timing:        entry after ${Math.min(config.entryAfterSeconds, 60)}s | close final ${Math.min(config.closeSeconds, 10)}s\n` +
+      `  Price check:      every 5s (profit protection) + every ${config.refreshInterval}s (main loop)\n` +
       `  Daily loss limit: $${safety.dailyLossLimit}`
   });
 

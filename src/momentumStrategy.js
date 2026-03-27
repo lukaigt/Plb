@@ -8,9 +8,9 @@ const CLOB_API = 'https://clob.polymarket.com';
 function getMomentumConfig() {
   return {
     orderSize:         parseFloat(process.env.MOM_ORDER_SIZE)         || 10,
-    trailingStop:      parseFloat(process.env.MOM_TRAILING_STOP)      || 0.02,
-    trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.01,
-    stopLossCents:     parseFloat(process.env.MOM_STOP_LOSS)          || 0.12,
+    trailingStop:      parseFloat(process.env.MOM_TRAILING_STOP)      || 0.05,
+    trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.05,
+    stopLossCents:     parseFloat(process.env.MOM_STOP_LOSS)          || 0.18,
     momentumThreshold: parseFloat(process.env.MOM_THRESHOLD)          || 0.05,
     midMin:            parseFloat(process.env.MOM_MID_MIN)            || 0.35,
     midMax:            parseFloat(process.env.MOM_MID_MAX)            || 0.65,
@@ -95,7 +95,13 @@ async function fetchOrderStatus(client, orderId) {
 class MomentumSession {
   constructor(market, config) {
     this.market  = market;
-    this.config  = config;
+    this.config  = { ...config };
+
+    if (market.type === '5m') {
+      this.config.entryAfterSeconds = Math.min(config.entryAfterSeconds, 60);
+      this.config.closeSeconds      = Math.min(config.closeSeconds, 10);
+      this.config.flipMinSeconds    = Math.min(config.flipMinSeconds, 30);
+    }
 
     this.phase          = 'waiting';
     this.cancelled      = false;
@@ -204,8 +210,15 @@ class MomentumSession {
       return;
     }
 
-    const flipSide = this.signal === 'UP' ? 'DOWN' : 'UP';
-    await this._enterSide(client, flipSide, 'flip');
+    const liveSignal = this.getSignal();
+    if (!liveSignal) {
+      this.phase = 'done';
+      logger.addActivity('mom_done', {
+        message: `[${this.market.coin}-${this.market.type}] No BTC signal for re-entry — holding done | cumulative P&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+      });
+      return;
+    }
+    await this._enterSide(client, liveSignal, 'flip');
   }
 
   async _enterSide(client, side, reason) {
@@ -379,22 +392,17 @@ class MomentumSession {
 
     const stopLossPrice = Math.max(0.02, this.entryPrice - this.config.stopLossCents);
 
-    if (this.secondsLeft <= 60 && this.secondsLeft > this.config.closeSeconds) {
-      await this._postExitSell(client, mid, 'time_exit');
-      return;
-    }
-
     if (!this.trailingActive && mid >= this.entryPrice + this.config.trailingActivate) {
       this.trailingActive    = true;
       this.peakMid           = mid;
-      this.trailingStopLevel = Math.max(0.02, mid - this.config.trailingStop);
+      this.trailingStopLevel = Math.max(this.entryPrice, mid - this.config.trailingStop);
       logger.addActivity('mom_trailing', {
-        message: `[${this.market.coin}-${this.market.type}] Trailing stop ACTIVATED | peak=$${mid.toFixed(3)} | stop=$${this.trailingStopLevel.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] Profit protection ACTIVATED | peak=$${mid.toFixed(3)} | stop=$${this.trailingStopLevel.toFixed(3)} (floor = entry $${this.entryPrice.toFixed(3)})`
       });
     } else if (this.trailingActive) {
       if (mid > this.peakMid) {
         this.peakMid           = mid;
-        this.trailingStopLevel = Math.max(0.02, mid - this.config.trailingStop);
+        this.trailingStopLevel = Math.max(this.entryPrice, mid - this.config.trailingStop);
         logger.addActivity('mom_peak', {
           message: `[${this.market.coin}-${this.market.type}] New peak=$${mid.toFixed(3)} | trailing stop=$${this.trailingStopLevel.toFixed(3)} | unrealized: +$${((mid - this.entryPrice) * (this.filledSize || this.entrySizeTokens)).toFixed(3)}`
         });
@@ -565,22 +573,9 @@ class MomentumSession {
     }
 
     if (this.entryFilled && this.holdingToken && this.phase === 'managing') {
-      const mid = await fetchMidpoint(this.tokenId);
-      if (mid !== null) {
-        logger.addActivity('mom_close', {
-          message: `[${this.market.coin}-${this.market.type}] Closing — cashing out ${this.signal} at mid=$${mid.toFixed(3)} | entry=$${this.entryPrice.toFixed(3)} | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
-        });
-        const sold = await this._postExitSell(client, mid, 'closing_cashout');
-        if (!sold) {
-          logger.addActivity('mom_close', {
-            message: `[${this.market.coin}-${this.market.type}] Closing — sell failed, holding to resolution`
-          });
-        }
-      } else {
-        logger.addActivity('mom_close', {
-          message: `[${this.market.coin}-${this.market.type}] Closing — no mid available, holding ${this.signal} to resolution`
-        });
-      }
+      logger.addActivity('mom_close', {
+        message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} to resolution | entry=$${this.entryPrice.toFixed(3)} | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+      });
     } else if (this.entryFilled && this.holdingToken) {
       logger.addActivity('mom_close', {
         message: `[${this.market.coin}-${this.market.type}] Closing — phase=${this.phase}, letting exit complete | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`

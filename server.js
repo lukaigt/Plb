@@ -104,19 +104,20 @@ app.get('/', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   const cfg = getMomentumConfig();
   console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
-  console.log('Starting BTC Swing Trader...');
-  console.log(`Market:         BTC ${cfg.marketType}`);
+  console.log('Starting BTC Hybrid Trader (hold-to-resolution + profit protection)...');
+  console.log(`Markets:        5m + 15m (both active)`);
   console.log(`Wallet Key:     ${process.env.WALLET_PRIVATE_KEY ? 'SET' : 'NOT SET'}`);
   console.log(`CLOB API Key:   ${process.env.POLY_API_KEY ? 'SET' : 'NOT SET'}`);
   console.log(`Order size:     $${cfg.orderSize} per trade`);
-  console.log(`Trailing stop:  ${(cfg.trailingStop * 100).toFixed(0)}¢ below peak (activates ${(cfg.trailingActivate * 100).toFixed(0)}¢ above entry)`);
-  console.log(`Stop loss:      -${(cfg.stopLossCents * 100).toFixed(0)}¢ from entry`);
-  console.log(`Max flips:      ${cfg.maxFlips} per window`);
-  console.log(`Flip min time:  ${cfg.flipMinSeconds}s remaining`);
+  console.log(`Strategy:       Hold to resolution, profit protection at ${(cfg.trailingActivate * 100).toFixed(0)}¢+ above entry`);
+  console.log(`Profit trail:   ${(cfg.trailingStop * 100).toFixed(0)}¢ below peak (floor = entry price)`);
+  console.log(`Stop loss:      -${(cfg.stopLossCents * 100).toFixed(0)}¢ from entry (safety net)`);
+  console.log(`Max re-entries: ${cfg.maxFlips} per window`);
+  console.log(`Re-entry min:   ${cfg.flipMinSeconds}s remaining`);
   console.log(`Signal:         ±${cfg.momentumThreshold}% BTC 3-min change`);
   console.log(`Mid range:      $${cfg.midMin} – $${cfg.midMax}`);
-  console.log(`Entry after:    ${cfg.entryAfterSeconds}s into window`);
-  console.log(`Closing phase:  final ${cfg.closeSeconds}s`);
+  console.log(`15m timing:     entry after ${cfg.entryAfterSeconds}s | close final ${cfg.closeSeconds}s`);
+  console.log(`5m timing:      entry after ${Math.min(cfg.entryAfterSeconds, 60)}s | close final ${Math.min(cfg.closeSeconds, 10)}s`);
   console.log(`Daily loss limit: $${process.env.DAILY_LOSS_LIMIT || 50}`);
   console.log(`Proxy:          ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
 

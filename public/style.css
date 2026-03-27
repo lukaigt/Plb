@@ -675,6 +675,7 @@ body {
 }
 
 .phase-quoting { color: #58a6ff; }
+.phase-holding { color: #3fb950; font-weight: 700; }
 .phase-closing { color: #d29922; }
 .phase-waiting { color: #484f58; }
 

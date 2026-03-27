@@ -10,7 +10,7 @@
   <div class="header">
     <div class="header-left">
       <h1>BTC Swing Trader</h1>
-      <span class="strategy-badge">SWING TRADER — TRAILING STOP + FLIP</span>
+      <span class="strategy-badge">HYBRID — HOLD TO RESOLUTION + PROFIT PROTECTION</span>
     </div>
     <div class="header-controls">
       <button class="btn btn-blue"   onclick="scanNow()">Scan Now</button>
@@ -89,7 +89,7 @@
             <span class="mc-val" id="mc_15m_peak">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">Trailing Stop</span>
+            <span class="mc-label">Profit Protection</span>
             <span class="mc-val" id="mc_15m_trail">--</span>
           </div>
           <div class="mc-row">
@@ -97,7 +97,7 @@
             <span class="mc-val" id="mc_15m_sl">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">Flips This Window</span>
+            <span class="mc-label">Re-entries</span>
             <span class="mc-val" id="mc_15m_flips">0</span>
           </div>
           <div class="mc-row">
@@ -111,21 +111,53 @@
         </div>
       </div>
 
-      <div class="market-card" id="mc_5m" style="opacity:0.45;">
+      <div class="market-card" id="mc_5m">
         <div class="mc-header">
-          <span class="mc-badge mc-5m">5-MIN</span>
-          <span class="mc-phase" style="color:#484f58;">Not traded</span>
+          <span class="mc-badge mc-5m">5-MIN ACTIVE</span>
+          <span class="mc-phase" id="mc_5m_phase">Idle</span>
           <span class="mc-timer" id="mc_5m_timer">--</span>
         </div>
-        <div class="mc-question" id="mc_5m_question">Monitoring only — strategy uses 15-min</div>
+        <div class="mc-question" id="mc_5m_question">No active 5-min market</div>
         <div class="mc-body">
           <div class="mc-row">
-            <span class="mc-label">UP Midpoint</span>
+            <span class="mc-label">BTC Signal</span>
+            <span class="mc-val" id="mc_5m_signal">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">BTC 3m Change</span>
+            <span class="mc-val" id="mc_5m_btcchange">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Token Mid</span>
             <span class="mc-val" id="mc_5m_mid">--</span>
           </div>
           <div class="mc-row">
-            <span class="mc-label">Time Left</span>
-            <span class="mc-val" id="mc_5m_timeleft">--</span>
+            <span class="mc-label">Entry Price</span>
+            <span class="mc-val" id="mc_5m_entry">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Peak Price</span>
+            <span class="mc-val" id="mc_5m_peak">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Profit Protection</span>
+            <span class="mc-val" id="mc_5m_trail">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Stop Loss</span>
+            <span class="mc-val" id="mc_5m_sl">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Re-entries</span>
+            <span class="mc-val" id="mc_5m_flips">0</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Unrealized P&amp;L</span>
+            <span class="mc-val" id="mc_5m_pnl">--</span>
+          </div>
+          <div class="mc-row">
+            <span class="mc-label">Cumulative P&amp;L</span>
+            <span class="mc-val" id="mc_5m_cpnl">--</span>
           </div>
         </div>
       </div>
@@ -142,7 +174,7 @@
       </div>
       <div class="safety-item">
         <span class="s-label">Strategy</span>
-        <span class="s-value" style="color:#58a6ff;font-size:12px;">Swing Trader</span>
+        <span class="s-value" style="color:#58a6ff;font-size:12px;">Hybrid Hold</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Trail / SL</span>

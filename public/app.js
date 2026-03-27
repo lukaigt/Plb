@@ -108,13 +108,16 @@ function signalBadge(signal) {
   return '<span class="dir-badge dir-flat">NONE</span>';
 }
 
-function phaseBadge(phase) {
+function phaseBadge(phase, session) {
+  if (phase === 'managing' && session && !session.trailingActive) {
+    return { label: 'HOLDING', cls: 'phase-holding' };
+  }
   const map = {
     waiting:   { label: 'WAITING',   cls: 'phase-waiting' },
     entering:  { label: 'ENTERING',  cls: 'phase-quoting' },
-    managing:  { label: 'MANAGING',  cls: 'phase-quoting' },
+    managing:  { label: 'PROTECTING', cls: 'phase-quoting' },
     exiting:   { label: 'EXITING',   cls: 'phase-quoting' },
-    flipping:  { label: 'FLIPPING',  cls: 'phase-quoting' },
+    flipping:  { label: 'RE-ENTERING', cls: 'phase-quoting' },
     closing:   { label: 'CLOSING',   cls: 'phase-closing' },
     done:      { label: 'DONE',      cls: 'phase-closing' },
     no_signal: { label: 'NO SIGNAL', cls: '' },
@@ -123,64 +126,70 @@ function phaseBadge(phase) {
 }
 
 function updateMarketCard15m(sessions) {
-  const session  = sessions.find(s => s.type === '15m');
-  const card     = document.getElementById('mc_15m');
-  const phaseEl  = document.getElementById('mc_15m_phase');
-  const timerEl  = document.getElementById('mc_15m_timer');
-  const qEl      = document.getElementById('mc_15m_question');
-  const sigEl    = document.getElementById('mc_15m_signal');
-  const btcEl    = document.getElementById('mc_15m_btcchange');
-  const midEl    = document.getElementById('mc_15m_mid');
-  const entryEl  = document.getElementById('mc_15m_entry');
-  const peakEl   = document.getElementById('mc_15m_peak');
-  const trailEl  = document.getElementById('mc_15m_trail');
-  const slEl     = document.getElementById('mc_15m_sl');
-  const flipEl   = document.getElementById('mc_15m_flips');
-  const pnlEl    = document.getElementById('mc_15m_pnl');
-  const cpnlEl   = document.getElementById('mc_15m_cpnl');
+  updateMarketCardGeneric('15m', sessions.find(s => s.type === '15m'));
+}
+
+function updateMarketCardGeneric(prefix, session) {
+  const card     = document.getElementById(`mc_${prefix}`);
+  const phaseEl  = document.getElementById(`mc_${prefix}_phase`);
+  const timerEl  = document.getElementById(`mc_${prefix}_timer`);
+  const qEl      = document.getElementById(`mc_${prefix}_question`);
+  const sigEl    = document.getElementById(`mc_${prefix}_signal`);
+  const btcEl    = document.getElementById(`mc_${prefix}_btcchange`);
+  const midEl    = document.getElementById(`mc_${prefix}_mid`);
+  const entryEl  = document.getElementById(`mc_${prefix}_entry`);
+  const peakEl   = document.getElementById(`mc_${prefix}_peak`);
+  const trailEl  = document.getElementById(`mc_${prefix}_trail`);
+  const slEl     = document.getElementById(`mc_${prefix}_sl`);
+  const flipEl   = document.getElementById(`mc_${prefix}_flips`);
+  const pnlEl    = document.getElementById(`mc_${prefix}_pnl`);
+  const cpnlEl   = document.getElementById(`mc_${prefix}_cpnl`);
 
   if (!session) {
-    phaseEl.textContent = 'Idle';  phaseEl.className = 'mc-phase';
-    timerEl.textContent = '--';    qEl.textContent   = 'No active 15-min market';
-    sigEl.innerHTML = '--';       btcEl.textContent = '--';
-    midEl.textContent = '--';     entryEl.textContent = '--';
-    if (peakEl)  peakEl.textContent  = '--';
+    if (phaseEl) { phaseEl.textContent = 'Idle'; phaseEl.className = 'mc-phase'; }
+    timerEl.textContent = '--';
+    qEl.textContent = `No active ${prefix === '15m' ? '15-min' : '5-min'} market`;
+    if (sigEl) sigEl.innerHTML = '--';
+    if (btcEl) btcEl.textContent = '--';
+    if (midEl) midEl.textContent = '--';
+    if (entryEl) entryEl.textContent = '--';
+    if (peakEl) peakEl.textContent = '--';
     if (trailEl) trailEl.textContent = '--';
-    if (slEl)    slEl.textContent    = '--';
-    if (flipEl)  flipEl.textContent  = '0';
-    pnlEl.textContent  = '--';
+    if (slEl) slEl.textContent = '--';
+    if (flipEl) flipEl.textContent = '0';
+    if (pnlEl) pnlEl.textContent = '--';
     if (cpnlEl) cpnlEl.textContent = '--';
-    card.className = 'market-card';
+    if (card) card.className = 'market-card';
     return;
   }
 
   timerEl.textContent = fmtSeconds(session.secondsLeft) + ' left';
   qEl.textContent = session.question || '--';
 
-  const pb = phaseBadge(session.phase);
-  phaseEl.textContent = pb.label;
-  phaseEl.className   = `mc-phase ${pb.cls}`;
+  const pb = phaseBadge(session.phase, session);
+  if (phaseEl) { phaseEl.textContent = pb.label; phaseEl.className = `mc-phase ${pb.cls}`; }
 
   const isActive = ['entering', 'managing', 'exiting', 'flipping'].includes(session.phase);
-  card.className = isActive ? 'market-card market-card-quoting' : 'market-card';
+  if (card) card.className = isActive ? 'market-card market-card-quoting' : 'market-card';
 
-  sigEl.innerHTML = session.signal ? signalBadge(session.signal) : '<span class="dir-badge dir-flat">WAITING</span>';
+  if (sigEl) sigEl.innerHTML = session.signal ? signalBadge(session.signal) : '<span class="dir-badge dir-flat">WAITING</span>';
 
-  if (session.btcChange3m !== null && session.btcChange3m !== undefined) {
-    const pct = parseFloat(session.btcChange3m);
-    const cls = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
-    btcEl.innerHTML = `<span class="${cls}">${pct > 0 ? '+' : ''}${pct.toFixed(3)}%</span>`;
-  } else {
-    btcEl.textContent = '--';
+  if (btcEl) {
+    if (session.btcChange3m !== null && session.btcChange3m !== undefined) {
+      const pct = parseFloat(session.btcChange3m);
+      const cls = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
+      btcEl.innerHTML = `<span class="${cls}">${pct > 0 ? '+' : ''}${pct.toFixed(3)}%</span>`;
+    } else {
+      btcEl.textContent = '--';
+    }
   }
 
-  midEl.textContent   = session.lastMid   !== null ? '$' + session.lastMid.toFixed(3)   : '--';
-  entryEl.textContent = session.entryPrice !== null ? `$${session.entryPrice.toFixed(3)} (${session.signal || '--'})` : '--';
+  if (midEl) midEl.textContent = session.lastMid !== null ? '$' + session.lastMid.toFixed(3) : '--';
+  if (entryEl) entryEl.textContent = session.entryPrice !== null ? `$${session.entryPrice.toFixed(3)} (${session.signal || '--'})` : '--';
 
   if (peakEl) {
     if (session.peakMid !== null && session.peakMid !== undefined) {
-      const trailingActive = session.trailingActive;
-      peakEl.innerHTML = trailingActive
+      peakEl.innerHTML = session.trailingActive
         ? `<span class="positive">$${session.peakMid.toFixed(3)}</span>`
         : `<span class="neutral">$${session.peakMid.toFixed(3)} (not yet active)</span>`;
     } else {
@@ -192,7 +201,7 @@ function updateMarketCard15m(sessions) {
     if (session.trailingStopLevel !== null && session.trailingStopLevel !== undefined) {
       trailEl.innerHTML = `<span class="negative">$${session.trailingStopLevel.toFixed(3)}</span>`;
     } else {
-      const activateOffset = (window._botConfig && window._botConfig.trailingActivate) ? window._botConfig.trailingActivate : 0.01;
+      const activateOffset = (window._botConfig && window._botConfig.trailingActivate) ? window._botConfig.trailingActivate : 0.05;
       trailEl.textContent = session.entryPrice ? `activates at $${(session.entryPrice + activateOffset).toFixed(3)}` : '--';
     }
   }
@@ -208,16 +217,18 @@ function updateMarketCard15m(sessions) {
     flipEl.textContent = `${session.flipCount || 0} / ${maxFlips}`;
   }
 
-  if (session.unrealizedPnL !== null && session.unrealizedPnL !== undefined) {
-    const val = session.unrealizedPnL;
-    const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
-    pnlEl.innerHTML = `<span class="${cls}">${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
-  } else if (session.tradePnl !== null && session.tradePnl !== undefined && session.phase !== 'managing') {
-    const val = session.tradePnl;
-    const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
-    pnlEl.innerHTML = `<span class="${cls}">LAST ${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
-  } else {
-    pnlEl.textContent = '--';
+  if (pnlEl) {
+    if (session.unrealizedPnL !== null && session.unrealizedPnL !== undefined) {
+      const val = session.unrealizedPnL;
+      const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
+      pnlEl.innerHTML = `<span class="${cls}">${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
+    } else if (session.tradePnl !== null && session.tradePnl !== undefined && session.phase !== 'managing') {
+      const val = session.tradePnl;
+      const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
+      pnlEl.innerHTML = `<span class="${cls}">LAST ${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
+    } else {
+      pnlEl.textContent = '--';
+    }
   }
 
   if (cpnlEl) {
@@ -232,22 +243,7 @@ function updateMarketCard15m(sessions) {
 }
 
 function updateMarketCard5m(sessions) {
-  const session = sessions.find(s => s.type === '5m');
-  const timerEl = document.getElementById('mc_5m_timer');
-  const qEl     = document.getElementById('mc_5m_question');
-  const midEl   = document.getElementById('mc_5m_mid');
-  const tlEl    = document.getElementById('mc_5m_timeleft');
-
-  if (!session) {
-    timerEl.textContent = '--';
-    qEl.textContent = 'Monitoring only — strategy uses 15-min';
-    if (midEl) midEl.textContent = '--';
-    if (tlEl) tlEl.textContent = '--';
-    return;
-  }
-  timerEl.textContent = fmtSeconds(session.secondsLeft) + ' left';
-  if (midEl) midEl.textContent = session.lastMid ? '$' + session.lastMid.toFixed(3) : '--';
-  if (tlEl) tlEl.textContent = fmtSeconds(session.secondsLeft);
+  updateMarketCardGeneric('5m', sessions.find(s => s.type === '5m'));
 }
 
 async function updateWindowBar() {
@@ -317,9 +313,9 @@ async function updateStatus() {
     const cfg = status.config;
     window._botConfig = cfg;
     const spreadEl = document.getElementById('spreadConfig');
-    if (spreadEl) spreadEl.textContent = `Trail ${(cfg.trailingStop * 100).toFixed(0)}¢ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
+    if (spreadEl) spreadEl.textContent = `Protect ${(cfg.trailingActivate * 100).toFixed(0)}¢+ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
     document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize} / trade`;
-    document.getElementById('scanConfig').textContent      = `Swing ${cfg.marketType} | ±${cfg.momentumThreshold}% signal | ${cfg.maxFlips} flips max`;
+    document.getElementById('scanConfig').textContent      = `Hybrid 5m+15m | ±${cfg.momentumThreshold}% signal | ${cfg.maxFlips} re-entries max`;
   }
 
   const safety = status.safety;
