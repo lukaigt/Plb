@@ -459,12 +459,16 @@ async function checkAndRedeem() {
         let redeemed = false;
         let lastError = null;
 
-        const attempts = [
-          { negRisk: false, label: 'CTF' }
-        ];
-        if (wrappedCollateral) {
-          attempts.push({ negRisk: true, label: 'NegRiskAdapter' });
-        }
+        const isNegRisk = redemption.negRisk === true;
+        const attempts = isNegRisk
+          ? [
+              { negRisk: true, label: 'NegRiskAdapter' },
+              { negRisk: false, label: 'CTF' }
+            ]
+          : [
+              { negRisk: false, label: 'CTF' },
+              { negRisk: true, label: 'NegRiskAdapter' }
+            ];
 
         for (const attempt of attempts) {
           if (redeemed) break;

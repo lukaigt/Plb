@@ -1,7 +1,7 @@
 # Polymarket BTC Hybrid Trader
 
 ## Overview
-This project is a hybrid trading bot designed for Polymarket BTC Up/Down markets (both 5-minute and 15-minute durations simultaneously). Its core purpose is to capitalize on BTC momentum signals by taking positions and primarily holding them to market resolution. It incorporates profit protection mechanisms and a safety net stop loss to manage risk and lock in gains. The bot focuses exclusively on BTC markets due to their liquidity on Polymarket.
+This project is a trading bot designed for Polymarket BTC Up/Down 15-minute markets only (5-minute trading disabled due to poor performance). Its core purpose is to capitalize on BTC momentum signals by taking positions with a fixed take-profit exit. It incorporates profit protection mechanisms and a safety net stop loss to manage risk and lock in gains. The bot focuses exclusively on BTC markets due to their liquidity on Polymarket.
 
 ## User Preferences
 - BTC only — deepest markets, highest volume
@@ -13,15 +13,15 @@ This project is a hybrid trading bot designed for Polymarket BTC Up/Down markets
 
 ## System Architecture
 
-### Core Strategy: Take Profit at 80¢ with Profit Protection
+### Core Strategy: Take Profit at 70¢ with Profit Protection
 The bot's strategy targets a fixed take-profit exit:
-- **Take Profit**: Sells immediately when token price reaches 80¢ (configurable via MOM_TAKE_PROFIT). This is the primary exit — no waiting for resolution.
-- **Profit Protection**: A trailing stop activates when the token price is 5¢ or more above the entry price. The trailing stop trails 5¢ below the peak, but never drops below the initial entry price, preventing losses from trailing.
+- **Take Profit**: Sells immediately when token price reaches 70¢ (configurable via MOM_TAKE_PROFIT). This is the primary exit — no waiting for resolution.
+- **Profit Protection**: A trailing stop activates when the token price is 10¢ or more above the entry price (MOM_TRAILING_ACTIVATE=0.10). The trailing stop trails 5¢ below the peak (MOM_TRAILING_STOP=0.05), but never drops below the initial entry price. With 10¢ activate and 5¢ trail, the stop floor starts at entry+5¢, giving real breathing room.
 - **Stop Loss**: A wide 18¢ stop loss acts as a safety net.
 - **Re-entry**: After a profitable exit, the bot attempts to re-enter based on a live BTC momentum signal (not a blind opposite-side trade).
 - **Session Phases**: Each market window transitions through `waiting`, `entering`, `managing` (which includes `HOLDING` and `PROTECTING` states), `exiting`, `flipping`, `closing`, and `done` phases.
-- **Signal Detection**: 15m markets use ±0.05% BTC 3-min change; 5m markets use ±0.03% (lowered for faster signal in shorter windows).
-- **Dual Market Trading**: The bot simultaneously trades both 5-minute and 15-minute BTC markets, with independent sessions and tailored timing parameters for each.
+- **Signal Detection**: 15m markets use ±0.05% BTC 3-min change.
+- **Markets**: 15-minute BTC markets only (5-minute disabled).
 - **Order Size**: $5 per trade (configurable via MOM_ORDER_SIZE).
 
 ### Technical Implementation
@@ -30,15 +30,15 @@ The bot's strategy targets a fixed take-profit exit:
 - **State Management**: `MomentumSession` objects track the state for each market, including phases, signals, prices, fill statuses, and re-entry counts.
 - **Market Discovery**: Uses the Polymarket Gamma API to discover BTC Up/Down markets based on slug patterns.
 - **Order Placement**: Utilizes the Polymarket CLOB SDK (`@polymarket/clob-client`) for placing and managing orders.
-- **Auto-Redemption**: Positions are automatically redeemed via Polygon smart contracts when markets resolve.
+- **Auto-Redemption**: Positions are automatically redeemed via Polygon smart contracts when markets resolve. For BTC markets (negRisk=true), uses NegRiskAdapter first, then falls back to CTF.
 - **Safety Controls**: Includes daily loss limits, a maximum number of daily losing trades, a manual kill switch, and checks to prevent trading at extreme market prices.
 
 ### Dashboard
-- The dashboard displays live BTC prices, dual market cards for both 5-minute and 15-minute markets, showing signal, entry, peak, profit protection status, P&L, and re-entry counts. An activity log provides detailed bot actions.
+- The dashboard displays live BTC prices, a 15-minute market card showing signal, entry, peak, profit protection status, P&L, and re-entry counts. An activity log provides detailed bot actions. Includes Scan Wallet and Force Redeem buttons for manual position recovery.
 
 ### Project Structure Highlights
 - `server.js`: Express server and bot loop orchestration.
-- `scanner.js`: Market discovery.
+- `scanner.js`: Market discovery (15m only).
 - `momentumStrategy.js`: Core trading strategy logic (MomentumSession class).
 - `botLoop.js`: Main and fast bot loop execution.
 - `trader.js`: CLOB client interaction, order placement, and authentication.

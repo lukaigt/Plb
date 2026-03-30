@@ -155,7 +155,7 @@ async function scanExistingPositions() {
       const outcome = pos.outcome || 'Unknown';
       const curPrice = parseFloat(pos.curPrice || 0);
       const negRisk = pos.negativeRisk === true || pos.negativeRisk === 'true' || pos.negRisk === true || false;
-      const resolved = curPrice === 0 || curPrice === 1 || pos.redeemable === true || pos.redeemable === 'true';
+      const resolved = curPrice <= 0.01 || curPrice >= 0.99 || pos.redeemable === true || pos.redeemable === 'true';
 
       if (size <= 0) continue;
 
@@ -174,9 +174,9 @@ async function scanExistingPositions() {
         continue;
       }
 
-      if (curPrice === 0) {
+      if (curPrice <= 0.01) {
         logger.addActivity('position_scanner', {
-          message: `Lost position (price=0): ${title} | ${outcome} | ${size.toFixed(2)} shares — skipping`
+          message: `Lost position (price=${curPrice}): ${title} | ${outcome} | ${size.toFixed(2)} shares — skipping`
         });
         continue;
       }

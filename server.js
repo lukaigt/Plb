@@ -95,6 +95,23 @@ app.post('/api/scan-positions', async (req, res) => {
   }
 });
 
+app.post('/api/force-redeem', async (req, res) => {
+  try {
+    logger.addActivity('bot', { message: 'Manual force-redeem triggered...' });
+    const status = redeemer.getRedemptionStatus();
+    if (status.pending.length === 0) {
+      logger.addActivity('bot', { message: 'No pending redemptions — scanning wallet first...' });
+      await positionScanner.scanExistingPositions();
+    }
+    const before = redeemer.getRedemptionStatus().totalRedeemed;
+    await redeemer.checkAndRedeem();
+    const updated = redeemer.getRedemptionStatus();
+    res.json({ success: true, pending: updated.pending.length, redeemed: updated.totalRedeemed - before });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 app.get('/', (req, res) => {

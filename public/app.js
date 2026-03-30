@@ -616,6 +616,21 @@ async function scanWallet() {
   refreshAll();
 }
 
+async function forceRedeem() {
+  const btn = document.querySelector('.btn-orange');
+  btn.textContent = 'Redeeming...';
+  btn.disabled = true;
+  const res = await api('/force-redeem', 'POST');
+  if (res) {
+    if (res.redeemed > 0) alert(`Redeemed ${res.redeemed} position(s)!`);
+    else if (res.pending > 0) alert(`${res.pending} position(s) pending — may not be resolved yet or RPC issue. Check activity log.`);
+    else alert(res.error ? `Redeem failed: ${res.error}` : 'No positions to redeem.');
+  }
+  btn.textContent = 'Force Redeem';
+  btn.disabled = false;
+  refreshAll();
+}
+
 let _errorPanelCleared = false;
 
 function escapeHtml(str) {

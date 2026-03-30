@@ -9,7 +9,7 @@ function getMomentumConfig() {
   return {
     orderSize:         parseFloat(process.env.MOM_ORDER_SIZE)         || 5,
     trailingStop:      parseFloat(process.env.MOM_TRAILING_STOP)      || 0.05,
-    trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.05,
+    trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.10,
     stopLossCents:     parseFloat(process.env.MOM_STOP_LOSS)          || 0.18,
     takeProfit:        parseFloat(process.env.MOM_TAKE_PROFIT)        || 0.70,
     momentumThreshold: parseFloat(process.env.MOM_THRESHOLD)          || 0.05,

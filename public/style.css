@@ -54,6 +54,8 @@ body {
 .btn-yellow:hover { background: #d29922; }
 .btn-purple { background: #8957e5; border-color: #a371f7; color: #fff; }
 .btn-purple:hover { background: #a371f7; }
+.btn-orange { background: #bd5800; border-color: #e3740e; color: #fff; }
+.btn-orange:hover { background: #e3740e; }
 
 .container {
   max-width: 1400px;
