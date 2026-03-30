@@ -607,8 +607,8 @@ async function scanWallet() {
   btn.disabled = true;
   const res = await api('/scan-positions', 'POST');
   if (res) {
-    if (res.redeemable > 0) alert(`Found ${res.found} position(s), ${res.redeemable} redeemable!`);
-    else if (res.found > 0) alert(`Found ${res.found} position(s), none redeemable yet.`);
+    if (res.redeemable > 0) alert(`Found ${res.found} position(s), queued ${res.redeemable} for on-chain check. Press Force Redeem to collect resolved ones.`);
+    else if (res.found > 0) alert(`Found ${res.found} position(s) but could not queue any (missing IDs).`);
     else alert(res.error ? `Scan failed: ${res.error}` : 'No positions found.');
   }
   btn.textContent = 'Scan Wallet';

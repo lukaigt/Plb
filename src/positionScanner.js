@@ -4,29 +4,39 @@ const redeemer = require('./redeemer');
 const trader = require('./trader');
 
 const DATA_API = 'https://data-api.polymarket.com';
+const GAMMA_API = 'https://gamma-api.polymarket.com';
 
 let hasScannedOnStartup = false;
 let lastScanResult = null;
 
 async function lookupCorrectConditionId(tokenId) {
   try {
-    const url = `https://gamma-api.polymarket.com/markets?clob_token_ids=${tokenId}&closed=true`;
+    const url = `${GAMMA_API}/markets?clob_token_ids=${tokenId}&closed=true`;
     const res = await fetchWithTimeout(url, 10000);
     if (!res.ok) return null;
     const markets = await res.json();
     if (Array.isArray(markets) && markets.length > 0 && markets[0].conditionId) {
-      const market = markets[0];
-      let clobIds = market.clobTokenIds;
-      if (typeof clobIds === 'string') {
-        try { clobIds = JSON.parse(clobIds); } catch { clobIds = []; }
-      }
-      if (Array.isArray(clobIds) && clobIds.includes(tokenId)) {
-        return market.conditionId;
-      }
-      return market.conditionId;
+      return markets[0].conditionId;
     }
   } catch (err) {}
+  return null;
+}
 
+async function lookupMarketResolution(conditionId) {
+  try {
+    const url = `${GAMMA_API}/markets?conditionId=${conditionId}`;
+    const res = await fetchWithTimeout(url, 10000);
+    if (!res.ok) return null;
+    const markets = await res.json();
+    if (Array.isArray(markets) && markets.length > 0) {
+      const m = markets[0];
+      return {
+        closed: m.closed === true,
+        resolved: m.resolved === true || m.hasResolved === true,
+        negRisk: m.negRisk === true || m.enableNegRisk === true
+      };
+    }
+  } catch (err) {}
   return null;
 }
 
@@ -46,38 +56,47 @@ async function fetchWithTimeout(url, timeout = 15000) {
 function resolveProxyWallet() {
   const fromTrader = trader.getProxyWallet();
   if (fromTrader) return fromTrader;
-
   const envProxy = process.env.PROXY_WALLET_ADDRESS;
   if (envProxy) return envProxy;
-
   return null;
 }
 
-async function fetchPositions(walletAddress) {
-  try {
-    const url = `${DATA_API}/positions?user=${walletAddress}&sizeThreshold=0`;
-    logger.addActivity('position_scanner', {
-      message: `Fetching positions for ${walletAddress.substring(0, 10)}...`
-    });
+async function fetchAllPositions(walletAddress) {
+  const allPositions = [];
+  let offset = 0;
+  const limit = 100;
+  const maxPages = 10;
 
-    const res = await fetchWithTimeout(url);
-    if (!res.ok) {
+  for (let page = 0; page < maxPages; page++) {
+    try {
+      const url = `${DATA_API}/positions?user=${walletAddress}&sizeThreshold=0&limit=${limit}&offset=${offset}`;
+      const res = await fetchWithTimeout(url);
+      if (!res.ok) {
+        logger.addActivity('position_scanner', {
+          message: `Data API returned ${res.status} for positions (page ${page + 1})`
+        });
+        break;
+      }
+
+      const positions = await res.json();
+      if (!Array.isArray(positions) || positions.length === 0) break;
+
+      allPositions.push(...positions);
       logger.addActivity('position_scanner', {
-        message: `Data API returned ${res.status} for positions`
+        message: `Fetched page ${page + 1}: ${positions.length} position(s) (total so far: ${allPositions.length})`
       });
-      return [];
+
+      if (positions.length < limit) break;
+      offset += limit;
+    } catch (err) {
+      logger.addActivity('position_scanner_error', {
+        message: `Failed to fetch positions page ${page + 1}: ${err.message.substring(0, 80)}`
+      });
+      break;
     }
-
-    const positions = await res.json();
-    if (!Array.isArray(positions)) return [];
-
-    return positions;
-  } catch (err) {
-    logger.addActivity('position_scanner_error', {
-      message: `Failed to fetch positions: ${err.message.substring(0, 80)}`
-    });
-    return [];
   }
+
+  return allPositions;
 }
 
 async function scanExistingPositions() {
@@ -111,18 +130,9 @@ async function scanExistingPositions() {
     let allPositions = [];
     const seenAssets = new Set();
 
-    const eoaPositions = await fetchPositions(eoaAddress);
-    for (const pos of eoaPositions) {
-      const key = pos.asset || pos.conditionId || JSON.stringify(pos);
-      if (!seenAssets.has(key)) {
-        seenAssets.add(key);
-        allPositions.push(pos);
-      }
-    }
-
-    if (proxyWallet) {
-      const proxyPositions = await fetchPositions(proxyWallet);
-      for (const pos of proxyPositions) {
+    for (const addr of walletsToCheck) {
+      const positions = await fetchAllPositions(addr);
+      for (const pos of positions) {
         const key = pos.asset || pos.conditionId || JSON.stringify(pos);
         if (!seenAssets.has(key)) {
           seenAssets.add(key);
@@ -140,62 +150,60 @@ async function scanExistingPositions() {
     }
 
     logger.addActivity('position_scanner', {
-      message: `Found ${allPositions.length} total position(s) across wallet(s)`
+      message: `Found ${allPositions.length} total position(s) across wallet(s) — queueing all for on-chain resolution check`
     });
 
     let queuedCount = 0;
-    let skippedActive = 0;
+    let skippedNoId = 0;
+    let skippedNoSize = 0;
     const queuedPositions = [];
 
     for (const pos of allPositions) {
-      const conditionId = pos.conditionId;
+      let conditionId = pos.conditionId;
       const tokenId = pos.asset;
       const size = parseFloat(pos.size || 0);
       const title = pos.title || pos.slug || 'Unknown market';
       const outcome = pos.outcome || 'Unknown';
       const curPrice = parseFloat(pos.curPrice || 0);
-      const negRisk = pos.negativeRisk === true || pos.negativeRisk === 'true' || pos.negRisk === true || false;
-      const resolved = curPrice <= 0.01 || curPrice >= 0.99 || pos.redeemable === true || pos.redeemable === 'true';
 
-      if (size <= 0) continue;
+      if (size <= 0) {
+        skippedNoSize++;
+        continue;
+      }
 
       if (!conditionId && !tokenId) {
-        logger.addActivity('position_scanner', {
-          message: `Skipping (no conditionId or tokenId): ${title}`
-        });
+        skippedNoId++;
         continue;
       }
 
-      if (!resolved) {
-        skippedActive++;
-        logger.addActivity('position_scanner', {
-          message: `Active market (not resolved): ${title} | ${outcome} | price=${curPrice.toFixed(3)}`
-        });
-        continue;
-      }
+      let negRisk = pos.negativeRisk === true || pos.negativeRisk === 'true' || pos.negRisk === true || false;
 
-      if (curPrice <= 0.01) {
-        logger.addActivity('position_scanner', {
-          message: `Lost position (price=${curPrice}): ${title} | ${outcome} | ${size.toFixed(2)} shares — skipping`
-        });
-        continue;
-      }
-
-      let correctConditionId = conditionId;
       if (tokenId) {
         const gammaConditionId = await lookupCorrectConditionId(tokenId);
-        if (gammaConditionId && gammaConditionId !== conditionId) {
-          logger.addActivity('position_scanner', {
-            message: `Fixed conditionId for ${title}: Data API differs from Gamma API`
-          });
-          correctConditionId = gammaConditionId;
+        if (gammaConditionId) {
+          if (gammaConditionId !== conditionId) {
+            logger.addActivity('position_scanner', {
+              message: `Fixed conditionId for ${title}: Data API differs from Gamma API`
+            });
+          }
+          conditionId = gammaConditionId;
+
+          const resolution = await lookupMarketResolution(gammaConditionId);
+          if (resolution) {
+            if (resolution.negRisk) negRisk = true;
+          }
         }
+      }
+
+      if (!conditionId) {
+        skippedNoId++;
+        continue;
       }
 
       queuedCount++;
 
       queuedPositions.push({
-        conditionId: correctConditionId,
+        conditionId,
         tokenId,
         title,
         outcome,
@@ -205,7 +213,7 @@ async function scanExistingPositions() {
       });
 
       redeemer.addPendingRedemption({
-        conditionId: correctConditionId,
+        conditionId: conditionId,
         tokenId: tokenId,
         negRisk: negRisk,
         marketEndTime: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
@@ -213,23 +221,13 @@ async function scanExistingPositions() {
         side: outcome,
         size: size,
         price: curPrice,
-        question: `[OLD] ${title} (${outcome})`
-      });
-
-      logger.addActivity('position_scanner', {
-        message: `QUEUED FOR REDEMPTION: ${title} | ${outcome} | ${size.toFixed(2)} shares | price=${curPrice} | negRisk=${negRisk} | conditionId: ${conditionId.substring(0, 15)}...`
+        question: `[SCAN] ${title} (${outcome})`
       });
     }
 
-    if (queuedCount > 0) {
-      logger.addActivity('position_scanner', {
-        message: `Queued ${queuedCount} position(s) for redemption! (${skippedActive} still active)`
-      });
-    } else {
-      logger.addActivity('position_scanner', {
-        message: `Found ${allPositions.length} position(s): ${skippedActive} active, 0 to redeem`
-      });
-    }
+    logger.addActivity('position_scanner', {
+      message: `Queued ${queuedCount} position(s) for on-chain check (skipped: ${skippedNoSize} empty, ${skippedNoId} no ID)`
+    });
 
     lastScanResult = {
       found: allPositions.length,

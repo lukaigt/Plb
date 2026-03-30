@@ -72,7 +72,8 @@ function addPendingRedemption(trade) {
   }
 
   const existing = pendingRedemptions.find(r =>
-    r.tokenId && trade.tokenId && r.tokenId === trade.tokenId
+    (r.tokenId && trade.tokenId && r.tokenId === trade.tokenId) ||
+    (r.conditionId && trade.conditionId && r.conditionId === trade.conditionId && r.side === trade.side)
   );
   if (existing) return;
 
@@ -390,9 +391,15 @@ async function checkAndRedeem() {
       return;
     }
 
-    logger.addActivity('redeemer', {
-      message: `Checking ${ready.length} trade(s) for redemption...`
-    });
+    if (ready.length <= 10) {
+      logger.addActivity('redeemer', {
+        message: `Checking ${ready.length} trade(s) for redemption...`
+      });
+    } else {
+      logger.addActivity('redeemer', {
+        message: `Checking ${ready.length} position(s) on-chain for resolved markets...`
+      });
+    }
 
     for (const redemption of ready) {
       try {
@@ -418,9 +425,6 @@ async function checkAndRedeem() {
         }
 
         if (payoutDenom.eq(0)) {
-          logger.addActivity('redeemer', {
-            message: `Market not yet resolved: ${redemption.question || conditionId.substring(0, 15) + '...'}`
-          });
           continue;
         }
 
