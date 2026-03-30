@@ -361,6 +361,46 @@ function verifyRedemptionReceipt(receipt, safAddr) {
   return false;
 }
 
+async function batchBalanceCheck(ctf, address, redemptions) {
+  const BATCH = 10;
+  const results = [];
+  for (let i = 0; i < redemptions.length; i += BATCH) {
+    const batch = redemptions.slice(i, i + BATCH);
+    const settled = await Promise.allSettled(
+      batch.map(async (r) => {
+        if (!r.tokenId) return { r, bal: ethers.BigNumber.from(1) };
+        const bal = await ctf.balanceOf(address, r.tokenId);
+        return { r, bal };
+      })
+    );
+    for (const s of settled) {
+      if (s.status === 'fulfilled') results.push(s.value);
+      else results.push({ r: batch[settled.indexOf(s)], bal: ethers.BigNumber.from(1) });
+    }
+  }
+  return results;
+}
+
+async function batchPayoutCheck(ctf, redemptions) {
+  const BATCH = 10;
+  const results = [];
+  for (let i = 0; i < redemptions.length; i += BATCH) {
+    const batch = redemptions.slice(i, i + BATCH);
+    const settled = await Promise.allSettled(
+      batch.map(async (item) => {
+        const cid = formatConditionId(item.redemption.conditionId);
+        if (!cid) return { ...item, payout: null };
+        const pd = await ctf.payoutDenominator(cid);
+        return { ...item, payout: pd, formattedCid: cid };
+      })
+    );
+    for (const s of settled) {
+      if (s.status === 'fulfilled') results.push(s.value);
+    }
+  }
+  return results;
+}
+
 async function checkAndRedeem() {
   if (isChecking) return;
   if (pendingRedemptions.length === 0) return;
@@ -391,71 +431,72 @@ async function checkAndRedeem() {
       return;
     }
 
-    if (ready.length <= 10) {
+    logger.addActivity('redeemer', {
+      message: `Fast balance check on ${ready.length} position(s)...`
+    });
+
+    const eoaResults = await batchBalanceCheck(ctf, wallet.address, ready);
+
+    let safeMap = new Map();
+    if (safAddr) {
+      const safeResults = await batchBalanceCheck(ctf, safAddr, ready);
+      for (const sr of safeResults) safeMap.set(sr.r, sr.bal);
+    }
+
+    let zeroCount = 0;
+    const withTokens = [];
+
+    for (const { r, bal } of eoaResults) {
+      if (bal.gt(0)) {
+        withTokens.push({ redemption: r, location: 'eoa' });
+        continue;
+      }
+
+      const safeBal = safeMap.get(r);
+      if (safeBal && safeBal.gt(0)) {
+        withTokens.push({ redemption: r, location: 'safe' });
+        continue;
+      }
+
+      r.status = 'no_balance';
+      r.redeemedAt = new Date().toISOString();
+      redemptionHistory.push({ ...r });
+      zeroCount++;
+    }
+
+    for (let i = pendingRedemptions.length - 1; i >= 0; i--) {
+      if (pendingRedemptions[i].status === 'no_balance') {
+        pendingRedemptions.splice(i, 1);
+      }
+    }
+
+    logger.addActivity('redeemer', {
+      message: `Balance check: ${zeroCount} empty (cleared), ${withTokens.length} with tokens`
+    });
+
+    if (withTokens.length === 0) {
+      isChecking = false;
+      return;
+    }
+
+    const payoutResults = await batchPayoutCheck(ctf, withTokens);
+
+    const redeemable = payoutResults.filter(p => p.payout && !p.payout.eq(0) && p.formattedCid);
+    const notResolved = payoutResults.length - redeemable.length;
+
+    if (notResolved > 0) {
       logger.addActivity('redeemer', {
-        message: `Checking ${ready.length} trade(s) for redemption...`
-      });
-    } else {
-      logger.addActivity('redeemer', {
-        message: `Checking ${ready.length} position(s) on-chain for resolved markets...`
+        message: `${notResolved} position(s) not yet resolved (will retry), ${redeemable.length} ready to redeem`
       });
     }
 
-    for (const redemption of ready) {
+    for (const { redemption, location, formattedCid } of redeemable) {
       try {
-        const conditionId = formatConditionId(redemption.conditionId);
-
-        if (!conditionId) {
-          redemption.status = 'error';
-          redemption.error = `Invalid conditionId: ${redemption.conditionId}`;
-          logger.addActivity('redeemer_error', {
-            message: `Invalid conditionId for ${redemption.question || 'trade'}: ${redemption.conditionId}`
-          });
-          continue;
-        }
-
-        let payoutDenom;
-        try {
-          payoutDenom = await ctf.payoutDenominator(conditionId);
-        } catch (rpcErr) {
-          logger.addActivity('redeemer', {
-            message: `RPC error checking payout for ${redemption.question || 'trade'} — will retry next cycle`
-          });
-          continue;
-        }
-
-        if (payoutDenom.eq(0)) {
-          continue;
-        }
-
-        const eoaHasBalance = await hasTokenBalance(ctf, wallet.address, redemption.tokenId);
-        const safeHasBalance = safAddr ? await hasTokenBalance(ctf, safAddr, redemption.tokenId) : false;
-
-        if (!eoaHasBalance && !safeHasBalance) {
-          const retryCount = redemption.balanceRetryCount || 0;
-          if (retryCount < 2) {
-            redemption.balanceRetryCount = retryCount + 1;
-            logger.addActivity('redeemer', {
-              message: `No token balance yet (retry ${retryCount + 1}/2): ${redemption.question || 'BTC trade'}`
-            });
-            continue;
-          }
-          redemption.status = 'no_payout';
-          redemption.redeemedAt = new Date().toISOString();
-          redemptionHistory.push({ ...redemption });
-          const noBalIds = redemption.tradeIds || (redemption.tradeId ? [redemption.tradeId] : []);
-          for (const tid of noBalIds) logger.updateTrade(tid, { result: 'loss', pnl: 0 });
-          logger.addActivity('redeemer', {
-            message: `No token balance on EOA or Safe (lost): ${redemption.question || 'BTC trade'}`
-          });
-          continue;
-        }
-
-        const redeemFromEOA = eoaHasBalance;
-        const redeemFromSafe = !eoaHasBalance && safeHasBalance;
+        const redeemFromEOA = location === 'eoa';
+        const redeemFromSafe = location === 'safe';
 
         logger.addActivity('redeemer', {
-          message: `Market resolved! Tokens on ${redeemFromEOA ? 'EOA' : 'Safe'}. Redeeming: ${redemption.question || 'BTC trade'}`
+          message: `RESOLVED — redeeming from ${redeemFromEOA ? 'EOA' : 'Safe'}: ${redemption.question || 'BTC trade'}`
         });
 
         redemption.status = 'redeeming';
@@ -478,26 +519,18 @@ async function checkAndRedeem() {
           if (redeemed) break;
 
           try {
-            logger.addActivity('redeemer', {
-              message: `Trying ${attempt.label} via ${redeemFromEOA ? 'EOA' : 'Safe'} for: ${redemption.question || 'BTC trade'}`
-            });
-
             let tx;
             if (redeemFromSafe && safAddr) {
-              tx = await redeemViaSafe(wallet, conditionId, attempt.negRisk, safAddr, provider, wrappedCollateral, redemption.tokenId);
+              tx = await redeemViaSafe(wallet, formattedCid, attempt.negRisk, safAddr, provider, wrappedCollateral, redemption.tokenId);
             } else {
-              tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider, wrappedCollateral, redemption.tokenId);
+              tx = await redeemViaEOA(wallet, formattedCid, attempt.negRisk, provider, wrappedCollateral, redemption.tokenId);
             }
 
             const receipt = await tx.wait();
-
             const internalSuccess = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null);
 
             if (!internalSuccess) {
-              logger.addActivity('redeemer', {
-                message: `${attempt.label} tx mined but internal call FAILED (Safe ExecutionFailure) — trying next`
-              });
-              lastError = 'Safe internal call failed (ExecutionFailure event)';
+              lastError = 'Internal call failed';
               continue;
             }
 
@@ -516,26 +549,19 @@ async function checkAndRedeem() {
               message: `COLLECTED via ${attempt.label}! TX: ${receipt.transactionHash.substring(0, 20)}... | ${redemption.question || 'BTC trade'}`
             });
           } catch (err) {
-            const errMsg = err.message || String(err);
-            lastError = errMsg;
-
+            lastError = err.message || String(err);
             logger.addActivity('redeemer', {
-              message: `${attempt.label} failed: ${errMsg.substring(0, 60)}... trying next`
+              message: `${attempt.label} failed: ${lastError.substring(0, 60)}...`
             });
           }
         }
 
         if (!redeemed) {
-          const errMsg = lastError || 'CTF and NegRiskAdapter both failed';
+          const errMsg = lastError || 'All methods failed';
           if (errMsg.includes('payout is zero') || errMsg.includes('result is empty')) {
             redemption.status = 'no_payout';
             redemption.redeemedAt = new Date().toISOString();
             redemptionHistory.push({ ...redemption });
-            const nopayIds = redemption.tradeIds || (redemption.tradeId ? [redemption.tradeId] : []);
-            for (const tid of nopayIds) logger.updateTrade(tid, { result: 'loss', pnl: 0 });
-            logger.addActivity('redeemer', {
-              message: `No payout (lost): ${redemption.question || 'BTC trade'}`
-            });
           } else {
             redemption.status = 'error';
             redemption.error = errMsg.substring(0, 100);
@@ -546,6 +572,7 @@ async function checkAndRedeem() {
                 message: `Redeem failed after 3 retries: ${errMsg.substring(0, 80)}`
               });
             } else {
+              redemption.status = 'waiting';
               logger.addActivity('redeemer_error', {
                 message: `Redeem failed (attempt ${redemption.retryCount}/3, will retry): ${errMsg.substring(0, 60)}`
               });
@@ -555,18 +582,14 @@ async function checkAndRedeem() {
       } catch (err) {
         redemption.status = 'error';
         redemption.error = err.message?.substring(0, 100);
-        logger.addActivity('redeemer_error', {
-          message: `Redeem check error: ${err.message?.substring(0, 80)}`
-        });
       }
     }
 
-    const completed = pendingRedemptions.filter(r =>
-      r.status === 'redeemed' || r.status === 'no_payout' || (r.status === 'error' && r.retryCount >= 3)
-    );
-    for (const done of completed) {
-      const idx = pendingRedemptions.indexOf(done);
-      if (idx >= 0) pendingRedemptions.splice(idx, 1);
+    for (let i = pendingRedemptions.length - 1; i >= 0; i--) {
+      const r = pendingRedemptions[i];
+      if (r.status === 'redeemed' || r.status === 'no_payout' || r.status === 'no_balance' || (r.status === 'error' && r.retryCount >= 3)) {
+        pendingRedemptions.splice(i, 1);
+      }
     }
 
   } catch (err) {
