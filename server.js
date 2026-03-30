@@ -104,7 +104,7 @@ app.get('/', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   const cfg = getMomentumConfig();
   console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
-  console.log('Starting BTC Hybrid Trader (hold-to-resolution + profit protection)...');
+  console.log('Starting BTC Hybrid Trader (take profit at 80¢ + profit protection)...');
   console.log(`Markets:        5m + 15m (both active)`);
   console.log(`Wallet Key:     ${process.env.WALLET_PRIVATE_KEY ? 'SET' : 'NOT SET'}`);
   console.log(`CLOB API Key:   ${process.env.POLY_API_KEY ? 'SET' : 'NOT SET'}`);
