@@ -11,7 +11,7 @@ function getMomentumConfig() {
     trailingStop:      parseFloat(process.env.MOM_TRAILING_STOP)      || 0.05,
     trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.05,
     stopLossCents:     parseFloat(process.env.MOM_STOP_LOSS)          || 0.18,
-    takeProfit:        parseFloat(process.env.MOM_TAKE_PROFIT)        || 0.80,
+    takeProfit:        parseFloat(process.env.MOM_TAKE_PROFIT)        || 0.70,
     momentumThreshold: parseFloat(process.env.MOM_THRESHOLD)          || 0.05,
     midMin:            parseFloat(process.env.MOM_MID_MIN)            || 0.35,
     midMax:            parseFloat(process.env.MOM_MID_MAX)            || 0.65,

@@ -3,7 +3,6 @@ const logger = require('./logger');
 const GAMMA_API = 'https://gamma-api.polymarket.com';
 
 const MARKETS_CONFIG = [
-  { coin: 'BTC', type: '5m',  slugPrefix: 'btc-updown-5m',  intervalSeconds: 300 },
   { coin: 'BTC', type: '15m', slugPrefix: 'btc-updown-15m', intervalSeconds: 900 }
 ];
 
