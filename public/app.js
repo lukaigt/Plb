@@ -140,6 +140,7 @@ function updateMarketCardGeneric(prefix, session) {
   const entryEl  = document.getElementById(`mc_${prefix}_entry`);
   const peakEl   = document.getElementById(`mc_${prefix}_peak`);
   const trailEl  = document.getElementById(`mc_${prefix}_trail`);
+  const tpEl     = document.getElementById(`mc_${prefix}_tp`);
   const slEl     = document.getElementById(`mc_${prefix}_sl`);
   const flipEl   = document.getElementById(`mc_${prefix}_flips`);
   const pnlEl    = document.getElementById(`mc_${prefix}_pnl`);
@@ -155,6 +156,7 @@ function updateMarketCardGeneric(prefix, session) {
     if (entryEl) entryEl.textContent = '--';
     if (peakEl) peakEl.textContent = '--';
     if (trailEl) trailEl.textContent = '--';
+    if (tpEl) tpEl.textContent = '--';
     if (slEl) slEl.textContent = '--';
     if (flipEl) flipEl.textContent = '0';
     if (pnlEl) pnlEl.textContent = '--';
@@ -204,6 +206,12 @@ function updateMarketCardGeneric(prefix, session) {
       const activateOffset = (window._botConfig && window._botConfig.trailingActivate) ? window._botConfig.trailingActivate : 0.05;
       trailEl.textContent = session.entryPrice ? `activates at $${(session.entryPrice + activateOffset).toFixed(3)}` : '--';
     }
+  }
+
+  if (tpEl) {
+    tpEl.textContent = session.takeProfitPrice !== null && session.takeProfitPrice !== undefined
+      ? `$${session.takeProfitPrice.toFixed(2)}`
+      : '--';
   }
 
   if (slEl) {
@@ -313,7 +321,7 @@ async function updateStatus() {
     const cfg = status.config;
     window._botConfig = cfg;
     const spreadEl = document.getElementById('spreadConfig');
-    if (spreadEl) spreadEl.textContent = `Protect ${(cfg.trailingActivate * 100).toFixed(0)}¢+ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
+    if (spreadEl) spreadEl.textContent = `TP ${(cfg.takeProfit * 100).toFixed(0)}¢ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
     document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize} / trade`;
     document.getElementById('scanConfig').textContent      = `Hybrid 5m+15m | ±${cfg.momentumThreshold}% signal | ${cfg.maxFlips} re-entries max`;
   }

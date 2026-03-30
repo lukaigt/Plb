@@ -13,15 +13,16 @@ This project is a hybrid trading bot designed for Polymarket BTC Up/Down markets
 
 ## System Architecture
 
-### Core Strategy: Hybrid Hold-to-Resolution with Profit Protection
-The bot's strategy is a hybrid approach:
-- **Default Hold**: Tokens are held until market resolution.
+### Core Strategy: Take Profit at 80¢ with Profit Protection
+The bot's strategy targets a fixed take-profit exit:
+- **Take Profit**: Sells immediately when token price reaches 80¢ (configurable via MOM_TAKE_PROFIT). This is the primary exit — no waiting for resolution.
 - **Profit Protection**: A trailing stop activates when the token price is 5¢ or more above the entry price. The trailing stop trails 5¢ below the peak, but never drops below the initial entry price, preventing losses from trailing.
 - **Stop Loss**: A wide 18¢ stop loss acts as a safety net.
 - **Re-entry**: After a profitable exit, the bot attempts to re-enter based on a live BTC momentum signal (not a blind opposite-side trade).
 - **Session Phases**: Each market window transitions through `waiting`, `entering`, `managing` (which includes `HOLDING` and `PROTECTING` states), `exiting`, `flipping`, `closing`, and `done` phases.
-- **Signal Detection**: A BTC momentum signal is detected if the BTC price changes by ±0.05% or more within 3 minutes, using data from the Kraken WebSocket feed.
+- **Signal Detection**: 15m markets use ±0.05% BTC 3-min change; 5m markets use ±0.03% (lowered for faster signal in shorter windows).
 - **Dual Market Trading**: The bot simultaneously trades both 5-minute and 15-minute BTC markets, with independent sessions and tailored timing parameters for each.
+- **Order Size**: $5 per trade (configurable via MOM_ORDER_SIZE).
 
 ### Technical Implementation
 - **Backend**: Node.js with an Express server, providing a dashboard on port 5000 (development) or 4000 (VPS).

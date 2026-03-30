@@ -10,7 +10,7 @@
   <div class="header">
     <div class="header-left">
       <h1>BTC Swing Trader</h1>
-      <span class="strategy-badge">HYBRID — HOLD TO RESOLUTION + PROFIT PROTECTION</span>
+      <span class="strategy-badge">TAKE PROFIT AT 80¢ + PROFIT PROTECTION</span>
     </div>
     <div class="header-controls">
       <button class="btn btn-blue"   onclick="scanNow()">Scan Now</button>
@@ -93,6 +93,10 @@
             <span class="mc-val" id="mc_15m_trail">--</span>
           </div>
           <div class="mc-row">
+            <span class="mc-label">Take Profit</span>
+            <span class="mc-val" id="mc_15m_tp" style="color:#3fb950;">--</span>
+          </div>
+          <div class="mc-row">
             <span class="mc-label">Stop Loss</span>
             <span class="mc-val" id="mc_15m_sl">--</span>
           </div>
@@ -144,6 +148,10 @@
             <span class="mc-val" id="mc_5m_trail">--</span>
           </div>
           <div class="mc-row">
+            <span class="mc-label">Take Profit</span>
+            <span class="mc-val" id="mc_5m_tp" style="color:#3fb950;">--</span>
+          </div>
+          <div class="mc-row">
             <span class="mc-label">Stop Loss</span>
             <span class="mc-val" id="mc_5m_sl">--</span>
           </div>
@@ -177,7 +185,7 @@
         <span class="s-value" style="color:#58a6ff;font-size:12px;">Hybrid Hold</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Trail / SL</span>
+        <span class="s-label">TP / SL</span>
         <span class="s-value" id="spreadConfig" style="color:#d29922;">5¢ / -12¢</span>
       </div>
       <div class="safety-item">

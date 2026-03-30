@@ -7,10 +7,11 @@ const CLOB_API = 'https://clob.polymarket.com';
 
 function getMomentumConfig() {
   return {
-    orderSize:         parseFloat(process.env.MOM_ORDER_SIZE)         || 10,
+    orderSize:         parseFloat(process.env.MOM_ORDER_SIZE)         || 5,
     trailingStop:      parseFloat(process.env.MOM_TRAILING_STOP)      || 0.05,
     trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.05,
     stopLossCents:     parseFloat(process.env.MOM_STOP_LOSS)          || 0.18,
+    takeProfit:        parseFloat(process.env.MOM_TAKE_PROFIT)        || 0.80,
     momentumThreshold: parseFloat(process.env.MOM_THRESHOLD)          || 0.05,
     midMin:            parseFloat(process.env.MOM_MID_MIN)            || 0.35,
     midMax:            parseFloat(process.env.MOM_MID_MAX)            || 0.65,
@@ -101,6 +102,7 @@ class MomentumSession {
       this.config.entryAfterSeconds = Math.min(config.entryAfterSeconds, 60);
       this.config.closeSeconds      = Math.min(config.closeSeconds, 10);
       this.config.flipMinSeconds    = Math.min(config.flipMinSeconds, 30);
+      this.config.momentumThreshold = Math.min(config.momentumThreshold, 0.03);
     }
 
     this.phase          = 'waiting';
@@ -381,12 +383,20 @@ class MomentumSession {
 
     this.lastMid = mid;
 
+    if (mid >= this.config.takeProfit) {
+      logger.addActivity('mom_tp_target', {
+        message: `[${this.market.coin}-${this.market.type}] TAKE PROFIT HIT — mid=$${mid.toFixed(3)} >= target=$${this.config.takeProfit.toFixed(2)} | entry=$${this.entryPrice.toFixed(3)} | cashing out NOW`
+      });
+      await this._postExitSell(client, mid, 'take_profit');
+      return;
+    }
+
     const now3 = Date.now();
     if (!this._lastTrailingLog || now3 - this._lastTrailingLog >= 15000) {
       this._lastTrailingLog = now3;
       const stopLoss = Math.max(0.02, this.entryPrice - this.config.stopLossCents);
       logger.addActivity('fill_debug', {
-        message: `[${this.market.coin}-${this.market.type}] Trailing monitor — mid=$${mid.toFixed(3)} | entry=$${this.entryPrice} | peak=$${(this.peakMid || 0).toFixed(3)} | active=${this.trailingActive} | stop=${(this.trailingStopLevel || 0).toFixed(3)} | SL=$${stopLoss.toFixed(3)} | ${Math.round(this.secondsLeft)}s left`
+        message: `[${this.market.coin}-${this.market.type}] Trailing monitor — mid=$${mid.toFixed(3)} | entry=$${this.entryPrice} | peak=$${(this.peakMid || 0).toFixed(3)} | active=${this.trailingActive} | stop=${(this.trailingStopLevel || 0).toFixed(3)} | SL=$${stopLoss.toFixed(3)} | TP=$${this.config.takeProfit.toFixed(2)} | ${Math.round(this.secondsLeft)}s left`
       });
     }
 
@@ -615,6 +625,7 @@ class MomentumSession {
       trailingStopLevel: this.trailingStopLevel,
       trailingActive:    this.trailingActive,
       stopLossPrice:     this.entryPrice !== null ? Math.max(0.02, this.entryPrice - this.config.stopLossCents) : null,
+      takeProfitPrice:   this.config.takeProfit,
       entryFilled:       this.entryFilled,
       holdingToken:      this.holdingToken,
       filledSize:        this.filledSize,

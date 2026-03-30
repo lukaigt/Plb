@@ -172,18 +172,19 @@ async function start() {
   const interval = config.refreshInterval * 1000;
 
   logger.addActivity('bot', {
-    message: `Bot started — BTC HYBRID TRADER (hold-to-resolution + profit protection)\n` +
+    message: `Bot started — BTC HYBRID TRADER (take profit at ${(config.takeProfit * 100).toFixed(0)}¢)\n` +
       `  Markets:          5m + 15m (both active)\n` +
       `  Order size:       $${config.orderSize}\n` +
-      `  Strategy:         Hold to resolution by default\n` +
+      `  Take profit:      $${config.takeProfit.toFixed(2)} (sell immediately when token hits this)\n` +
       `  Profit protect:   trailing stop activates ${(config.trailingActivate * 100).toFixed(0)}¢ above entry, trails ${(config.trailingStop * 100).toFixed(0)}¢ below peak (floor = entry price)\n` +
       `  Stop loss:        -${(config.stopLossCents * 100).toFixed(0)}¢ from entry (safety net)\n` +
       `  Re-entry:         after profitable exit, re-enter on live BTC signal (max ${config.maxFlips} per window)\n` +
-      `  Momentum signal:  ±${config.momentumThreshold}% BTC 3-min change\n` +
+      `  Signal 15m:       ±${config.momentumThreshold}% BTC 3-min change\n` +
+      `  Signal 5m:        ±${Math.min(config.momentumThreshold, 0.03)}% BTC 3-min change\n` +
       `  Mid range:        $${config.midMin} – $${config.midMax}\n` +
       `  15m timing:       entry after ${config.entryAfterSeconds}s | close final ${config.closeSeconds}s\n` +
       `  5m timing:        entry after ${Math.min(config.entryAfterSeconds, 60)}s | close final ${Math.min(config.closeSeconds, 10)}s\n` +
-      `  Price check:      every 5s (profit protection) + every ${config.refreshInterval}s (main loop)\n` +
+      `  Price check:      every 5s (take profit + trailing) + every ${config.refreshInterval}s (main loop)\n` +
       `  Daily loss limit: $${safety.dailyLossLimit}`
   });
 

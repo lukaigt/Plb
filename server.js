@@ -109,12 +109,13 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Wallet Key:     ${process.env.WALLET_PRIVATE_KEY ? 'SET' : 'NOT SET'}`);
   console.log(`CLOB API Key:   ${process.env.POLY_API_KEY ? 'SET' : 'NOT SET'}`);
   console.log(`Order size:     $${cfg.orderSize} per trade`);
-  console.log(`Strategy:       Hold to resolution, profit protection at ${(cfg.trailingActivate * 100).toFixed(0)}¢+ above entry`);
+  console.log(`Take profit:    $${cfg.takeProfit.toFixed(2)} (sell immediately when token hits this price)`);
   console.log(`Profit trail:   ${(cfg.trailingStop * 100).toFixed(0)}¢ below peak (floor = entry price)`);
   console.log(`Stop loss:      -${(cfg.stopLossCents * 100).toFixed(0)}¢ from entry (safety net)`);
   console.log(`Max re-entries: ${cfg.maxFlips} per window`);
   console.log(`Re-entry min:   ${cfg.flipMinSeconds}s remaining`);
-  console.log(`Signal:         ±${cfg.momentumThreshold}% BTC 3-min change`);
+  console.log(`Signal 15m:     ±${cfg.momentumThreshold}% BTC 3-min change`);
+  console.log(`Signal 5m:      ±${Math.min(cfg.momentumThreshold, 0.03)}% BTC 3-min change`);
   console.log(`Mid range:      $${cfg.midMin} – $${cfg.midMax}`);
   console.log(`15m timing:     entry after ${cfg.entryAfterSeconds}s | close final ${cfg.closeSeconds}s`);
   console.log(`5m timing:      entry after ${Math.min(cfg.entryAfterSeconds, 60)}s | close final ${Math.min(cfg.closeSeconds, 10)}s`);
