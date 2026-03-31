@@ -109,10 +109,13 @@ function signalBadge(signal) {
 }
 
 function phaseBadge(phase, session) {
+  if (phase === 'managing' && session && !session.trailingActive) {
+    return { label: 'HOLDING', cls: 'phase-holding' };
+  }
   const map = {
     waiting:   { label: 'WAITING',   cls: 'phase-waiting' },
     entering:  { label: 'ENTERING',  cls: 'phase-quoting' },
-    managing:  { label: 'HOLDING',   cls: 'phase-holding' },
+    managing:  { label: 'PROTECTING', cls: 'phase-quoting' },
     exiting:   { label: 'EXITING',   cls: 'phase-quoting' },
     flipping:  { label: 'RE-ENTERING', cls: 'phase-quoting' },
     closing:   { label: 'CLOSING',   cls: 'phase-closing' },
@@ -188,16 +191,21 @@ function updateMarketCardGeneric(prefix, session) {
 
   if (peakEl) {
     if (session.peakMid !== null && session.peakMid !== undefined) {
-      peakEl.innerHTML = `<span class="positive">$${session.peakMid.toFixed(3)}</span>`;
+      peakEl.innerHTML = session.trailingActive
+        ? `<span class="positive">$${session.peakMid.toFixed(3)}</span>`
+        : `<span class="neutral">$${session.peakMid.toFixed(3)} (not yet active)</span>`;
     } else {
       peakEl.textContent = '--';
     }
   }
 
   if (trailEl) {
-    trailEl.innerHTML = session.entryFilled && session.phase === 'managing'
-      ? '<span class="positive">HOLD TO RESOLUTION</span>'
-      : '--';
+    if (session.trailingStopLevel !== null && session.trailingStopLevel !== undefined) {
+      trailEl.innerHTML = `<span class="negative">$${session.trailingStopLevel.toFixed(3)}</span>`;
+    } else {
+      const activateOffset = (window._botConfig && window._botConfig.trailingActivate) ? window._botConfig.trailingActivate : 0.05;
+      trailEl.textContent = session.entryPrice ? `activates at $${(session.entryPrice + activateOffset).toFixed(3)}` : '--';
+    }
   }
 
   if (tpEl) {
@@ -315,7 +323,7 @@ async function updateStatus() {
     const spreadEl = document.getElementById('spreadConfig');
     if (spreadEl) spreadEl.textContent = `TP ${(cfg.takeProfit * 100).toFixed(0)}¢ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
     document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize} / trade`;
-    document.getElementById('scanConfig').textContent      = `15m Hold | ±${cfg.momentumThreshold}% signal | ${cfg.maxFlips} re-entries max`;
+    document.getElementById('scanConfig').textContent      = `Hybrid 5m+15m | ±${cfg.momentumThreshold}% signal | ${cfg.maxFlips} re-entries max`;
   }
 
   const safety = status.safety;

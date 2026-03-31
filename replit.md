@@ -13,21 +13,20 @@ This project is a trading bot designed for Polymarket BTC Up/Down 15-minute mark
 
 ## System Architecture
 
-### Core Strategy: Hold to Resolution
-The bot's strategy is to hold positions to market resolution, with safety exits:
-- **Hold to Resolution**: Primary strategy — buy based on BTC momentum signal, then hold until the 15-minute market resolves. Winning tokens pay $1.00, losing tokens pay $0.00.
-- **Take Profit at 70¢**: If the token price reaches 70¢ mid-window (configurable via MOM_TAKE_PROFIT), sell early to lock in gains without waiting for resolution.
-- **Stop Loss at 18¢**: If the token drops 18¢ below entry price, exit to limit losses (configurable via MOM_STOP_LOSS).
-- **No Trailing Stop**: Trailing stop is disabled — it was causing premature exits on temporary dips, selling winners before resolution.
-- **Re-entry**: After a profitable exit, the bot attempts to re-enter based on a live BTC momentum signal.
-- **Session Phases**: Each market window transitions through `waiting`, `entering`, `managing` (HOLDING state), `exiting`, `flipping`, `closing`, and `done` phases.
+### Core Strategy: Take Profit at 70¢ with Profit Protection
+The bot's strategy targets a fixed take-profit exit:
+- **Take Profit**: Sells immediately when token price reaches 70¢ (configurable via MOM_TAKE_PROFIT). This is the primary exit — no waiting for resolution.
+- **Profit Protection**: A trailing stop activates when the token price is 10¢ or more above the entry price (MOM_TRAILING_ACTIVATE=0.10). The trailing stop trails 5¢ below the peak (MOM_TRAILING_STOP=0.05), but never drops below the initial entry price. With 10¢ activate and 5¢ trail, the stop floor starts at entry+5¢, giving real breathing room.
+- **Stop Loss**: A wide 18¢ stop loss acts as a safety net.
+- **Re-entry**: After a profitable exit, the bot attempts to re-enter based on a live BTC momentum signal (not a blind opposite-side trade).
+- **Session Phases**: Each market window transitions through `waiting`, `entering`, `managing` (which includes `HOLDING` and `PROTECTING` states), `exiting`, `flipping`, `closing`, and `done` phases.
 - **Signal Detection**: 15m markets use ±0.05% BTC 3-min change.
 - **Markets**: 15-minute BTC markets only (5-minute disabled).
 - **Order Size**: $5 per trade (configurable via MOM_ORDER_SIZE).
 
 ### Technical Implementation
 - **Backend**: Node.js with an Express server, providing a dashboard on port 5000 (development) or 4000 (VPS).
-- **Bot Loops**: A main loop runs every 10 seconds, and a fast loop runs every 5 seconds for critical tasks like take-profit/stop-loss monitoring and exit fill status.
+- **Bot Loops**: A main loop runs every 10 seconds, and a fast loop runs every 5 seconds for critical tasks like trailing stop management and exit fill status.
 - **State Management**: `MomentumSession` objects track the state for each market, including phases, signals, prices, fill statuses, and re-entry counts.
 - **Market Discovery**: Uses the Polymarket Gamma API to discover BTC Up/Down markets based on slug patterns.
 - **Order Placement**: Utilizes the Polymarket CLOB SDK (`@polymarket/clob-client`) for placing and managing orders.
