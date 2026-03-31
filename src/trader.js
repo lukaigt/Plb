@@ -192,6 +192,10 @@ async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '
   if (!client) return { success: false, error: 'No CLOB client' };
 
   try {
+    try {
+      await client.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
+    } catch {}
+
     const roundedPrice = Math.max(0.02, Math.min(0.97, Math.round(price * 100) / 100));
     const roundedSize  = parseFloat(size.toFixed(2));
 

@@ -263,7 +263,7 @@ class MomentumSession {
     }
 
     logger.addActivity('mom_entry', {
-      message: `[${this.market.coin}-${this.market.type}] BUY ${side} @ $${this.entryPrice} | ${this.entrySizeTokens} tokens | trailing stop: ${(this.config.trailingStop * 100).toFixed(0)}¢ below peak (activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry) | SL: -${(this.config.stopLossCents * 100).toFixed(0)}¢`
+      message: `[${this.market.coin}-${this.market.type}] BUY ${side} @ $${this.entryPrice} | ${this.entrySizeTokens} tokens | HOLD TO RESOLUTION | TP: ${(this.config.takeProfit * 100).toFixed(0)}¢ | SL: -${(this.config.stopLossCents * 100).toFixed(0)}¢`
     });
 
     this.phase = 'entering';
@@ -346,7 +346,7 @@ class MomentumSession {
       this.peakMid      = this.entryPrice;
       this.phase        = 'managing';
       logger.addActivity('mom_filled', {
-        message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)})`
+        message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | HOLDING TO RESOLUTION | TP=$${this.config.takeProfit.toFixed(2)} | SL=$${(this.entryPrice - this.config.stopLossCents).toFixed(3)}`
       });
     } else if (orderStatus === 'CANCELED' || orderStatus === 'CANCELLED') {
       logger.addActivity('mom_error', {
@@ -360,7 +360,7 @@ class MomentumSession {
       this.peakMid      = this.entryPrice;
       this.phase        = 'managing';
       logger.addActivity('mom_filled', {
-        message: `[${this.market.coin}-${this.market.type}] BUY FILLED (status=MATCHED) — ${this.signal} ${this.filledSize} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)})`
+        message: `[${this.market.coin}-${this.market.type}] BUY FILLED (status=MATCHED) — ${this.signal} ${this.filledSize} tokens @ $${this.entryPrice} | HOLDING TO RESOLUTION | TP=$${this.config.takeProfit.toFixed(2)} | SL=$${(this.entryPrice - this.config.stopLossCents).toFixed(3)}`
       });
     }
   }
@@ -391,38 +391,20 @@ class MomentumSession {
       return;
     }
 
+    if (mid > (this.peakMid || 0)) {
+      this.peakMid = mid;
+    }
+
     const now3 = Date.now();
     if (!this._lastTrailingLog || now3 - this._lastTrailingLog >= 15000) {
       this._lastTrailingLog = now3;
       const stopLoss = Math.max(0.02, this.entryPrice - this.config.stopLossCents);
       logger.addActivity('fill_debug', {
-        message: `[${this.market.coin}-${this.market.type}] Trailing monitor — mid=$${mid.toFixed(3)} | entry=$${this.entryPrice} | peak=$${(this.peakMid || 0).toFixed(3)} | active=${this.trailingActive} | stop=${(this.trailingStopLevel || 0).toFixed(3)} | SL=$${stopLoss.toFixed(3)} | TP=$${this.config.takeProfit.toFixed(2)} | ${Math.round(this.secondsLeft)}s left`
+        message: `[${this.market.coin}-${this.market.type}] Hold monitor — mid=$${mid.toFixed(3)} | entry=$${this.entryPrice} | peak=$${(this.peakMid || 0).toFixed(3)} | SL=$${stopLoss.toFixed(3)} | TP=$${this.config.takeProfit.toFixed(2)} | ${Math.round(this.secondsLeft)}s left`
       });
     }
 
     const stopLossPrice = Math.max(0.02, this.entryPrice - this.config.stopLossCents);
-
-    if (!this.trailingActive && mid >= this.entryPrice + this.config.trailingActivate) {
-      this.trailingActive    = true;
-      this.peakMid           = mid;
-      this.trailingStopLevel = Math.max(this.entryPrice, mid - this.config.trailingStop);
-      logger.addActivity('mom_trailing', {
-        message: `[${this.market.coin}-${this.market.type}] Profit protection ACTIVATED | peak=$${mid.toFixed(3)} | stop=$${this.trailingStopLevel.toFixed(3)} (floor = entry $${this.entryPrice.toFixed(3)})`
-      });
-    } else if (this.trailingActive) {
-      if (mid > this.peakMid) {
-        this.peakMid           = mid;
-        this.trailingStopLevel = Math.max(this.entryPrice, mid - this.config.trailingStop);
-        logger.addActivity('mom_peak', {
-          message: `[${this.market.coin}-${this.market.type}] New peak=$${mid.toFixed(3)} | trailing stop=$${this.trailingStopLevel.toFixed(3)} | unrealized: +$${((mid - this.entryPrice) * (this.filledSize || this.entrySizeTokens)).toFixed(3)}`
-        });
-      }
-
-      if (mid <= this.trailingStopLevel) {
-        await this._postExitSell(client, mid, 'trailing_stop');
-        return;
-      }
-    }
 
     if (mid <= stopLossPrice) {
       await this._postExitSell(client, mid, 'stop_loss');
@@ -584,21 +566,9 @@ class MomentumSession {
 
     if (this.entryFilled && this.holdingToken && this.phase === 'managing') {
       const mid = await fetchMidpoint(this.tokenId);
-      if (mid !== null && mid > this.entryPrice) {
-        logger.addActivity('mom_close', {
-          message: `[${this.market.coin}-${this.market.type}] Closing — in profit, selling ${this.signal} at mid=$${mid.toFixed(3)} | entry=$${this.entryPrice.toFixed(3)} | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
-        });
-        const sold = await this._postExitSell(client, mid, 'closing_cashout');
-        if (!sold) {
-          logger.addActivity('mom_close', {
-            message: `[${this.market.coin}-${this.market.type}] Closing — sell failed, holding to resolution`
-          });
-        }
-      } else {
-        logger.addActivity('mom_close', {
-          message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} to resolution | entry=$${this.entryPrice.toFixed(3)} | mid=${mid !== null ? '$' + mid.toFixed(3) : 'N/A'}`
-        });
-      }
+      logger.addActivity('mom_close', {
+        message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} to resolution | entry=$${this.entryPrice.toFixed(3)} | mid=${mid !== null ? '$' + mid.toFixed(3) : 'N/A'} | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+      });
     } else if (this.entryFilled && this.holdingToken) {
       logger.addActivity('mom_close', {
         message: `[${this.market.coin}-${this.market.type}] Closing — phase=${this.phase}, letting exit complete | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
