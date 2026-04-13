@@ -1,10 +1,26 @@
 const { ClobClient, Side, OrderType, AssetType } = require('@polymarket/clob-client');
-const { Wallet } = require('ethers');
+const { Wallet, ethers } = require('ethers');
 const crypto = require('crypto');
 const logger = require('./logger');
 
 const CLOB_HOST = 'https://clob.polymarket.com';
-const CHAIN_ID = 137;
+const CHAIN_ID  = 137;
+
+const POLYGON_RPCS = [
+  'https://polygon-rpc.com',
+  'https://rpc.ankr.com/polygon',
+  'https://matic-mainnet.chainstacklabs.com'
+];
+const USDC_CONTRACTS = [
+  '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+  '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'
+];
+const ERC20_ABI     = ['function balanceOf(address) view returns (uint256)'];
+const USDC_DECIMALS = 6;
+
+let _cachedBalance    = null;
+let _balanceFetchedAt = 0;
+const BALANCE_CACHE_MS = 5 * 60 * 1000;
 
 let clobClient = null;
 let proxyWalletAddress = null;
@@ -125,6 +141,39 @@ async function initClient(privateKey) {
 
 function getProxyWallet() { return proxyWalletAddress; }
 function getEoaAddress()   { return eoaAddress; }
+
+async function getUsdcBalance(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && _cachedBalance !== null && now - _balanceFetchedAt < BALANCE_CACHE_MS) {
+    return _cachedBalance;
+  }
+
+  const wallet = proxyWalletAddress || eoaAddress;
+  if (!wallet) return null;
+
+  for (const rpcUrl of POLYGON_RPCS) {
+    try {
+      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+      let total = 0;
+      for (const contractAddr of USDC_CONTRACTS) {
+        try {
+          const token   = new ethers.Contract(contractAddr, ERC20_ABI, provider);
+          const balance = await token.balanceOf(wallet);
+          total += parseFloat(ethers.utils.formatUnits(balance, USDC_DECIMALS));
+        } catch {}
+      }
+      _cachedBalance    = parseFloat(total.toFixed(2));
+      _balanceFetchedAt = now;
+      return _cachedBalance;
+    } catch {}
+  }
+  return null;
+}
+
+function invalidateBalanceCache() {
+  _cachedBalance    = null;
+  _balanceFetchedAt = 0;
+}
 
 async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = true, tickSize = '0.01') {
   const client = await initClient(privateKey);
@@ -256,4 +305,4 @@ async function executeTrade(decision, marketData, tradeSize) {
   return trade;
 }
 
-module.exports = { executeTrade, initClient, placeOrder, placeSellOrder, getProxyWallet, getEoaAddress, buildClobAuthHeaders };
+module.exports = { executeTrade, initClient, placeOrder, placeSellOrder, getProxyWallet, getEoaAddress, buildClobAuthHeaders, getUsdcBalance, invalidateBalanceCache };

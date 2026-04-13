@@ -145,6 +145,8 @@ function updateMarketCardGeneric(prefix, session) {
   const flipEl   = document.getElementById(`mc_${prefix}_flips`);
   const pnlEl    = document.getElementById(`mc_${prefix}_pnl`);
   const cpnlEl   = document.getElementById(`mc_${prefix}_cpnl`);
+  const feesEl   = document.getElementById(`mc_${prefix}_fees`);
+  const netpnlEl = document.getElementById(`mc_${prefix}_netpnl`);
 
   if (!session) {
     if (phaseEl) { phaseEl.textContent = 'Idle'; phaseEl.className = 'mc-phase'; }
@@ -161,6 +163,8 @@ function updateMarketCardGeneric(prefix, session) {
     if (flipEl) flipEl.textContent = '0';
     if (pnlEl) pnlEl.textContent = '--';
     if (cpnlEl) cpnlEl.textContent = '--';
+    if (feesEl) feesEl.textContent = '--';
+    if (netpnlEl) netpnlEl.textContent = '--';
     if (card) card.className = 'market-card';
     return;
   }
@@ -246,6 +250,21 @@ function updateMarketCardGeneric(prefix, session) {
       cpnlEl.innerHTML = `<span class="${cls}">${cum >= 0 ? '+' : ''}$${cum.toFixed(3)}</span>`;
     } else {
       cpnlEl.textContent = '$0.00';
+    }
+  }
+
+  if (feesEl) {
+    const fees = session.cumulativeFees || 0;
+    feesEl.textContent = fees > 0 ? `-$${fees.toFixed(3)}` : '--';
+  }
+
+  if (netpnlEl) {
+    const net = session.cumulativeNetPnl;
+    if (net !== null && net !== undefined && (net !== 0 || session.cumulativeFees > 0)) {
+      const cls = net > 0 ? 'positive' : net < 0 ? 'negative' : 'neutral';
+      netpnlEl.innerHTML = `<span class="${cls}">${net >= 0 ? '+' : ''}$${net.toFixed(3)}</span>`;
+    } else {
+      netpnlEl.textContent = '--';
     }
   }
 }

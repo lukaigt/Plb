@@ -22,7 +22,9 @@ The bot's strategy targets a fixed take-profit exit:
 - **Session Phases**: Each market window transitions through `waiting`, `entering`, `managing` (which includes `HOLDING` and `PROTECTING` states), `exiting`, `flipping`, `closing`, and `done` phases.
 - **Signal Detection**: 15m markets use ±0.05% BTC 3-min change.
 - **Markets**: 15-minute BTC markets only (5-minute disabled).
-- **Order Size**: $5 per trade (configurable via MOM_ORDER_SIZE).
+- **Order Size**: $5 fixed (MOM_ORDER_SIZE) or % of wallet balance (MOM_ORDER_PCT, clamped to MOM_ORDER_PCT_MIN/MAX).
+- **Volatility Filter**: Entry skipped when BTC 1m and 3m momentum signals disagree (MOM_VOL_FILTER=true by default).
+- **Fee Tracking**: Each trade estimates a 2% fee per side; cumulative fees and net P&L (gross minus fees) are tracked per session and displayed on the dashboard.
 
 ### Technical Implementation
 - **Backend**: Node.js with an Express server, providing a dashboard on port 5000 (development) or 4000 (VPS).
@@ -34,7 +36,12 @@ The bot's strategy targets a fixed take-profit exit:
 - **Safety Controls**: Includes daily loss limits, a maximum number of daily losing trades, a manual kill switch, and checks to prevent trading at extreme market prices.
 
 ### Dashboard
-- The dashboard displays live BTC prices, a 15-minute market card showing signal, entry, peak, profit protection status, P&L, and re-entry counts. An activity log provides detailed bot actions. Includes Scan Wallet and Force Redeem buttons for manual position recovery.
+- The dashboard displays live BTC prices, a 15-minute market card showing signal, entry, peak, profit protection status, unrealized/cumulative gross P&L, estimated fees, net P&L (after fees), and re-entry counts. An activity log provides detailed bot actions. Includes Scan Wallet and Force Redeem buttons for manual position recovery.
+
+### Persistent Trade Log
+- `src/logger.js` saves all trades to `data/trades.json` on disk, surviving pm2 restarts.
+- `getStats()` returns totalFees, netPnL, todayFees, todayNetPnL, and exitReasons breakdown.
+- `MomentumSession` accumulates `cumulativeFees` and `cumulativeNetPnl` per session window.
 
 ### Project Structure Highlights
 - `server.js`: Express server and bot loop orchestration.

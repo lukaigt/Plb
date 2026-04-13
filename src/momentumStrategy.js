@@ -1,13 +1,19 @@
 const { Side, OrderType } = require('@polymarket/clob-client');
 const krakenFeed = require('./krakenFeed');
 const logger = require('./logger');
-const { placeSellOrder, buildClobAuthHeaders } = require('./trader');
+const { placeSellOrder, buildClobAuthHeaders, getUsdcBalance } = require('./trader');
+
+const ESTIMATED_FEE_RATE = 0.02;
 
 const CLOB_API = 'https://clob.polymarket.com';
 
 function getMomentumConfig() {
+  const orderPctRaw = process.env.MOM_ORDER_PCT ? parseFloat(process.env.MOM_ORDER_PCT) : null;
   return {
     orderSize:         parseFloat(process.env.MOM_ORDER_SIZE)         || 5,
+    orderPct:          orderPctRaw,
+    orderPctMin:       parseFloat(process.env.MOM_ORDER_PCT_MIN)      || 2,
+    orderPctMax:       parseFloat(process.env.MOM_ORDER_PCT_MAX)      || 20,
     trailingStop:      parseFloat(process.env.MOM_TRAILING_STOP)      || 0.05,
     trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.10,
     stopLossCents:     parseFloat(process.env.MOM_STOP_LOSS)          || 0.18,
@@ -20,7 +26,8 @@ function getMomentumConfig() {
     refreshInterval:   parseInt(process.env.MM_REFRESH_INTERVAL)      || 10,
     marketType:        process.env.MOM_MARKET_TYPE                    || '15m',
     maxFlips:          parseInt(process.env.MOM_MAX_FLIPS)            || 3,
-    flipMinSeconds:    parseInt(process.env.MOM_FLIP_MIN_SECONDS)     || 45
+    flipMinSeconds:    parseInt(process.env.MOM_FLIP_MIN_SECONDS)     || 45,
+    volFilter:         process.env.MOM_VOL_FILTER !== 'false'
   };
 }
 
@@ -111,12 +118,14 @@ class MomentumSession {
 
     this._resetTradeLeg();
 
-    this.flipCount     = 0;
-    this.cumulativePnl = 0;
-    this.totalSpent    = 0;
-    this.tradeIds      = [];
-    this.btcChange3m   = null;
-    this.lastMid       = null;
+    this.flipCount          = 0;
+    this.cumulativePnl      = 0;
+    this.cumulativeFees     = 0;
+    this.cumulativeNetPnl   = 0;
+    this.totalSpent         = 0;
+    this.tradeIds           = [];
+    this.btcChange3m        = null;
+    this.lastMid            = null;
   }
 
   _resetTradeLeg() {
@@ -139,6 +148,8 @@ class MomentumSession {
     this.peakMid           = null;
     this.trailingStopLevel = null;
     this.trailingActive    = false;
+
+    this.estimatedBuyFee   = 0;
 
     this._lastFillDebugLog  = 0;
     this._lastMidDebugLog   = 0;
@@ -181,6 +192,18 @@ class MomentumSession {
         const ctx = krakenFeed.getPriceContext();
         logger.addActivity('mom_skip', {
           message: `[${this.market.coin}-${this.market.type}] No momentum signal — BTC 3m: ${ctx.change3m?.percent || '?'}% (need ±${this.config.momentumThreshold}%) | retrying every 10s | ${Math.round(this.secondsLeft)}s left`
+        });
+        this.lastNoSignalLog = now;
+      }
+      return;
+    }
+
+    if (this.config.volFilter && krakenFeed.isChoppyMarket()) {
+      const now = Date.now();
+      if (now - this.lastNoSignalLog >= 60000) {
+        const ctx = krakenFeed.getPriceContext();
+        logger.addActivity('mom_skip', {
+          message: `[${this.market.coin}-${this.market.type}] VOL FILTER: BTC choppy — 1m: ${ctx.change1m?.percent || '?'}% vs 3m: ${ctx.change3m?.percent || '?'}% disagree — skipping entry to avoid choppy market | ${Math.round(this.secondsLeft)}s left`
         });
         this.lastNoSignalLog = now;
       }
@@ -246,10 +269,34 @@ class MomentumSession {
     }
 
     this._resetTradeLeg();
-    this.signal          = side;
-    this.tokenId         = tokenId;
-    this.entryPrice      = Math.round(mid * 100) / 100;
-    this.entrySizeTokens = parseFloat((this.config.orderSize / this.entryPrice).toFixed(2));
+    this.signal     = side;
+    this.tokenId    = tokenId;
+    this.entryPrice = Math.round(mid * 100) / 100;
+
+    let orderSize = this.config.orderSize;
+    if (this.config.orderPct) {
+      try {
+        const balance = await getUsdcBalance();
+        if (balance !== null && balance > 0) {
+          const pctSize = parseFloat((balance * this.config.orderPct).toFixed(2));
+          orderSize = Math.min(this.config.orderPctMax, Math.max(this.config.orderPctMin, pctSize));
+          logger.addActivity('mom_entry', {
+            message: `[${this.market.coin}-${this.market.type}] Dynamic sizing: balance=$${balance.toFixed(2)} × ${(this.config.orderPct * 100).toFixed(0)}% → $${orderSize.toFixed(2)} (min $${this.config.orderPctMin} / max $${this.config.orderPctMax})`
+          });
+        } else {
+          logger.addActivity('mom_entry', {
+            message: `[${this.market.coin}-${this.market.type}] Dynamic sizing: balance fetch failed or zero — falling back to fixed $${orderSize}`
+          });
+        }
+      } catch (err) {
+        logger.addActivity('mom_entry', {
+          message: `[${this.market.coin}-${this.market.type}] Dynamic sizing error: ${err.message?.slice(0, 60)} — using fixed $${orderSize}`
+        });
+      }
+    }
+
+    this.entrySizeTokens = parseFloat((orderSize / this.entryPrice).toFixed(2));
+    this._currentOrderSize = orderSize;
 
     if (reason === 'flip') {
       logger.addActivity('mom_flip', {
@@ -285,7 +332,7 @@ class MomentumSession {
 
       if (order && order.orderID) {
         this.entryOrderId = order.orderID;
-        this.totalSpent  += this.config.orderSize;
+        this.totalSpent  += this._currentOrderSize || this.config.orderSize;
         if (reason === 'flip') {
           this.flipCount++;
           logger.addActivity('mom_flip', {
@@ -340,13 +387,14 @@ class MomentumSession {
     }
 
     if (matched > 0) {
-      this.entryFilled  = true;
-      this.holdingToken = true;
-      this.filledSize   = matched;
-      this.peakMid      = this.entryPrice;
-      this.phase        = 'managing';
+      this.entryFilled      = true;
+      this.holdingToken     = true;
+      this.filledSize       = matched;
+      this.peakMid          = this.entryPrice;
+      this.phase            = 'managing';
+      this.estimatedBuyFee  = parseFloat((matched * this.entryPrice * ESTIMATED_FEE_RATE).toFixed(4));
       logger.addActivity('mom_filled', {
-        message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)})`
+        message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)}) | est. buy fee: $${this.estimatedBuyFee.toFixed(3)}`
       });
     } else if (orderStatus === 'CANCELED' || orderStatus === 'CANCELLED') {
       logger.addActivity('mom_error', {
@@ -354,13 +402,14 @@ class MomentumSession {
       });
       this.phase = 'done';
     } else if (orderStatus === 'MATCHED') {
-      this.entryFilled  = true;
-      this.holdingToken = true;
-      this.filledSize   = origSize > 0 ? origSize : this.entrySizeTokens;
-      this.peakMid      = this.entryPrice;
-      this.phase        = 'managing';
+      this.entryFilled      = true;
+      this.holdingToken     = true;
+      this.filledSize       = origSize > 0 ? origSize : this.entrySizeTokens;
+      this.peakMid          = this.entryPrice;
+      this.phase            = 'managing';
+      this.estimatedBuyFee  = parseFloat((this.filledSize * this.entryPrice * ESTIMATED_FEE_RATE).toFixed(4));
       logger.addActivity('mom_filled', {
-        message: `[${this.market.coin}-${this.market.type}] BUY FILLED (status=MATCHED) — ${this.signal} ${this.filledSize} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)})`
+        message: `[${this.market.coin}-${this.market.type}] BUY FILLED (status=MATCHED) — ${this.signal} ${this.filledSize} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)}) | est. buy fee: $${this.estimatedBuyFee.toFixed(3)}`
       });
     }
   }
@@ -516,33 +565,44 @@ class MomentumSession {
     }
 
     if (fullyFilled) {
-      const fillPrice = this.exitPostedPrice;
-      this.holdingToken  = false;
-      this.exitPrice     = fillPrice;
-      this.tradePnl      = parseFloat(((fillPrice - this.entryPrice) * this.exitFilledSoFar).toFixed(4));
-      this.cumulativePnl = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
-      this.exitOrderId   = null;
-      this.phase         = this.tradePnl > 0 ? 'flipping' : 'done';
+      const fillPrice          = this.exitPostedPrice;
+      const exitQty            = this.exitFilledSoFar;
+      const estimatedSellFee   = parseFloat((exitQty * fillPrice * ESTIMATED_FEE_RATE).toFixed(4));
+      const tradeFeeTotal      = parseFloat((this.estimatedBuyFee + estimatedSellFee).toFixed(4));
+      this.holdingToken        = false;
+      this.exitPrice           = fillPrice;
+      this.tradePnl            = parseFloat(((fillPrice - this.entryPrice) * exitQty).toFixed(4));
+      this.tradeNetPnl         = parseFloat((this.tradePnl - tradeFeeTotal).toFixed(4));
+      this.cumulativePnl       = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
+      this.cumulativeFees      = parseFloat((this.cumulativeFees + tradeFeeTotal).toFixed(4));
+      this.cumulativeNetPnl    = parseFloat((this.cumulativeNetPnl + this.tradeNetPnl).toFixed(4));
+      this.exitOrderId         = null;
+      this.phase               = this.tradePnl > 0 ? 'flipping' : 'done';
 
       logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] Exit FULLY FILLED — sold ${this.exitFilledSoFar} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
+        message: `[${this.market.coin}-${this.market.type}] Exit FULLY FILLED — sold ${exitQty} ${this.signal} @ $${fillPrice.toFixed(3)} | gross P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | fees: -$${tradeFeeTotal.toFixed(3)} | net P&L: ${this.tradeNetPnl >= 0 ? '+' : ''}$${this.tradeNetPnl.toFixed(3)} | window net: ${this.cumulativeNetPnl >= 0 ? '+' : ''}$${this.cumulativeNetPnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
       });
       return;
     }
 
     if (exitStatus === 'MATCHED') {
-      const fillPrice = this.exitPostedPrice;
-      const exitAmt = this.exitSize || totalMatched || this.filledSize || this.entrySizeTokens;
-      this.exitFilledSoFar = exitAmt;
-      this.holdingToken  = false;
-      this.exitPrice     = fillPrice;
-      this.tradePnl      = parseFloat(((fillPrice - this.entryPrice) * exitAmt).toFixed(4));
-      this.cumulativePnl = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
-      this.exitOrderId   = null;
-      this.phase         = this.tradePnl > 0 ? 'flipping' : 'done';
+      const fillPrice          = this.exitPostedPrice;
+      const exitAmt            = this.exitSize || totalMatched || this.filledSize || this.entrySizeTokens;
+      this.exitFilledSoFar     = exitAmt;
+      const estimatedSellFee   = parseFloat((exitAmt * fillPrice * ESTIMATED_FEE_RATE).toFixed(4));
+      const tradeFeeTotal      = parseFloat((this.estimatedBuyFee + estimatedSellFee).toFixed(4));
+      this.holdingToken        = false;
+      this.exitPrice           = fillPrice;
+      this.tradePnl            = parseFloat(((fillPrice - this.entryPrice) * exitAmt).toFixed(4));
+      this.tradeNetPnl         = parseFloat((this.tradePnl - tradeFeeTotal).toFixed(4));
+      this.cumulativePnl       = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
+      this.cumulativeFees      = parseFloat((this.cumulativeFees + tradeFeeTotal).toFixed(4));
+      this.cumulativeNetPnl    = parseFloat((this.cumulativeNetPnl + this.tradeNetPnl).toFixed(4));
+      this.exitOrderId         = null;
+      this.phase               = this.tradePnl > 0 ? 'flipping' : 'done';
 
       logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] Exit FILLED (status=MATCHED) — sold ${exitAmt} ${this.signal} @ $${fillPrice.toFixed(3)} | trade P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | window cumulative: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
+        message: `[${this.market.coin}-${this.market.type}] Exit FILLED (status=MATCHED) — sold ${exitAmt} ${this.signal} @ $${fillPrice.toFixed(3)} | gross P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | fees: -$${tradeFeeTotal.toFixed(3)} | net P&L: ${this.tradeNetPnl >= 0 ? '+' : ''}$${this.tradeNetPnl.toFixed(3)} | window net: ${this.cumulativeNetPnl >= 0 ? '+' : ''}$${this.cumulativeNetPnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
       });
       return;
     }
@@ -632,7 +692,10 @@ class MomentumSession {
       exitOrderId:       this.exitOrderId || null,
       unrealizedPnL,
       tradePnl:          this.tradePnl,
+      tradeNetPnl:       this.tradeNetPnl,
       cumulativePnl:     this.cumulativePnl,
+      cumulativeFees:    this.cumulativeFees,
+      cumulativeNetPnl:  this.cumulativeNetPnl,
       exitPrice:         this.exitPrice,
       flipCount:         this.flipCount,
       totalSpent:        this.totalSpent,

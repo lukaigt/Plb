@@ -174,10 +174,11 @@ async function start() {
   logger.addActivity('bot', {
     message: `Bot started — BTC HYBRID TRADER (take profit at ${(config.takeProfit * 100).toFixed(0)}¢ — 15m only)\n` +
       `  Markets:          15m only (5m disabled)\n` +
-      `  Order size:       $${config.orderSize}\n` +
+      `  Order size:       ${config.orderPct ? `${(config.orderPct * 100).toFixed(0)}% of balance (min $${config.orderPctMin} / max $${config.orderPctMax})` : `$${config.orderSize} fixed`}\n` +
       `  Take profit:      $${config.takeProfit.toFixed(2)} (sell immediately when token hits this)\n` +
       `  Profit protect:   trailing stop activates ${(config.trailingActivate * 100).toFixed(0)}¢ above entry, trails ${(config.trailingStop * 100).toFixed(0)}¢ below peak (floor = entry price)\n` +
       `  Stop loss:        -${(config.stopLossCents * 100).toFixed(0)}¢ from entry (safety net)\n` +
+      `  Vol filter:       ${config.volFilter ? 'ON — skips choppy markets (1m/3m must agree)' : 'OFF'}\n` +
       `  Re-entry:         after profitable exit, re-enter on live BTC signal (max ${config.maxFlips} per window)\n` +
       `  Signal:           ±${config.momentumThreshold}% BTC 3-min change\n` +
       `  Mid range:        $${config.midMin} – $${config.midMax}\n` +

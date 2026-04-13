@@ -258,6 +258,17 @@ function getPriceContext() {
   };
 }
 
+function isChoppyMarket() {
+  const ctx = getPriceContext();
+  if (!ctx.available || !ctx.change1m || !ctx.change3m) return false;
+
+  const pct1m = parseFloat(ctx.change1m.percent);
+  const pct3m = parseFloat(ctx.change3m.percent);
+
+  const sameDirection = (pct1m > 0 && pct3m > 0) || (pct1m < 0 && pct3m < 0);
+  return !sameDirection;
+}
+
 function buildPriceText() {
   const ctx = getPriceContext();
 
@@ -286,5 +297,6 @@ module.exports = {
   getCurrentWindowOpen,
   getWindowOpenPrice,
   getWindowStatus,
-  get5MinWindowKey
+  get5MinWindowKey,
+  isChoppyMarket
 };
