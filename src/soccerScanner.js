@@ -50,10 +50,20 @@ async function scanLiveSoccerMarkets(minVolume = 5000) {
     allEvents.push(...events);
   }
 
+  const now = new Date();
+
   for (const event of allEvents) {
     if (!event.active || event.closed) continue;
     if (!isInWindow(event.endDate)) continue;
     if (!Array.isArray(event.markets)) continue;
+
+    // Exclude games that haven't started yet.
+    // event.startDate on game-level events is the game kickoff time.
+    // (Futures markets are already excluded by the 12h endDate window.)
+    if (event.startDate) {
+      const kickoff = new Date(event.startDate);
+      if (kickoff > now) continue;
+    }
 
     for (const market of event.markets) {
       const marketKey = market.conditionId || market.id;

@@ -193,6 +193,24 @@ class BondSession {
     }
   }
 
+  async checkResolutionWhileBuying() {
+    const now     = Date.now();
+    const endDate = new Date(this.market.endDate);
+    if (now <= endDate.getTime()) return;
+
+    if (!this.market.conditionId) return;
+    const res = await checkMarketResolved(this.market.conditionId);
+    if (!res || (!res.resolved && !res.closed)) return;
+
+    logger.addActivity('bond_cancelled', {
+      message: `[Soccer] Market resolved before fill — no_fill for "${this.market.question.slice(0, 50)}"`
+    });
+    this.phase = 'done';
+    if (this.tradeId) {
+      logger.updateTrade(this.tradeId, { result: 'no_fill', exitReason: 'resolved_before_fill' });
+    }
+  }
+
   async checkResolution() {
     const now = Date.now();
     if (now - this.resolutionCheckAt < 30000) return;

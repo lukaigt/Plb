@@ -82,7 +82,8 @@ async function runFast() {
 
   const config  = getBondConfig();
   const client  = await getClient();
-  const holding = Object.values(activeSessions)
+
+  let activeCount = Object.values(activeSessions)
     .filter(s => ['buying', 'holding'].includes(s.phase)).length;
 
   for (const session of Object.values(activeSessions)) {
@@ -95,15 +96,22 @@ async function runFast() {
       if (session.phase === 'watching') {
         await session.pollPrice();
         if (session.shouldEnter()) {
-          if (holding < config.maxPositions &&
+          const canTrade = safety.canTrade();
+          if (!canTrade.allowed) continue;
+
+          if (activeCount < config.maxPositions &&
               soccerDailySpent + config.orderSize <= config.dailyMaxSpend) {
             const entered = await session.enter(client);
-            if (entered) soccerDailySpent += config.orderSize;
+            if (entered) {
+              soccerDailySpent += config.orderSize;
+              activeCount++;
+            }
           }
         }
 
       } else if (session.phase === 'buying') {
         await session.checkFill(client);
+        await session.checkResolutionWhileBuying();
 
       } else if (session.phase === 'holding') {
         await session.checkResolution();
