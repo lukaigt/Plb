@@ -103,7 +103,11 @@ class BondSession {
   }
 
   shouldEnter() {
-    return this.lastMid !== null && this.lastMid >= this.config.threshold;
+    // Must be at or above threshold but below 0.999 — at 1.000 the game is
+    // already over and Polymarket rejects prices >= 1.0 (no yield left).
+    return this.lastMid !== null
+      && this.lastMid >= this.config.threshold
+      && this.lastMid < 0.999;
   }
 
   async enter(client) {
@@ -111,7 +115,8 @@ class BondSession {
     const privateKey = process.env.WALLET_PRIVATE_KEY;
     if (!privateKey) return false;
 
-    const price    = this.lastMid;
+    // Cap price at 0.999 — CLOB rejects exactly 1.0
+    const price    = Math.min(this.lastMid, 0.999);
     const amount   = this.config.orderSize;
     const negRisk  = this.market.negRisk;
     const tickSize = this.market.tickSize || '0.01';
