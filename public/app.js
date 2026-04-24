@@ -64,6 +64,20 @@ async function updateStatus() {
     : '<span class="status-dot dot-red"></span>Stopped';
   document.getElementById('botStatus').innerHTML = dot;
 
+  const badge = document.getElementById('envBadge');
+  if (badge) {
+    if (status.port === 4000) {
+      badge.className   = 'env-badge env-live';
+      badge.textContent = '● LIVE — VPS :4000';
+    } else if (status.port === 5000) {
+      badge.className   = 'env-badge env-dev';
+      badge.textContent = '● DEV — Replit :5000 (not the live bot)';
+    } else {
+      badge.className   = 'env-badge env-unknown';
+      badge.textContent = `● PORT :${status.port || '?'}`;
+    }
+  }
+
   const safety = status.safety;
   if (safety) {
     document.getElementById('killStatus').innerHTML = safety.killSwitch

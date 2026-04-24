@@ -684,6 +684,30 @@ body {
   letter-spacing: 1px;
 }
 
+.env-badge {
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  border: 1px solid;
+}
+.env-live {
+  background: #23863622;
+  border-color: #23863666;
+  color: #3fb950;
+}
+.env-dev {
+  background: #bb800022;
+  border-color: #bb800066;
+  color: #e3b341;
+}
+.env-unknown {
+  background: #30363d;
+  border-color: #444c56;
+  color: #8b949e;
+}
+
 .market-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

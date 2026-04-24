@@ -37,7 +37,8 @@ app.use((req, res, next) => {
 
 app.get('/api/status', (req, res) => res.json({
   isRunning: soccerLoop.getSoccerRunning(),
-  safety:    safety.getStatus()
+  safety:    safety.getStatus(),
+  port:      PORT
 }));
 
 app.get('/api/activities',  (req, res) => res.json(logger.getActivities(parseInt(req.query.limit) || 60)));
