@@ -66,6 +66,35 @@
       </div>
     </div>
 
+    <div id="soccerStatsBar" class="soccer-stats-bar">
+      <div class="ss-title">&#9917; Soccer Bond</div>
+      <div class="ss-item">
+        <span class="ss-label">Status</span>
+        <span class="ss-value" id="soccerBotStatus"><span class="status-dot dot-red"></span>Off</span>
+      </div>
+      <div class="ss-item">
+        <span class="ss-label">Daily Spend</span>
+        <span class="ss-value" id="soccerDailySpend">$0.00 / $50</span>
+        <div class="progress-bar"><div class="progress-fill" id="soccerSpendProgress" style="width:0%;background:#58a6ff;"></div></div>
+      </div>
+      <div class="ss-item">
+        <span class="ss-label">Positions</span>
+        <span class="ss-value" id="soccerPositionsCount">0 active</span>
+      </div>
+      <div class="ss-item">
+        <span class="ss-label">Today Record</span>
+        <span class="ss-value" id="soccerRecord">0W / 0L</span>
+      </div>
+      <div class="ss-item">
+        <span class="ss-label">Win Rate</span>
+        <span class="ss-value" id="soccerWinRate">--</span>
+      </div>
+      <div class="ss-item">
+        <span class="ss-label">Yield Collected</span>
+        <span class="ss-value" id="soccerYield">$0.000</span>
+      </div>
+    </div>
+
     <div class="grid-top">
       <div class="stat-card">
         <div class="label">Total P&amp;L</div>
@@ -128,7 +157,11 @@
       <div class="panel">
         <div class="panel-header">
           Live Activity Feed
-          <span style="font-size:11px;color:#484f58;" id="activityCount">0 events</span>
+          <div style="display:flex;gap:6px;align-items:center;margin-left:auto;">
+            <span style="font-size:11px;color:#484f58;" id="activityCount">0 events</span>
+            <button class="btn-filter btn-filter-active" id="filterAll" onclick="setActivityFilter('all')">All</button>
+            <button class="btn-filter" id="filterSoccer" onclick="setActivityFilter('soccer')">&#9917; Soccer</button>
+          </div>
         </div>
         <div class="panel-body" id="activityPanel">
           <div class="empty-state">No activity yet. Bot will start scanning soon...</div>

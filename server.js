@@ -54,6 +54,7 @@ app.get('/api/safety',       (req, res) => res.json(safety.getStatus()));
 app.get('/api/redemptions',  (req, res) => res.json(redeemer.getRedemptionStatus()));
 app.get('/api/positions',    (req, res) => res.json(positionScanner.getScanResult()));
 app.get('/api/soccer-positions', (req, res) => res.json(soccerLoop.getPositions()));
+app.get('/api/soccer-stats',    (req, res) => res.json(soccerLoop.getSoccerStats()));
 app.get('/api/proxy-test',   async (req, res) => res.json(await testProxy()));
 
 app.post('/api/killswitch', (req, res) => {

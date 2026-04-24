@@ -5,12 +5,37 @@ const safety   = require('./safety');
 const logger   = require('./logger');
 const redeemer = require('./redeemer');
 
-let isRunning    = false;
-let scanInterval = null;
-let fastInterval = null;
+let isRunning       = false;
+let scanInterval    = null;
+let fastInterval    = null;
+let soccerDailySpent    = 0;
+let soccerWinsToday     = 0;
+let soccerLossesToday   = 0;
+let soccerYieldCollected = 0;
+let lastResetDate   = new Date().toDateString();
 
 const activeSessions = {};
 
+function resetDailyIfNeeded() {
+  const today = new Date().toDateString();
+  if (today !== lastResetDate) {
+    soccerDailySpent     = 0;
+    soccerWinsToday      = 0;
+    soccerLossesToday    = 0;
+    soccerYieldCollected = 0;
+    lastResetDate        = today;
+  }
+}
+
+function recordSessionOutcome(session) {
+  if (session.pnl === null || session.filledAmount <= 0) return;
+  if (session.pnl > 0) {
+    soccerWinsToday++;
+    soccerYieldCollected += session.pnl;
+  } else {
+    soccerLossesToday++;
+  }
+}
 async function getClient() {
   const key = process.env.WALLET_PRIVATE_KEY;
   if (!key) return null;
@@ -30,6 +55,7 @@ async function runScan() {
     for (const id of Object.keys(activeSessions)) {
       const session = activeSessions[id];
       if (session.phase === 'done') {
+        recordSessionOutcome(session);
         delete activeSessions[id];
         continue;
       }
@@ -68,6 +94,7 @@ async function runFast() {
   for (const session of Object.values(activeSessions)) {
     try {
       if (session.phase === 'done') {
+        recordSessionOutcome(session);
         delete activeSessions[session.id];
         continue;
       }
@@ -137,4 +164,28 @@ function getPositions() {
 
 function getSoccerRunning() { return isRunning; }
 
-module.exports = { start, stop, getPositions, getSoccerRunning };
+function getSoccerStats() {
+  resetDailyIfNeeded();
+  const config          = getBondConfig();
+  const positions       = Object.values(activeSessions);
+  const activePositions = positions.filter(s => ['buying', 'holding'].includes(s.phase)).length;
+  const watchingCount   = positions.filter(s => s.phase === 'watching').length;
+  const totalResolved   = soccerWinsToday + soccerLossesToday;
+  const winRate         = totalResolved > 0
+    ? parseFloat(((soccerWinsToday / totalResolved) * 100).toFixed(1))
+    : null;
+
+  return {
+    isRunning,
+    dailySpend:      parseFloat(soccerDailySpent.toFixed(2)),
+    dailyMaxSpend:   config.dailyMaxSpend,
+    activePositions,
+    watchingCount,
+    winsToday:       soccerWinsToday,
+    lossesToday:     soccerLossesToday,
+    yieldCollected:  parseFloat(soccerYieldCollected.toFixed(3)),
+    winRate
+  };
+}
+
+module.exports = { start, stop, getPositions, getSoccerRunning, getSoccerStats };

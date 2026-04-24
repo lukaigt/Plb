@@ -113,6 +113,73 @@ async function updateStats() {
   document.getElementById('pendingTrades').textContent = `Pending: ${stats.pendingTrades}`;
 }
 
+function isSoccerEvent(type) {
+  return type.startsWith('bond_') || type.startsWith('soccer_');
+}
+
+async function updateSoccerStats() {
+  const s = await api('/soccer-stats');
+  if (!s) return;
+
+  const statusEl = document.getElementById('soccerBotStatus');
+  if (statusEl) {
+    statusEl.innerHTML = s.isRunning
+      ? '<span class="status-dot dot-green"></span>Running'
+      : '<span class="status-dot dot-red"></span>Off';
+  }
+
+  const spendEl = document.getElementById('soccerDailySpend');
+  if (spendEl) {
+    spendEl.textContent = `$${s.dailySpend.toFixed(2)} / $${s.dailyMaxSpend}`;
+  }
+
+  const spendPb = document.getElementById('soccerSpendProgress');
+  if (spendPb && s.dailyMaxSpend > 0) {
+    const pct = Math.min(100, (s.dailySpend / s.dailyMaxSpend) * 100);
+    spendPb.style.width = `${pct}%`;
+    spendPb.style.background = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#58a6ff';
+  }
+
+  const posEl = document.getElementById('soccerPositionsCount');
+  if (posEl) {
+    const parts = [];
+    if (s.activePositions > 0) parts.push(`${s.activePositions} active`);
+    if (s.watchingCount > 0)   parts.push(`${s.watchingCount} watching`);
+    posEl.textContent = parts.length ? parts.join(' | ') : '0 active';
+  }
+
+  const recEl = document.getElementById('soccerRecord');
+  if (recEl) recEl.textContent = `${s.winsToday}W / ${s.lossesToday}L`;
+
+  const wrEl = document.getElementById('soccerWinRate');
+  if (wrEl) {
+    if (s.winRate !== null) {
+      wrEl.textContent = `${s.winRate}%`;
+      wrEl.className = `ss-value ${s.winRate >= 50 ? 'positive' : 'negative'}`;
+    } else {
+      wrEl.textContent = '--';
+      wrEl.className = 'ss-value';
+    }
+  }
+
+  const yieldEl = document.getElementById('soccerYield');
+  if (yieldEl) {
+    const val = s.yieldCollected;
+    yieldEl.textContent = `${val >= 0 ? '+' : ''}$${val.toFixed(3)}`;
+    yieldEl.className = `ss-value ${val > 0 ? 'positive' : val < 0 ? 'negative' : ''}`;
+  }
+}
+
+let _activityFilter = 'all';
+
+function setActivityFilter(filter) {
+  _activityFilter = filter;
+  document.getElementById('filterAll').className    = filter === 'all'    ? 'btn-filter btn-filter-active' : 'btn-filter';
+  document.getElementById('filterSoccer').className = filter === 'soccer' ? 'btn-filter btn-filter-active' : 'btn-filter';
+  updateActivities();
+}
+
+
 async function updateSoccerPositions() {
   const positions = await api('/soccer-positions');
   if (!positions) return;
@@ -201,13 +268,22 @@ async function updateSoccerLog() {
 }
 
 async function updateActivities() {
-  const activities = await api('/activities?limit=60');
+  const activities = await api('/activities?limit=100');
   if (!activities || activities.length === 0) return;
 
-  document.getElementById('activityCount').textContent = `${activities.length} events`;
+  const filtered = _activityFilter === 'soccer'
+    ? activities.filter(a => isSoccerEvent(a.type))
+    : activities;
+
+  document.getElementById('activityCount').textContent = `${filtered.length} events${_activityFilter === 'soccer' ? ' (soccer)' : ''}`;
   const panel = document.getElementById('activityPanel');
 
-  panel.innerHTML = activities.map(a => `
+  if (filtered.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No soccer events yet.</div>';
+    return;
+  }
+
+  panel.innerHTML = filtered.map(a => `
     <div class="activity-item">
       <div class="activity-time">${formatTime(a.timestamp)}</div>
       <span class="activity-type ${getTypeClass(a.type)}">${a.type}</span>
@@ -407,6 +483,7 @@ async function refreshAll() {
     updateStatus(),
     updateStats(),
     updateSoccerPositions(),
+    updateSoccerStats(),
     updateSoccerLog(),
     updateActivities(),
     updateTrades(),
