@@ -39,9 +39,10 @@ function getTypeClass(type) {
   if (type.includes('bond_done'))     return 'type-trade';
   if (type.includes('bond_fill'))     return 'type-trade';
   if (type.includes('bond_entry'))    return 'type-mm';
-  if (type.includes('bond_loss'))     return 'type-safety';
-  if (type.includes('bond_error'))    return 'type-error';
-  if (type.includes('bond_'))         return 'type-bot';
+  if (type.includes('bond_loss'))      return 'type-safety';
+  if (type.includes('bond_cancelled')) return 'type-safety';
+  if (type.includes('bond_error'))     return 'type-error';
+  if (type.includes('bond_'))          return 'type-bot';
   if (type.includes('soccer_scan'))   return 'type-scan';
   if (type.includes('trade'))         return 'type-trade';
   if (type.includes('error'))      return 'type-error';

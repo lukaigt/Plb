@@ -53,10 +53,22 @@ async function checkMarketResolved(conditionId) {
     const markets = await res.json();
     if (Array.isArray(markets) && markets.length > 0) {
       const m = markets[0];
+
+      let yesWon = null;
+      try {
+        const prices = typeof m.outcomePrices === 'string'
+          ? JSON.parse(m.outcomePrices)
+          : (Array.isArray(m.outcomePrices) ? m.outcomePrices : null);
+        if (prices && prices.length >= 2) {
+          yesWon = parseFloat(prices[0]) === 1;
+        }
+      } catch {}
+
       return {
         resolved: m.resolved === true || m.hasResolved === true,
         closed:   m.closed === true,
-        negRisk:  m.negRisk === true || m.enableNegRisk === true
+        negRisk:  m.negRisk === true || m.enableNegRisk === true,
+        yesWon
       };
     }
   } catch {}
@@ -239,8 +251,24 @@ class BondSession {
   _finalise(res) {
     if (this.phase !== 'holding') { this.phase = 'done'; return; }
 
-    const yesWon      = this.lastMid !== null ? this.lastMid >= 0.5 : true;
-    const tokens      = this.filledTokens > 0 ? this.filledTokens : (this.filledAmount / (this.entryPrice || 0.95));
+    // Derive winner from Gamma outcomePrices (authoritative).
+    // Fall back to lastMid >= 0.5 only when Gamma data is unavailable.
+    let yesWon;
+    if (res.yesWon !== null && res.yesWon !== undefined) {
+      yesWon = res.yesWon;
+    } else if (this.lastMid !== null) {
+      yesWon = this.lastMid >= 0.5;
+    } else {
+      // Cannot determine outcome — log as no_fill to avoid incorrect P&L
+      logger.addActivity('bond_error', {
+        message: `[Soccer] Cannot determine outcome for "${this.market.question.slice(0, 50)}" — logged as no_fill`
+      });
+      this.phase = 'done';
+      if (this.tradeId) logger.updateTrade(this.tradeId, { result: 'no_fill', exitReason: 'outcome_unknown' });
+      return;
+    }
+
+    const tokens = this.filledTokens > 0 ? this.filledTokens : (this.filledAmount / (this.entryPrice || 0.95));
     const grossPnl    = yesWon ? (tokens * 1.0) - this.filledAmount : -this.filledAmount;
     const fee         = this.filledAmount * ESTIMATED_FEE_RATE;
     const netPnl      = grossPnl - fee;
