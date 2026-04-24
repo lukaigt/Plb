@@ -21,35 +21,19 @@ function formatTime(iso) {
 }
 
 function getTypeClass(type) {
-  if (type.includes('mom_error'))     return 'type-error';
-  if (type.includes('mom_tp_hit'))    return 'type-trade';
-  if (type.includes('mom_sl'))        return 'type-safety';
-  if (type.includes('mom_flip'))      return 'type-trade';
-  if (type.includes('mom_peak'))      return 'type-mm';
-  if (type.includes('mom_trailing'))  return 'type-mm';
-  if (type.includes('mom_filled'))    return 'type-trade';
-  if (type.includes('mom_entry'))     return 'type-mm';
-  if (type.includes('mom_signal'))    return 'type-mm';
-  if (type.includes('mom_'))          return 'type-bot';
-  if (type.includes('mm_error'))      return 'type-error';
-  if (type.includes('mm_takeprofit')) return 'type-trade';
-  if (type.includes('mm_close'))      return 'type-safety';
-  if (type.includes('mm_'))           return 'type-mm';
-  if (type.includes('take_profit'))   return 'type-trade';
-  if (type.includes('bond_done'))     return 'type-trade';
-  if (type.includes('bond_fill'))     return 'type-trade';
-  if (type.includes('bond_entry'))    return 'type-mm';
+  if (type.includes('bond_done'))      return 'type-trade';
+  if (type.includes('bond_fill'))      return 'type-trade';
+  if (type.includes('bond_entry'))     return 'type-mm';
   if (type.includes('bond_loss'))      return 'type-safety';
   if (type.includes('bond_cancelled')) return 'type-safety';
   if (type.includes('bond_error'))     return 'type-error';
   if (type.includes('bond_'))          return 'type-bot';
-  if (type.includes('soccer_scan'))   return 'type-scan';
-  if (type.includes('trade'))         return 'type-trade';
-  if (type.includes('error'))      return 'type-error';
-  if (type.includes('safety'))     return 'type-safety';
-  if (type.includes('scan'))       return 'type-scan';
-  if (type.includes('redeem'))     return 'type-redeem';
-  if (type.includes('kraken'))     return 'type-kraken';
+  if (type.includes('soccer_scan'))    return 'type-scan';
+  if (type.includes('trade'))          return 'type-trade';
+  if (type.includes('error'))          return 'type-error';
+  if (type.includes('safety'))         return 'type-safety';
+  if (type.includes('scan'))           return 'type-scan';
+  if (type.includes('redeem'))         return 'type-redeem';
   return 'type-bot';
 }
 
@@ -60,274 +44,15 @@ function getResultBadge(result) {
   return '<span class="badge badge-failed">FAILED</span>';
 }
 
-function fmtSeconds(s) {
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${String(sec).padStart(2, '0')}`;
-}
-
-function dirBadge(dir) {
-  if (dir === 'RISING')  return '<span class="dir-badge dir-up">RISING</span>';
-  if (dir === 'FALLING') return '<span class="dir-badge dir-down">FALLING</span>';
-  return '<span class="dir-badge dir-flat">FLAT</span>';
-}
-
-function formatChangeVal(change) {
-  if (!change) return '--';
-  const pct = parseFloat(change.percent);
-  const dollars = change.dollars;
-  const cls = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
-  return `<span class="${cls}">${pct > 0 ? '+' : ''}${dollars}</span>`;
-}
-
-async function updateBtcTicker() {
-  const data = await api('/btc-price');
-  if (!data) return;
-
-  const dot  = document.getElementById('krakenDot');
-  const text = document.getElementById('krakenText');
-
-  if (!data.available) {
-    document.getElementById('btcPrice').textContent = '--';
-    document.getElementById('btcDirection').innerHTML = '<span class="dir-badge dir-flat">NO DATA</span>';
-    dot.className = 'kraken-dot dot-red';
-    text.textContent = data.connected ? 'Waiting...' : 'Disconnected';
-    return;
-  }
-
-  document.getElementById('btcPrice').textContent     = '$' + data.currentPrice.toLocaleString();
-  document.getElementById('btcDirection').innerHTML   = dirBadge(data.direction);
-  document.getElementById('btcChange1m').innerHTML    = formatChangeVal(data.change1m);
-  document.getElementById('btcChange5m').innerHTML    = formatChangeVal(data.change5m);
-  document.getElementById('btcVolatility').textContent = data.recentVolatility ? '$' + data.recentVolatility : '--';
-
-  dot.className   = 'kraken-dot dot-green';
-  text.textContent = 'Kraken Live';
-
-  const ticker = document.getElementById('btcTicker');
-  if (data.direction === 'RISING')  ticker.className = 'btc-ticker btc-ticker-up';
-  else if (data.direction === 'FALLING') ticker.className = 'btc-ticker btc-ticker-down';
-  else ticker.className = 'btc-ticker';
-}
-
-function signalBadge(signal) {
-  if (signal === 'UP')   return '<span class="dir-badge dir-up">UP</span>';
-  if (signal === 'DOWN') return '<span class="dir-badge dir-down">DOWN</span>';
-  return '<span class="dir-badge dir-flat">NONE</span>';
-}
-
-function phaseBadge(phase, session) {
-  if (phase === 'managing' && session && !session.trailingActive) {
-    return { label: 'HOLDING', cls: 'phase-holding' };
-  }
+function soccerPhaseBadge(phase) {
   const map = {
-    waiting:   { label: 'WAITING',   cls: 'phase-waiting' },
-    entering:  { label: 'ENTERING',  cls: 'phase-quoting' },
-    managing:  { label: 'PROTECTING', cls: 'phase-quoting' },
-    exiting:   { label: 'EXITING',   cls: 'phase-quoting' },
-    flipping:  { label: 'RE-ENTERING', cls: 'phase-quoting' },
-    closing:   { label: 'CLOSING',   cls: 'phase-closing' },
-    done:      { label: 'DONE',      cls: 'phase-closing' },
-    no_signal: { label: 'NO SIGNAL', cls: '' },
+    watching: '<span class="badge" style="background:#1f2d3d;color:#79c0ff;border:1px solid #1f6feb55;">WATCHING</span>',
+    buying:   '<span class="badge badge-pending">ENTERED</span>',
+    holding:  '<span class="badge" style="background:#1a2f1a;color:#3fb950;border:1px solid #3fb95044;">HOLDING</span>',
+    done:     '<span class="badge badge-win">DONE</span>',
+    lost:     '<span class="badge badge-loss">LOST</span>'
   };
-  return map[phase] || { label: phase?.toUpperCase() || 'IDLE', cls: '' };
-}
-
-function updateMarketCard15m(sessions) {
-  updateMarketCardGeneric('15m', sessions.find(s => s.type === '15m'));
-}
-
-function updateMarketCardGeneric(prefix, session) {
-  const card     = document.getElementById(`mc_${prefix}`);
-  const phaseEl  = document.getElementById(`mc_${prefix}_phase`);
-  const timerEl  = document.getElementById(`mc_${prefix}_timer`);
-  const qEl      = document.getElementById(`mc_${prefix}_question`);
-  const sigEl    = document.getElementById(`mc_${prefix}_signal`);
-  const btcEl    = document.getElementById(`mc_${prefix}_btcchange`);
-  const midEl    = document.getElementById(`mc_${prefix}_mid`);
-  const entryEl  = document.getElementById(`mc_${prefix}_entry`);
-  const peakEl   = document.getElementById(`mc_${prefix}_peak`);
-  const trailEl  = document.getElementById(`mc_${prefix}_trail`);
-  const tpEl     = document.getElementById(`mc_${prefix}_tp`);
-  const slEl     = document.getElementById(`mc_${prefix}_sl`);
-  const flipEl   = document.getElementById(`mc_${prefix}_flips`);
-  const pnlEl    = document.getElementById(`mc_${prefix}_pnl`);
-  const cpnlEl   = document.getElementById(`mc_${prefix}_cpnl`);
-  const feesEl   = document.getElementById(`mc_${prefix}_fees`);
-  const netpnlEl = document.getElementById(`mc_${prefix}_netpnl`);
-
-  if (!session) {
-    if (phaseEl) { phaseEl.textContent = 'Idle'; phaseEl.className = 'mc-phase'; }
-    timerEl.textContent = '--';
-    qEl.textContent = `No active ${prefix === '15m' ? '15-min' : '5-min'} market`;
-    if (sigEl) sigEl.innerHTML = '--';
-    if (btcEl) btcEl.textContent = '--';
-    if (midEl) midEl.textContent = '--';
-    if (entryEl) entryEl.textContent = '--';
-    if (peakEl) peakEl.textContent = '--';
-    if (trailEl) trailEl.textContent = '--';
-    if (tpEl) tpEl.textContent = '--';
-    if (slEl) slEl.textContent = '--';
-    if (flipEl) flipEl.textContent = '0';
-    if (pnlEl) pnlEl.textContent = '--';
-    if (cpnlEl) cpnlEl.textContent = '--';
-    if (feesEl) feesEl.textContent = '--';
-    if (netpnlEl) netpnlEl.textContent = '--';
-    if (card) card.className = 'market-card';
-    return;
-  }
-
-  timerEl.textContent = fmtSeconds(session.secondsLeft) + ' left';
-  qEl.textContent = session.question || '--';
-
-  const pb = phaseBadge(session.phase, session);
-  if (phaseEl) { phaseEl.textContent = pb.label; phaseEl.className = `mc-phase ${pb.cls}`; }
-
-  const isActive = ['entering', 'managing', 'exiting', 'flipping'].includes(session.phase);
-  if (card) card.className = isActive ? 'market-card market-card-quoting' : 'market-card';
-
-  if (sigEl) sigEl.innerHTML = session.signal ? signalBadge(session.signal) : '<span class="dir-badge dir-flat">WAITING</span>';
-
-  if (btcEl) {
-    if (session.btcChange3m !== null && session.btcChange3m !== undefined) {
-      const pct = parseFloat(session.btcChange3m);
-      const cls = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
-      btcEl.innerHTML = `<span class="${cls}">${pct > 0 ? '+' : ''}${pct.toFixed(3)}%</span>`;
-    } else {
-      btcEl.textContent = '--';
-    }
-  }
-
-  if (midEl) midEl.textContent = session.lastMid !== null ? '$' + session.lastMid.toFixed(3) : '--';
-  if (entryEl) entryEl.textContent = session.entryPrice !== null ? `$${session.entryPrice.toFixed(3)} (${session.signal || '--'})` : '--';
-
-  if (peakEl) {
-    if (session.peakMid !== null && session.peakMid !== undefined) {
-      peakEl.innerHTML = session.trailingActive
-        ? `<span class="positive">$${session.peakMid.toFixed(3)}</span>`
-        : `<span class="neutral">$${session.peakMid.toFixed(3)} (not yet active)</span>`;
-    } else {
-      peakEl.textContent = '--';
-    }
-  }
-
-  if (trailEl) {
-    if (session.trailingStopLevel !== null && session.trailingStopLevel !== undefined) {
-      trailEl.innerHTML = `<span class="negative">$${session.trailingStopLevel.toFixed(3)}</span>`;
-    } else {
-      const activateOffset = (window._botConfig && window._botConfig.trailingActivate) ? window._botConfig.trailingActivate : 0.05;
-      trailEl.textContent = session.entryPrice ? `activates at $${(session.entryPrice + activateOffset).toFixed(3)}` : '--';
-    }
-  }
-
-  if (tpEl) {
-    tpEl.textContent = session.takeProfitPrice !== null && session.takeProfitPrice !== undefined
-      ? `$${session.takeProfitPrice.toFixed(2)}`
-      : '--';
-  }
-
-  if (slEl) {
-    slEl.textContent = session.stopLossPrice !== null && session.stopLossPrice !== undefined
-      ? `$${session.stopLossPrice.toFixed(3)}`
-      : '--';
-  }
-
-  if (flipEl) {
-    const maxFlips = (window._botConfig && window._botConfig.maxFlips) ? window._botConfig.maxFlips : 3;
-    flipEl.textContent = `${session.flipCount || 0} / ${maxFlips}`;
-  }
-
-  if (pnlEl) {
-    if (session.unrealizedPnL !== null && session.unrealizedPnL !== undefined) {
-      const val = session.unrealizedPnL;
-      const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
-      pnlEl.innerHTML = `<span class="${cls}">${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
-    } else if (session.tradePnl !== null && session.tradePnl !== undefined && session.phase !== 'managing') {
-      const val = session.tradePnl;
-      const cls = val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
-      pnlEl.innerHTML = `<span class="${cls}">LAST ${val >= 0 ? '+' : ''}$${val.toFixed(3)}</span>`;
-    } else {
-      pnlEl.textContent = '--';
-    }
-  }
-
-  if (cpnlEl) {
-    const cum = session.cumulativePnl || 0;
-    if (cum !== 0) {
-      const cls = cum > 0 ? 'positive' : 'negative';
-      cpnlEl.innerHTML = `<span class="${cls}">${cum >= 0 ? '+' : ''}$${cum.toFixed(3)}</span>`;
-    } else {
-      cpnlEl.textContent = '$0.00';
-    }
-  }
-
-  if (feesEl) {
-    const fees = session.cumulativeFees || 0;
-    feesEl.textContent = fees > 0 ? `-$${fees.toFixed(3)}` : '--';
-  }
-
-  if (netpnlEl) {
-    const net = session.cumulativeNetPnl;
-    if (net !== null && net !== undefined && (net !== 0 || session.cumulativeFees > 0)) {
-      const cls = net > 0 ? 'positive' : net < 0 ? 'negative' : 'neutral';
-      netpnlEl.innerHTML = `<span class="${cls}">${net >= 0 ? '+' : ''}$${net.toFixed(3)}</span>`;
-    } else {
-      netpnlEl.textContent = '--';
-    }
-  }
-}
-
-function updateMarketCard5m(sessions) {
-  updateMarketCardGeneric('5m', sessions.find(s => s.type === '5m'));
-}
-
-async function updateWindowBar() {
-  const data = await api('/window-status');
-  if (!data) return;
-
-  const timerEl = document.getElementById('windowTimer');
-  const openEl  = document.getElementById('windowOpen');
-  const leadEl  = document.getElementById('windowLead');
-  const sideEl  = document.getElementById('windowSide');
-  const bar     = document.getElementById('windowBar');
-
-  if (data.secondsLeft !== undefined && data.secondsLeft !== null) {
-    timerEl.textContent = fmtSeconds(data.secondsLeft) + ' left';
-    if (data.secondsLeft <= 30 && data.secondsLeft > 0) {
-      bar.className = 'window-bar window-scalp-zone';
-    } else if (data.secondsLeft <= 90) {
-      bar.className = 'window-bar window-approaching';
-    } else {
-      bar.className = 'window-bar';
-    }
-  } else {
-    timerEl.textContent = '--:--';
-  }
-
-  openEl.textContent = data.openPrice ? '$' + data.openPrice.toLocaleString() : '--';
-
-  if (data.btcVsOpenDollars !== null && data.btcVsOpenDollars !== undefined) {
-    const sign = data.btcVsOpenRaw >= 0 ? '+' : '-';
-    leadEl.textContent  = `${sign}$${Math.abs(data.btcVsOpenDollars).toFixed(0)}`;
-    leadEl.className    = `window-value ${data.btcVsOpenRaw >= 0 ? 'positive' : 'negative'}`;
-  } else {
-    leadEl.textContent = '--';
-    leadEl.className   = 'window-value';
-  }
-
-  if (data.btcLeadingSide) {
-    sideEl.innerHTML = data.btcLeadingSide === 'UP'
-      ? '<span class="dir-badge dir-up">UP</span>'
-      : '<span class="dir-badge dir-down">DOWN</span>';
-  } else {
-    sideEl.textContent = '--';
-  }
-}
-
-async function updateMarketCards(status) {
-  if (!status) return;
-  const sessions = status.activeSessions || [];
-  updateMarketCard15m(sessions);
+  return map[phase] || `<span class="badge">${phase}</span>`;
 }
 
 async function updateStatus() {
@@ -339,19 +64,6 @@ async function updateStatus() {
     : '<span class="status-dot dot-red"></span>Stopped';
   document.getElementById('botStatus').innerHTML = dot;
 
-  if (status.lastScanTime) {
-    document.getElementById('lastScan').textContent = formatTime(status.lastScanTime);
-  }
-
-  if (status.config) {
-    const cfg = status.config;
-    window._botConfig = cfg;
-    const spreadEl = document.getElementById('spreadConfig');
-    if (spreadEl) spreadEl.textContent = `TP ${(cfg.takeProfit * 100).toFixed(0)}¢ | SL -${(cfg.stopLossCents * 100).toFixed(0)}¢`;
-    document.getElementById('orderSizeConfig').textContent = `$${cfg.orderSize} / trade`;
-    document.getElementById('scanConfig').textContent      = `Hybrid 5m+15m | ±${cfg.momentumThreshold}% signal | ${cfg.maxFlips} re-entries max`;
-  }
-
   const safety = status.safety;
   if (safety) {
     document.getElementById('killStatus').innerHTML = safety.killSwitch
@@ -362,7 +74,7 @@ async function updateStatus() {
     document.getElementById('dailyLosses').textContent = `$${safety.dailyLoss || '0.00'} / $${safety.dailyLossLimit || '50.00'}`;
 
     const netPnL = parseFloat(safety.dailyNetPnL || 0);
-    const pnlEl = document.getElementById('dailyNetPnL');
+    const pnlEl  = document.getElementById('dailyNetPnL');
     pnlEl.textContent = `$${safety.dailyNetPnL || '0.00'}`;
     pnlEl.className   = `s-value ${netPnL > 0 ? 'positive' : netPnL < 0 ? 'negative' : ''}`;
 
@@ -379,199 +91,26 @@ async function updateStatus() {
     if (safety.killSwitch) sb.classList.add('kill-switch-active');
     else sb.classList.remove('kill-switch-active');
 
-    document.getElementById('killBtn').textContent  = safety.killSwitch ? 'Disable Kill Switch' : 'Kill Switch';
-    document.getElementById('killBtn').className    = safety.killSwitch ? 'btn btn-green' : 'btn btn-yellow';
+    document.getElementById('killBtn').textContent = safety.killSwitch ? 'Disable Kill Switch' : 'Kill Switch';
+    document.getElementById('killBtn').className   = safety.killSwitch ? 'btn btn-green' : 'btn btn-yellow';
   }
-
-  updateMarketCards(status);
 }
 
 async function updateStats() {
   const stats = await api('/stats');
   if (!stats) return;
 
-  const pnl = parseFloat(stats.totalPnL);
+  const pnl   = parseFloat(stats.totalPnL);
   const pnlEl = document.getElementById('totalPnl');
   pnlEl.textContent = `$${stats.totalPnL}`;
   pnlEl.className   = `value ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral'}`;
 
-  document.getElementById('todayPnl').textContent  = `Today: $${stats.todayPnL}`;
-  document.getElementById('winRate').textContent   = `${stats.winRate}%`;
-  document.getElementById('winRate').className     = `value ${parseFloat(stats.winRate) >= 50 ? 'positive' : 'negative'}`;
-  document.getElementById('winLoss').textContent   = `${stats.wins}W / ${stats.losses}L`;
-  document.getElementById('totalTrades').textContent = stats.totalTrades;
+  document.getElementById('todayPnl').textContent      = `Today: $${stats.todayPnL}`;
+  document.getElementById('winRate').textContent       = `${stats.winRate}%`;
+  document.getElementById('winRate').className         = `value ${parseFloat(stats.winRate) >= 50 ? 'positive' : 'negative'}`;
+  document.getElementById('winLoss').textContent       = `${stats.wins}W / ${stats.losses}L`;
+  document.getElementById('totalTrades').textContent   = stats.totalTrades;
   document.getElementById('pendingTrades').textContent = `Pending: ${stats.pendingTrades}`;
-}
-
-async function updateMMLog() {
-  const activities = await api('/activities?limit=100');
-  if (!activities || activities.length === 0) return;
-
-  const mmEvents = activities.filter(a =>
-    a.type.startsWith('mom_') || a.type.startsWith('mm_') ||
-    a.type === 'scan' || a.type.includes('trade') || a.type.includes('take_profit')
-  );
-
-  const panel  = document.getElementById('mmLogPanel');
-  const countEl = document.getElementById('mmLogCount');
-  countEl.textContent = `${mmEvents.length} events`;
-
-  if (mmEvents.length === 0) {
-    panel.innerHTML = '<div class="empty-state">No market maker events yet. Start the bot to begin quoting.</div>';
-    return;
-  }
-
-  panel.innerHTML = mmEvents.map(a => {
-    const cls  = getTypeClass(a.type);
-    let icon = '';
-    if (a.type === 'mm_placed') icon = '&#9654; ';
-    if (a.type === 'mm_quote')  icon = '&#8635; ';
-    if (a.type === 'mm_close')  icon = '&#9724; ';
-    if (a.type === 'mm_done')   icon = '&#10003; ';
-    if (a.type === 'mm_error')  icon = '&#9888; ';
-    return `<div class="activity-item">
-      <div class="activity-time">${formatTime(a.timestamp)}</div>
-      <span class="activity-type ${cls}">${a.type}</span>
-      ${icon}${a.message || ''}
-    </div>`;
-  }).join('');
-}
-
-async function updateActivities() {
-  const activities = await api('/activities?limit=60');
-  if (!activities || activities.length === 0) return;
-
-  document.getElementById('activityCount').textContent = `${activities.length} events`;
-  const panel = document.getElementById('activityPanel');
-
-  panel.innerHTML = activities.map(a => `
-    <div class="activity-item">
-      <div class="activity-time">${formatTime(a.timestamp)}</div>
-      <span class="activity-type ${getTypeClass(a.type)}">${a.type}</span>
-      ${a.message || ''}
-    </div>
-  `).join('');
-}
-
-async function updateTrades() {
-  const trades = await api('/trades?limit=50');
-  if (!trades || trades.length === 0) return;
-
-  document.getElementById('tradeCount').textContent = `${trades.length} trades`;
-  const tbody = document.getElementById('tradeBody');
-
-  tbody.innerHTML = trades.map(t => {
-    const pnlStr = t.pnl !== undefined && t.pnl !== 0
-      ? `$${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}` : '--';
-    const pnlCls = t.pnl > 0 ? 'positive' : t.pnl < 0 ? 'negative' : '';
-    const isSoccer = t.strategy === 'soccer_bond';
-    const market = isSoccer
-      ? (t.eventTitle || t.question || 'SOCCER').slice(0, 28)
-      : (t.coin ? `BTC-${t.coin}` : 'BTC');
-    const marketBadge = isSoccer ? 'coin-badge-sm coin-soccer' : 'coin-badge-sm coin-btc';
-    const side = isSoccer ? 'YES' : (t.action || 'MM').replace('BUY_', '');
-
-    return `<tr>
-      <td>${formatTime(t.timestamp)}</td>
-      <td><span class="${marketBadge}">${market}</span></td>
-      <td>${side}</td>
-      <td>$${t.price?.toFixed(3) || '0.000'}</td>
-      <td>$${t.size?.toFixed(2) || '0.00'}</td>
-      <td>${getResultBadge(t.result)}</td>
-      <td class="${pnlCls}">${pnlStr}</td>
-    </tr>`;
-  }).join('');
-}
-
-function getRedeemStatusBadge(status) {
-  const map = {
-    waiting:   '<span class="badge badge-pending">WAITING</span>',
-    redeeming: '<span class="badge badge-pending">REDEEMING</span>',
-    redeemed:  '<span class="badge badge-win">COLLECTED</span>',
-    no_payout: '<span class="badge badge-loss">LOST</span>',
-    error:     '<span class="badge badge-failed">ERROR</span>'
-  };
-  return map[status] || `<span class="badge">${status}</span>`;
-}
-
-function getPositionStatusBadge(status) {
-  const map = {
-    open:               '<span class="badge badge-pending">OPEN</span>',
-    filled:             '<span class="badge badge-pending" style="background:#1f6feb33;color:#79c0ff;">FILLED</span>',
-    take_profit_sent:   '<span class="badge badge-win">TP SENT</span>',
-    cancelled:          '<span class="badge badge-failed">CANCELLED</span>',
-    tp_failed:          '<span class="badge badge-loss">TP FAIL</span>'
-  };
-  return map[status] || `<span class="badge">${status}</span>`;
-}
-
-async function updatePositions() {
-  const data = await api('/positions');
-  if (!data) return;
-
-  const open   = data.open   || [];
-  const closed = data.closed || [];
-
-  const panel   = document.getElementById('positionsPanel');
-  const countEl = document.getElementById('positionsCount');
-  const tpPct   = open.length > 0 ? (open[0].takeProfitPct * 100).toFixed(0) : '50';
-  countEl.textContent = `${open.length} open | ${closed.length} closed | TP at ${tpPct}% of max gain`;
-
-  if (open.length === 0 && closed.length === 0) {
-    panel.innerHTML = '<div class="empty-state">No position fills detected yet. Orders fill when market takers hit our bids.</div>';
-    return;
-  }
-
-  let html = '';
-
-  for (const p of open) {
-    const entryStr  = p.avgFillPrice != null ? `$${p.avgFillPrice.toFixed(3)}` : `$${p.bidPrice?.toFixed(3)}`;
-    const midStr    = p.currentMid   != null ? `$${p.currentMid.toFixed(3)}`   : '--';
-    let pnlStr = '--'; let pnlCls = '';
-    if (p.unrealizedPnL != null) {
-      pnlStr = (p.unrealizedPnL >= 0 ? '+' : '') + `$${p.unrealizedPnL.toFixed(3)}`;
-      pnlCls = p.unrealizedPnL >= 0 ? 'positive' : 'negative';
-    }
-    const tpPct = p.takeProfitPct != null ? (p.takeProfitPct * 100).toFixed(0) : '50';
-    html += `<div class="activity-item position-row">
-      <div class="activity-time">${formatTime(p.addedAt)}</div>
-      ${getPositionStatusBadge(p.status)}
-      <span class="coin-badge-sm coin-btc" style="margin-left:6px;">BTC-${p.type}</span>
-      <span class="${p.side === 'UP' ? 'positive' : 'negative'}" style="margin-left:6px;font-weight:700;">${p.side}</span>
-      <span style="margin-left:8px;color:#8b949e;font-size:12px;">in ${entryStr} → now ${midStr} | ${p.filledTokens?.toFixed(2) || '?'} tokens</span>
-      <span class="${pnlCls}" style="margin-left:auto;font-weight:600;font-size:13px;">${pnlStr}</span>
-    </div>`;
-  }
-
-  if (closed.length > 0) {
-    html += `<div style="font-size:11px;color:#484f58;padding:6px 0 2px;border-top:1px solid #21262d;margin-top:4px;">Recent exits</div>`;
-    for (const p of closed) {
-      const pnlPerToken = p.exitPrice && p.entryPrice ? (p.exitPrice - p.entryPrice) : null;
-      const pnlTotal    = pnlPerToken !== null && p.filledTokens ? pnlPerToken * p.filledTokens : null;
-      const pnlStr      = pnlTotal !== null ? `${pnlTotal > 0 ? '+' : ''}$${pnlTotal.toFixed(3)}` : '--';
-      const pnlCls      = pnlTotal !== null ? (pnlTotal > 0 ? 'positive' : 'negative') : '';
-      html += `<div class="activity-item">
-        <div class="activity-time">${formatTime(p.closedAt)}</div>
-        ${getPositionStatusBadge(p.status)}
-        <span class="coin-badge-sm coin-btc" style="margin-left:6px;">BTC-${p.type}</span>
-        <span style="margin-left:6px;font-size:12px;color:#8b949e;">${p.side} | in $${p.entryPrice?.toFixed(3)} → out $${p.exitPrice?.toFixed(3)}</span>
-        <span class="${pnlCls}" style="margin-left:auto;font-weight:600;">${pnlStr}</span>
-      </div>`;
-    }
-  }
-
-  panel.innerHTML = html;
-}
-
-function soccerPhaseBadge(phase) {
-  const map = {
-    watching: '<span class="badge" style="background:#1f2d3d;color:#79c0ff;border:1px solid #1f6feb55;">WATCHING</span>',
-    buying:   '<span class="badge badge-pending">ENTERED</span>',
-    holding:  '<span class="badge" style="background:#1a2f1a;color:#3fb950;border:1px solid #3fb95044;">HOLDING</span>',
-    done:     '<span class="badge badge-win">DONE</span>',
-    lost:     '<span class="badge badge-loss">LOST</span>'
-  };
-  return map[phase] || `<span class="badge">${phase}</span>`;
 }
 
 async function updateSoccerPositions() {
@@ -605,7 +144,7 @@ async function updateSoccerPositions() {
   }
 
   panel.innerHTML = positions.map(p => {
-    const midStr   = p.lastMid !== null && p.lastMid !== undefined ? `$${p.lastMid.toFixed(3)}` : '--';
+    const midStr   = p.lastMid   !== null && p.lastMid   !== undefined ? `$${p.lastMid.toFixed(3)}`   : '--';
     const entryStr = p.entryPrice !== null && p.entryPrice !== undefined ? `$${p.entryPrice.toFixed(3)}` : '--';
     let pnlStr = ''; let pnlCls = '';
     if (p.unrealizedPnL !== null && p.unrealizedPnL !== undefined) {
@@ -629,10 +168,88 @@ async function updateSoccerPositions() {
         ${pnlStr ? `<span class="${pnlCls}" style="font-weight:700;font-size:13px;white-space:nowrap;">${pnlStr}</span>` : ''}
       </div>
       <div style="font-size:11px;color:#8b949e;padding-left:2px;">
-        mid ${midStr}${p.phase !== 'watching' ? ` | entry ${entryStr}` : ` | threshold $${(p.threshold||0.95).toFixed(2)}`} | ${endStr}
+        mid ${midStr}${p.phase !== 'watching' ? ` | entry ${entryStr}` : ` | threshold $${(p.threshold || 0.95).toFixed(2)}`} | ${endStr}
       </div>
     </div>`;
   }).join('');
+}
+
+async function updateSoccerLog() {
+  const activities = await api('/activities?limit=100');
+  if (!activities || activities.length === 0) return;
+
+  const events = activities.filter(a =>
+    a.type.startsWith('bond_') || a.type.startsWith('soccer_') || a.type === 'bot'
+  );
+
+  const panel   = document.getElementById('mmLogPanel');
+  const countEl = document.getElementById('mmLogCount');
+  countEl.textContent = `${events.length} events`;
+
+  if (events.length === 0) {
+    panel.innerHTML = '<div class="empty-state">No soccer events yet. Bot will start scanning soon.</div>';
+    return;
+  }
+
+  panel.innerHTML = events.map(a => `
+    <div class="activity-item">
+      <div class="activity-time">${formatTime(a.timestamp)}</div>
+      <span class="activity-type ${getTypeClass(a.type)}">${a.type}</span>
+      ${a.message || ''}
+    </div>
+  `).join('');
+}
+
+async function updateActivities() {
+  const activities = await api('/activities?limit=60');
+  if (!activities || activities.length === 0) return;
+
+  document.getElementById('activityCount').textContent = `${activities.length} events`;
+  const panel = document.getElementById('activityPanel');
+
+  panel.innerHTML = activities.map(a => `
+    <div class="activity-item">
+      <div class="activity-time">${formatTime(a.timestamp)}</div>
+      <span class="activity-type ${getTypeClass(a.type)}">${a.type}</span>
+      ${a.message || ''}
+    </div>
+  `).join('');
+}
+
+async function updateTrades() {
+  const trades = await api('/trades?limit=50');
+  if (!trades || trades.length === 0) return;
+
+  document.getElementById('tradeCount').textContent = `${trades.length} trades`;
+  const tbody = document.getElementById('tradeBody');
+
+  tbody.innerHTML = trades.map(t => {
+    const pnlStr = t.pnl !== undefined && t.pnl !== 0
+      ? `$${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}` : '--';
+    const pnlCls = t.pnl > 0 ? 'positive' : t.pnl < 0 ? 'negative' : '';
+    const market = (t.eventTitle || t.question || 'SOCCER').slice(0, 30);
+
+    return `<tr>
+      <td>${formatTime(t.timestamp)}</td>
+      <td><span class="coin-badge-sm coin-soccer">${market}</span></td>
+      <td>YES</td>
+      <td>$${t.price?.toFixed(3) || '0.000'}</td>
+      <td>$${t.size?.toFixed(2) || '0.00'}</td>
+      <td>${getResultBadge(t.result)}</td>
+      <td class="${pnlCls}">${pnlStr}</td>
+    </tr>`;
+  }).join('');
+}
+
+function getRedeemStatusBadge(status) {
+  const map = {
+    waiting:   '<span class="badge badge-pending">WAITING</span>',
+    redeeming: '<span class="badge badge-pending">REDEEMING</span>',
+    redeemed:  '<span class="badge badge-win">COLLECTED</span>',
+    no_payout: '<span class="badge badge-loss">LOST</span>',
+    error:     '<span class="badge badge-failed">ERROR</span>'
+  };
+  return map[status] || `<span class="badge">${status}</span>`;
 }
 
 async function updateRedemptions() {
@@ -651,7 +268,7 @@ async function updateRedemptions() {
 
   let html = '';
   if (data.safeAddress) {
-    const addr = data.safeAddress;
+    const addr  = data.safeAddress;
     const short = addr.length > 12 ? `${addr.slice(0, 10)}...${addr.slice(-6)}` : addr;
     html += `<div class="activity-item" style="border-left:2px solid #58a6ff;"><span class="activity-type type-bot">proxy wallet</span> ${short}</div>`;
   }
@@ -659,7 +276,7 @@ async function updateRedemptions() {
     html += `<div class="activity-item">
       <div class="activity-time">${formatTime(p.addedAt)}</div>
       ${getRedeemStatusBadge(p.status)}
-      <span style="margin-left:6px;">${p.question || 'BTC Trade'}</span>
+      <span style="margin-left:6px;">${p.question || 'Soccer Trade'}</span>
       <span style="color:#484f58;font-size:11px;margin-left:auto;">$${p.size?.toFixed(2) || '?'} ${p.side || ''}</span>
     </div>`;
   }
@@ -667,23 +284,11 @@ async function updateRedemptions() {
     html += `<div class="activity-item">
       <div class="activity-time">${formatTime(h.redeemedAt)}</div>
       ${getRedeemStatusBadge(h.status)}
-      <span style="margin-left:6px;">${h.question || 'BTC Trade'}</span>
+      <span style="margin-left:6px;">${h.question || 'Soccer Trade'}</span>
       <span style="color:#484f58;font-size:11px;margin-left:auto;">$${h.size?.toFixed(2) || '?'}${h.txHash ? ' | TX: ' + h.txHash.slice(0, 12) + '...' : ''}</span>
     </div>`;
   }
   panel.innerHTML = html;
-}
-
-async function startBot() {
-  const res = await api('/bot/start', 'POST');
-  if (res) alert(res.message);
-  updateStatus();
-}
-
-async function stopBot() {
-  const res = await api('/bot/stop', 'POST');
-  if (res) alert(res.message);
-  updateStatus();
 }
 
 async function toggleKillSwitch() {
@@ -692,21 +297,10 @@ async function toggleKillSwitch() {
   updateStatus();
 }
 
-async function scanNow() {
-  const btn = document.querySelector('.btn-blue');
-  btn.textContent = 'Scanning...';
-  btn.disabled = true;
-  const res = await api('/bot/scan-now', 'POST');
-  if (res) alert(res.message);
-  btn.textContent = 'Scan Now';
-  btn.disabled = false;
-  refreshAll();
-}
-
 async function scanWallet() {
   const btn = document.querySelector('.btn-purple');
   btn.textContent = 'Scanning...';
-  btn.disabled = true;
+  btn.disabled    = true;
   const res = await api('/scan-positions', 'POST');
   if (res) {
     if (res.redeemable > 0) alert(`Found ${res.found} position(s), queued ${res.redeemable} for on-chain check. Press Force Redeem to collect resolved ones.`);
@@ -714,14 +308,14 @@ async function scanWallet() {
     else alert(res.error ? `Scan failed: ${res.error}` : 'No positions found.');
   }
   btn.textContent = 'Scan Wallet';
-  btn.disabled = false;
+  btn.disabled    = false;
   refreshAll();
 }
 
 async function forceRedeem() {
   const btn = document.querySelector('.btn-orange');
   btn.textContent = 'Redeeming...';
-  btn.disabled = true;
+  btn.disabled    = true;
   const res = await api('/force-redeem', 'POST');
   if (res) {
     if (res.redeemed > 0) alert(`Redeemed ${res.redeemed} position(s)!`);
@@ -729,7 +323,7 @@ async function forceRedeem() {
     else alert(res.error ? `Redeem failed: ${res.error}` : 'No positions to redeem.');
   }
   btn.textContent = 'Force Redeem';
-  btn.disabled = false;
+  btn.disabled    = false;
   refreshAll();
 }
 
@@ -742,9 +336,8 @@ function escapeHtml(str) {
 }
 
 function getErrorTypeClass(type) {
-  if (type.includes('error')) return 'error-type-error';
-  if (type.includes('fill_debug')) return 'error-type-debug';
-  if (type.includes('safety') || type.includes('mom_sl')) return 'error-type-warn';
+  if (type.includes('error'))  return 'error-type-error';
+  if (type.includes('safety')) return 'error-type-warn';
   return 'error-type-debug';
 }
 
@@ -753,7 +346,7 @@ async function updateErrorPanel() {
   const errors = await api('/errors?limit=200');
   if (!errors) return;
 
-  const panel = document.getElementById('errorPanel');
+  const panel   = document.getElementById('errorPanel');
   const countEl = document.getElementById('errorCount');
   countEl.textContent = `${errors.length} events`;
 
@@ -763,7 +356,7 @@ async function updateErrorPanel() {
   }
 
   panel.innerHTML = errors.map(e => {
-    const shortType = e.type.replace('fill_debug', 'DEBUG').replace('mom_error', 'ERROR').replace('mm_error', 'ERROR').replace('safety_block', 'SAFETY').replace('data_error', 'DATA_ERR');
+    const shortType = e.type.replace('bond_error', 'ERROR').replace('safety_block', 'SAFETY').replace('data_error', 'DATA_ERR');
     return `<div class="error-item">
       <span class="error-time">${escapeHtml(formatTime(e.timestamp))}</span>
       <span class="error-type ${getErrorTypeClass(e.type)}">${escapeHtml(shortType)}</span>
@@ -775,15 +368,12 @@ async function updateErrorPanel() {
 function copyErrors() {
   const panel = document.getElementById('errorPanel');
   const items = panel.querySelectorAll('.error-item');
-  if (items.length === 0) {
-    alert('No errors to copy');
-    return;
-  }
+  if (items.length === 0) { alert('No errors to copy'); return; }
 
   const lines = Array.from(items).map(item => {
     const time = item.querySelector('.error-time')?.textContent || '';
     const type = item.querySelector('.error-type')?.textContent || '';
-    const msg = item.textContent.replace(time, '').replace(type, '').trim();
+    const msg  = item.textContent.replace(time, '').replace(type, '').trim();
     return `[${time}] [${type.trim()}] ${msg}`;
   });
 
@@ -814,15 +404,13 @@ function clearErrorPanel() {
 
 async function refreshAll() {
   await Promise.all([
-    updateBtcTicker(),
-    updateWindowBar(),
     updateStatus(),
     updateStats(),
-    updateMMLog(),
+    updateSoccerPositions(),
+    updateSoccerLog(),
     updateActivities(),
     updateTrades(),
     updateRedemptions(),
-    updateSoccerPositions(),
     updateErrorPanel()
   ]);
 }

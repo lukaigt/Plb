@@ -3,20 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BTC Swing Trader</title>
+  <title>Soccer Bond Bot</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="header">
     <div class="header-left">
-      <h1>BTC Swing Trader</h1>
-      <span class="strategy-badge">TAKE PROFIT AT 70¢ — 15M ONLY</span>
+      <h1>&#9917; Soccer Bond Bot</h1>
+      <span class="strategy-badge">BUY YES AT 95¢ &mdash; HOLD TO $1.00</span>
     </div>
     <div class="header-controls">
-      <button class="btn btn-blue"   onclick="scanNow()">Scan Now</button>
-      <button class="btn btn-green"  id="startBtn" onclick="startBot()">Start Bot</button>
-      <button class="btn btn-red"    id="stopBtn"  onclick="stopBot()">Stop Bot</button>
-      <button class="btn btn-yellow" id="killBtn"  onclick="toggleKillSwitch()">Kill Switch</button>
+      <button class="btn btn-yellow" id="killBtn" onclick="toggleKillSwitch()">Kill Switch</button>
       <button class="btn btn-purple" onclick="scanWallet()">Scan Wallet</button>
       <button class="btn btn-orange" onclick="forceRedeem()">Force Redeem</button>
     </div>
@@ -24,113 +21,14 @@
 
   <div class="container">
 
-    <div id="btcTicker" class="btc-ticker">
-      <div class="btc-ticker-left">
-        <span class="btc-label">BTC/USD</span>
-        <span class="btc-price" id="btcPrice">--</span>
-        <span class="btc-direction" id="btcDirection">--</span>
-      </div>
-      <div class="btc-ticker-right">
-        <div class="btc-change-group"><span class="btc-change-label">1m</span><span class="btc-change-val" id="btcChange1m">--</span></div>
-        <div class="btc-change-group"><span class="btc-change-label">5m</span><span class="btc-change-val" id="btcChange5m">--</span></div>
-        <div class="btc-change-group"><span class="btc-change-label">Vol</span><span class="btc-change-val" id="btcVolatility">--</span></div>
-        <div class="kraken-status" id="krakenStatus">
-          <span class="kraken-dot" id="krakenDot"></span>
-          <span id="krakenText">Kraken</span>
-        </div>
-      </div>
-    </div>
-
-    <div id="windowBar" class="window-bar">
-      <div class="window-section">
-        <span class="window-label">5-MIN WINDOW</span>
-        <span class="window-timer" id="windowTimer">--:--</span>
-      </div>
-      <div class="window-section">
-        <span class="window-label">BTC Open</span>
-        <span class="window-value" id="windowOpen">--</span>
-      </div>
-      <div class="window-section">
-        <span class="window-label">BTC vs Open</span>
-        <span class="window-value" id="windowLead">--</span>
-      </div>
-      <div class="window-section">
-        <span class="window-label">Leading Side</span>
-        <span class="window-value" id="windowSide">--</span>
-      </div>
-    </div>
-
-    <div class="market-grid" id="marketGrid">
-      <div class="market-card" id="mc_15m">
-        <div class="mc-header">
-          <span class="mc-badge mc-15m">15-MIN ACTIVE</span>
-          <span class="mc-phase" id="mc_15m_phase">Idle</span>
-          <span class="mc-timer" id="mc_15m_timer">--</span>
-        </div>
-        <div class="mc-question" id="mc_15m_question">No active market</div>
-        <div class="mc-body">
-          <div class="mc-row">
-            <span class="mc-label">BTC Signal</span>
-            <span class="mc-val" id="mc_15m_signal">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">BTC 3m Change</span>
-            <span class="mc-val" id="mc_15m_btcchange">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Token Mid</span>
-            <span class="mc-val" id="mc_15m_mid">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Entry Price</span>
-            <span class="mc-val" id="mc_15m_entry">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Peak Price</span>
-            <span class="mc-val" id="mc_15m_peak">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Profit Protection</span>
-            <span class="mc-val" id="mc_15m_trail">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Take Profit</span>
-            <span class="mc-val" id="mc_15m_tp" style="color:#3fb950;">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Stop Loss</span>
-            <span class="mc-val" id="mc_15m_sl">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Re-entries</span>
-            <span class="mc-val" id="mc_15m_flips">0</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Unrealized P&amp;L</span>
-            <span class="mc-val" id="mc_15m_pnl">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Cumulative Gross P&amp;L</span>
-            <span class="mc-val" id="mc_15m_cpnl">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Est. Fees This Window</span>
-            <span class="mc-val" id="mc_15m_fees" style="color:#e3b341;">--</span>
-          </div>
-          <div class="mc-row">
-            <span class="mc-label">Net P&amp;L (after fees)</span>
-            <span class="mc-val" id="mc_15m_netpnl">--</span>
-          </div>
-        </div>
-      </div>
-
+    <div class="market-grid" id="marketGrid" style="grid-template-columns:1fr;">
       <div class="market-card" id="mc_soccer">
         <div class="mc-header">
-          <span class="mc-badge mc-soccer">&#9917; SOCCER BOND</span>
+          <span class="mc-badge mc-soccer">&#9917; SOCCER BOND — LIVE POSITIONS</span>
           <span class="mc-phase" id="mc_soccer_count" style="font-size:12px;color:#8b949e;">0 watching</span>
         </div>
         <div class="mc-question" id="mc_soccer_status">Buy YES at 95¢+, hold to $1.00 resolution</div>
-        <div class="mc-body" id="soccerPanel" style="max-height:340px;overflow-y:auto;padding:0;">
+        <div class="mc-body" id="soccerPanel" style="max-height:400px;overflow-y:auto;padding:0;">
           <div class="empty-state" style="padding:24px 12px;">No live soccer markets yet — scanning every 2 min</div>
         </div>
       </div>
@@ -144,18 +42,6 @@
       <div class="safety-item">
         <span class="s-label">Kill Switch</span>
         <span class="s-value" id="killStatus">OFF</span>
-      </div>
-      <div class="safety-item">
-        <span class="s-label">Strategy</span>
-        <span class="s-value" style="color:#58a6ff;font-size:12px;">Hybrid Hold</span>
-      </div>
-      <div class="safety-item">
-        <span class="s-label">TP / SL</span>
-        <span class="s-value" id="spreadConfig" style="color:#d29922;">5¢ / -12¢</span>
-      </div>
-      <div class="safety-item">
-        <span class="s-label">Order Size</span>
-        <span class="s-value" id="orderSizeConfig" style="color:#79c0ff;">$10 / trade</span>
       </div>
       <div class="safety-item">
         <span class="s-label">Today Record</span>
@@ -199,17 +85,17 @@
       <div class="stat-card">
         <div class="label">Last Scan</div>
         <div class="value neutral" id="lastScan" style="font-size:16px;">Never</div>
-        <div class="sub" id="scanConfig">MM mode</div>
+        <div class="sub" id="scanConfig">Soccer markets</div>
       </div>
     </div>
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        Momentum Activity
+        Soccer Activity
         <span style="font-size:11px;color:#484f58;" id="mmLogCount">0 events</span>
       </div>
       <div class="panel-body" id="mmLogPanel" style="max-height:400px;">
-        <div class="empty-state">No momentum events yet. Start the bot to begin trading.</div>
+        <div class="empty-state">No soccer events yet. Bot will start scanning soon.</div>
       </div>
     </div>
 
@@ -230,7 +116,7 @@
 
     <div class="panel" style="margin-bottom:20px;">
       <div class="panel-header">
-        Auto-Redeem — Position Collection
+        Auto-Redeem &mdash; Position Collection
         <span style="font-size:11px;color:#484f58;" id="redeemCount">0 tracked</span>
       </div>
       <div class="panel-body" id="redeemPanel" style="max-height:300px;">
@@ -259,7 +145,7 @@
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Market</th>
+                <th>Match</th>
                 <th>Side</th>
                 <th>Price</th>
                 <th>Size</th>

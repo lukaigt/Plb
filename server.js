@@ -17,16 +17,13 @@ JSON.stringify = function(value, replacer, space) {
 const { setupProxy, testProxy } = require('./src/proxy');
 setupProxy();
 
-const express        = require('express');
-const path           = require('path');
-const botLoop        = require('./src/botLoop');
-const safety         = require('./src/safety');
-const logger         = require('./src/logger');
-const redeemer       = require('./src/redeemer');
-const positionScanner  = require('./src/positionScanner');
-const krakenFeed           = require('./src/krakenFeed');
-const { getMomentumConfig } = require('./src/momentumStrategy');
-const soccerLoop     = require('./src/soccerLoop');
+const express         = require('express');
+const path            = require('path');
+const safety          = require('./src/safety');
+const logger          = require('./src/logger');
+const redeemer        = require('./src/redeemer');
+const positionScanner = require('./src/positionScanner');
+const soccerLoop      = require('./src/soccerLoop');
 
 const app  = express();
 const PORT = parseInt(process.env.PORT) || 4000;
@@ -38,50 +35,30 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/api/status',      (req, res) => res.json(botLoop.getStatus()));
+app.get('/api/status', (req, res) => res.json({
+  isRunning: soccerLoop.getSoccerRunning(),
+  safety:    safety.getStatus()
+}));
+
 app.get('/api/activities',  (req, res) => res.json(logger.getActivities(parseInt(req.query.limit) || 60)));
 app.get('/api/errors',      (req, res) => {
   const limit = parseInt(req.query.limit) || 200;
-  const all = logger.getActivities(limit);
-  const errorTypes = ['error', 'mom_error', 'mm_error', 'fill_debug', 'safety_block', 'mom_sl', 'data_error', 'position_scanner_error'];
+  const all   = logger.getActivities(limit);
+  const errorTypes = ['error', 'bond_error', 'bond_cancelled', 'safety_block', 'data_error', 'position_scanner_error'];
   const errors = all.filter(a => errorTypes.some(t => a.type.includes(t)) || (a.message && /error|fail|null|timeout|cancel/i.test(a.message)));
   res.json(errors);
 });
-app.get('/api/trades',      (req, res) => res.json(logger.getTradeHistory(parseInt(req.query.limit) || 50)));
-app.get('/api/stats',       (req, res) => res.json(logger.getStats()));
-app.get('/api/safety',      (req, res) => res.json(safety.getStatus()));
-app.get('/api/redemptions', (req, res) => res.json(redeemer.getRedemptionStatus()));
-app.get('/api/positions',       (req, res) => res.json(positionScanner.getScanResult()));
+app.get('/api/trades',       (req, res) => res.json(logger.getTradeHistory(parseInt(req.query.limit) || 50)));
+app.get('/api/stats',        (req, res) => res.json(logger.getStats()));
+app.get('/api/safety',       (req, res) => res.json(safety.getStatus()));
+app.get('/api/redemptions',  (req, res) => res.json(redeemer.getRedemptionStatus()));
+app.get('/api/positions',    (req, res) => res.json(positionScanner.getScanResult()));
 app.get('/api/soccer-positions', (req, res) => res.json(soccerLoop.getPositions()));
-app.get('/api/btc-price',   (req, res) => res.json(krakenFeed.getPriceContext()));
-app.get('/api/window-status', (req, res) => res.json(krakenFeed.getWindowStatus()));
-app.get('/api/proxy-test',  async (req, res) => res.json(await testProxy()));
+app.get('/api/proxy-test',   async (req, res) => res.json(await testProxy()));
 
 app.post('/api/killswitch', (req, res) => {
   const newState = safety.toggleKillSwitch();
-  if (newState) botLoop.stop();
-  res.json({ killSwitch: newState, message: newState ? 'Kill switch ACTIVATED — bot stopped' : 'Kill switch OFF' });
-});
-
-app.post('/api/bot/start', (req, res) => {
-  if (safety.killSwitch) return res.json({ success: false, message: 'Cannot start: kill switch is ON' });
-  botLoop.start();
-  res.json({ success: true, message: 'Bot started' });
-});
-
-app.post('/api/bot/stop', (req, res) => {
-  botLoop.stop();
-  res.json({ success: true, message: 'Bot stopped' });
-});
-
-app.post('/api/bot/scan-now', async (req, res) => {
-  if (safety.killSwitch) return res.json({ success: false, message: 'Kill switch is ON' });
-  try {
-    await botLoop.runOnce();
-    res.json({ success: true, message: 'Manual scan completed' });
-  } catch (err) {
-    res.json({ success: false, message: err.message });
-  }
+  res.json({ killSwitch: newState, message: newState ? 'Kill switch ACTIVATED — trading halted' : 'Kill switch OFF — trading resumed' });
 });
 
 app.post('/api/scan-positions', async (req, res) => {
@@ -103,7 +80,7 @@ app.post('/api/force-redeem', async (req, res) => {
       logger.addActivity('bot', { message: 'No pending redemptions — scanning wallet first...' });
       await positionScanner.scanExistingPositions();
     }
-    const before = redeemer.getRedemptionStatus().totalRedeemed;
+    const before  = redeemer.getRedemptionStatus().totalRedeemed;
     await redeemer.checkAndRedeem();
     const updated = redeemer.getRedemptionStatus();
     res.json({ success: true, pending: updated.pending.length, redeemed: updated.totalRedeemed - before });
@@ -113,37 +90,16 @@ app.post('/api/force-redeem', async (req, res) => {
 });
 
 app.get('/favicon.ico', (req, res) => res.status(204).end());
-
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.listen(PORT, '0.0.0.0', () => {
-  const cfg = getMomentumConfig();
   console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
-  console.log('Starting BTC Hybrid Trader (take profit at 70¢ — 15m only)...');
-  console.log(`Markets:        15m only (5m disabled)`);
-  console.log(`Wallet Key:     ${process.env.WALLET_PRIVATE_KEY ? 'SET' : 'NOT SET'}`);
-  console.log(`CLOB API Key:   ${process.env.POLY_API_KEY ? 'SET' : 'NOT SET'}`);
-  console.log(`Order size:     $${cfg.orderSize} per trade`);
-  console.log(`Take profit:    $${cfg.takeProfit.toFixed(2)} (sell immediately when token hits this price)`);
-  console.log(`Profit trail:   ${(cfg.trailingStop * 100).toFixed(0)}¢ below peak (floor = entry price)`);
-  console.log(`Stop loss:      -${(cfg.stopLossCents * 100).toFixed(0)}¢ from entry (safety net)`);
-  console.log(`Max re-entries: ${cfg.maxFlips} per window`);
-  console.log(`Re-entry min:   ${cfg.flipMinSeconds}s remaining`);
-  console.log(`Signal:         ±${cfg.momentumThreshold}% BTC 3-min change`);
-  console.log(`Mid range:      $${cfg.midMin} – $${cfg.midMax}`);
-  console.log(`15m timing:     entry after ${cfg.entryAfterSeconds}s | close final ${cfg.closeSeconds}s`);
-  console.log(`Daily loss limit: $${process.env.DAILY_LOSS_LIMIT || 50}`);
-  console.log(`Proxy:          ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
+  console.log(`Wallet Key: ${process.env.WALLET_PRIVATE_KEY ? 'SET' : 'NOT SET'}`);
+  console.log(`Proxy:      ${process.env.PROXY_URL ? 'CONFIGURED' : 'NOT SET'}`);
 
   testProxy().then(result => {
     console.log(`Outgoing IP: ${result.ip} (proxy ${result.proxyActive ? 'ACTIVE' : 'NOT active'})`);
   });
-
-  krakenFeed.connect();
-  console.log('Kraken BTC/USD feed starting...');
-  botLoop.start();
 
   const soccerEnabled = process.env.SOCCER_ENABLED !== 'false';
   if (soccerEnabled && process.env.WALLET_PRIVATE_KEY) {
