@@ -9,11 +9,10 @@ const ESTIMATED_FEE_RATE = 0.02;
 
 function getBondConfig() {
   return {
-    threshold:     parseFloat(process.env.BOND_THRESHOLD)       || 0.95,
-    orderSize:     parseFloat(process.env.BOND_ORDER_SIZE)      || 5,
-    maxPositions:  parseInt(process.env.BOND_MAX_POSITIONS)     || 5,
-    minVolume:     parseFloat(process.env.BOND_MIN_VOLUME)      || 5000,
-    dailyMaxSpend: parseFloat(process.env.BOND_DAILY_MAX_SPEND) || 50
+    threshold:    parseFloat(process.env.BOND_THRESHOLD)   || 0.95,
+    orderSize:    parseFloat(process.env.BOND_ORDER_SIZE)  || 5,
+    maxPositions: parseInt(process.env.BOND_MAX_POSITIONS) || 5,
+    minVolume:    parseFloat(process.env.BOND_MIN_VOLUME)  || 5000
   };
 }
 

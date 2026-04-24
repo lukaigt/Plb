@@ -5,21 +5,11 @@ const safety   = require('./safety');
 const logger   = require('./logger');
 const redeemer = require('./redeemer');
 
-let isRunning       = false;
-let scanInterval    = null;
-let fastInterval    = null;
-let soccerDailySpent = 0;
-let lastResetDate   = new Date().toDateString();
+let isRunning    = false;
+let scanInterval = null;
+let fastInterval = null;
 
 const activeSessions = {};
-
-function resetDailyIfNeeded() {
-  const today = new Date().toDateString();
-  if (today !== lastResetDate) {
-    soccerDailySpent = 0;
-    lastResetDate    = today;
-  }
-}
 
 async function getClient() {
   const key = process.env.WALLET_PRIVATE_KEY;
@@ -29,10 +19,9 @@ async function getClient() {
 
 async function runScan() {
   if (!isRunning) return;
-  resetDailyIfNeeded();
 
-  const config     = getBondConfig();
-  const canTrade   = safety.canTrade();
+  const config   = getBondConfig();
+  const canTrade = safety.canTrade();
   if (!canTrade.allowed) return;
 
   try {
@@ -55,16 +44,7 @@ async function runScan() {
 
     for (const market of markets) {
       if (activeSessions[market.id]) continue;
-
-      const totalWatching = Object.keys(activeSessions).length;
-      if (totalWatching >= config.maxPositions * 4) continue;
       if (activeHolding >= config.maxPositions) continue;
-      if (soccerDailySpent + config.orderSize > config.dailyMaxSpend) {
-        logger.addActivity('soccer_scan', {
-          message: `Soccer daily spend cap reached ($${soccerDailySpent.toFixed(2)} / $${config.dailyMaxSpend})`
-        });
-        break;
-      }
 
       activeSessions[market.id] = new BondSession(market, config);
     }
@@ -78,10 +58,9 @@ async function runScan() {
 
 async function runFast() {
   if (!isRunning) return;
-  resetDailyIfNeeded();
 
-  const config  = getBondConfig();
-  const client  = await getClient();
+  const config = getBondConfig();
+  const client = await getClient();
 
   let activeCount = Object.values(activeSessions)
     .filter(s => ['buying', 'holding'].includes(s.phase)).length;
@@ -99,13 +78,9 @@ async function runFast() {
           const canTrade = safety.canTrade();
           if (!canTrade.allowed) continue;
 
-          if (activeCount < config.maxPositions &&
-              soccerDailySpent + config.orderSize <= config.dailyMaxSpend) {
+          if (activeCount < config.maxPositions) {
             const entered = await session.enter(client);
-            if (entered) {
-              soccerDailySpent += config.orderSize;
-              activeCount++;
-            }
+            if (entered) activeCount++;
           }
         }
 
@@ -130,7 +105,6 @@ async function runFast() {
 function start() {
   if (isRunning) return;
   isRunning = true;
-  resetDailyIfNeeded();
 
   const config = getBondConfig();
   logger.addActivity('bot', {
@@ -138,9 +112,9 @@ function start() {
       'Soccer Bond Bot started — monitoring live soccer markets',
       `  Threshold:     ${(config.threshold * 100).toFixed(0)}¢ (buy when YES token reaches this)`,
       `  Order size:    $${config.orderSize} per trade`,
-      `  Max positions: ${config.maxPositions} concurrent`,
-      `  Min volume:    $${config.minVolume.toLocaleString()} (24hr)`,
-      `  Daily max:     $${config.dailyMaxSpend} total spend`,
+      `  Max positions: ${config.maxPositions} concurrent open bets`,
+      `  Min volume:    $${config.minVolume.toLocaleString()} 24hr volume`,
+      `  Loss limit:    $${process.env.DAILY_LOSS_LIMIT || 30} daily (bot stops if hit)`,
       `  Scan interval: every 2 min | price poll: every 15s`
     ].join('\n')
   });
