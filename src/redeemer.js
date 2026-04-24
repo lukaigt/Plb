@@ -45,6 +45,7 @@ let isChecking = false;
 async function getProxyWalletAddress() {
   if (safeAddress) return safeAddress;
 
+  // 1. From CLOB SDK (set during initClient)
   const fromTrader = trader.getProxyWallet();
   if (fromTrader) {
     safeAddress = fromTrader;
@@ -52,6 +53,7 @@ async function getProxyWalletAddress() {
     return safeAddress;
   }
 
+  // 2. From .env override
   const envProxy = process.env.PROXY_WALLET_ADDRESS;
   if (envProxy) {
     safeAddress = envProxy;
@@ -59,7 +61,26 @@ async function getProxyWalletAddress() {
     return safeAddress;
   }
 
-  logger.addActivity('redeemer', { message: 'No proxy wallet found — checking EOA only. Set PROXY_WALLET_ADDRESS in .env if fills go to Safe.' });
+  // 3. Compute on-chain from SafeFactory — deterministic, no API needed
+  const privateKey = process.env.WALLET_PRIVATE_KEY;
+  if (privateKey) {
+    try {
+      const provider = await getWorkingProvider();
+      const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+      const eoaAddress = new ethers.Wallet(cleanKey).address;
+      const factory = new ethers.Contract(SAFE_FACTORY_ADDRESS, SAFE_FACTORY_ABI, provider);
+      const computed = await factory.computeProxyAddress(eoaAddress);
+      if (computed && computed !== ethers.constants.AddressZero) {
+        safeAddress = computed;
+        logger.addActivity('redeemer', { message: `Proxy wallet (SafeFactory on-chain): ${computed.substring(0, 10)}...` });
+        return safeAddress;
+      }
+    } catch (err) {
+      logger.addActivity('redeemer', { message: `SafeFactory lookup failed: ${err.message?.slice(0, 60)}` });
+    }
+  }
+
+  logger.addActivity('redeemer', { message: 'No proxy wallet found — checking EOA only. Set PROXY_WALLET_ADDRESS in .env if redemption fails.' });
   return null;
 }
 
@@ -458,10 +479,19 @@ async function checkAndRedeem() {
         continue;
       }
 
-      r.status = 'no_balance';
-      r.redeemedAt = new Date().toISOString();
-      redemptionHistory.push({ ...r });
-      zeroCount++;
+      // Both EOA and Safe show zero — only give up after 5 consecutive checks
+      // (RPC can return stale data or be temporarily unavailable)
+      r.noBalanceAttempts = (r.noBalanceAttempts || 0) + 1;
+      if (r.noBalanceAttempts >= 5) {
+        r.status = 'no_balance';
+        r.redeemedAt = new Date().toISOString();
+        redemptionHistory.push({ ...r });
+        zeroCount++;
+      } else {
+        logger.addActivity('redeemer', {
+          message: `Zero balance on check ${r.noBalanceAttempts}/5 for "${(r.question || '').slice(0, 40)}" — will retry`
+        });
+      }
     }
 
     for (let i = pendingRedemptions.length - 1; i >= 0; i--) {
