@@ -36,6 +36,13 @@ function getTypeClass(type) {
   if (type.includes('mm_close'))      return 'type-safety';
   if (type.includes('mm_'))           return 'type-mm';
   if (type.includes('take_profit'))   return 'type-trade';
+  if (type.includes('bond_done'))     return 'type-trade';
+  if (type.includes('bond_fill'))     return 'type-trade';
+  if (type.includes('bond_entry'))    return 'type-mm';
+  if (type.includes('bond_loss'))     return 'type-safety';
+  if (type.includes('bond_error'))    return 'type-error';
+  if (type.includes('bond_'))         return 'type-bot';
+  if (type.includes('soccer_scan'))   return 'type-scan';
   if (type.includes('trade'))         return 'type-trade';
   if (type.includes('error'))      return 'type-error';
   if (type.includes('safety'))     return 'type-safety';
@@ -320,7 +327,6 @@ async function updateMarketCards(status) {
   if (!status) return;
   const sessions = status.activeSessions || [];
   updateMarketCard15m(sessions);
-  updateMarketCard5m(sessions);
 }
 
 async function updateStatus() {
@@ -457,12 +463,16 @@ async function updateTrades() {
     const pnlStr = t.pnl !== undefined && t.pnl !== 0
       ? `$${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}` : '--';
     const pnlCls = t.pnl > 0 ? 'positive' : t.pnl < 0 ? 'negative' : '';
-    const market = t.coin ? `BTC-${t.coin}` : 'BTC';
-    const side = (t.action || 'MM').replace('BUY_', '');
+    const isSoccer = t.strategy === 'soccer_bond';
+    const market = isSoccer
+      ? (t.eventTitle || t.question || 'SOCCER').slice(0, 28)
+      : (t.coin ? `BTC-${t.coin}` : 'BTC');
+    const marketBadge = isSoccer ? 'coin-badge-sm coin-soccer' : 'coin-badge-sm coin-btc';
+    const side = isSoccer ? 'YES' : (t.action || 'MM').replace('BUY_', '');
 
     return `<tr>
       <td>${formatTime(t.timestamp)}</td>
-      <td><span class="coin-badge-sm coin-btc">${market}</span></td>
+      <td><span class="${marketBadge}">${market}</span></td>
       <td>${side}</td>
       <td>$${t.price?.toFixed(3) || '0.000'}</td>
       <td>$${t.size?.toFixed(2) || '0.00'}</td>
@@ -550,6 +560,78 @@ async function updatePositions() {
   }
 
   panel.innerHTML = html;
+}
+
+function soccerPhaseBadge(phase) {
+  const map = {
+    watching: '<span class="badge" style="background:#1f2d3d;color:#79c0ff;border:1px solid #1f6feb55;">WATCHING</span>',
+    buying:   '<span class="badge badge-pending">ENTERED</span>',
+    holding:  '<span class="badge" style="background:#1a2f1a;color:#3fb950;border:1px solid #3fb95044;">HOLDING</span>',
+    done:     '<span class="badge badge-win">DONE</span>',
+    lost:     '<span class="badge badge-loss">LOST</span>'
+  };
+  return map[phase] || `<span class="badge">${phase}</span>`;
+}
+
+async function updateSoccerPositions() {
+  const positions = await api('/soccer-positions');
+  if (!positions) return;
+
+  const panel    = document.getElementById('soccerPanel');
+  const countEl  = document.getElementById('mc_soccer_count');
+  const statusEl = document.getElementById('mc_soccer_status');
+  if (!panel) return;
+
+  const watching = positions.filter(p => p.phase === 'watching').length;
+  const active   = positions.filter(p => ['buying', 'holding'].includes(p.phase)).length;
+  const done     = positions.filter(p => p.phase === 'done').length;
+
+  countEl.textContent = positions.length === 0
+    ? '0 watching'
+    : `${watching} watching | ${active} active${done > 0 ? ` | ${done} done` : ''}`;
+
+  if (active > 0) {
+    const held = positions.filter(p => p.phase === 'holding');
+    const totalUnrealized = held.reduce((s, p) => s + (p.unrealizedPnL || 0), 0);
+    statusEl.textContent = `${active} position(s) held | unrealized ${totalUnrealized >= 0 ? '+' : ''}$${totalUnrealized.toFixed(3)}`;
+  } else {
+    statusEl.textContent = 'Buy YES at 95¢+, hold to $1.00 resolution';
+  }
+
+  if (positions.length === 0) {
+    panel.innerHTML = '<div class="empty-state" style="padding:24px 12px;">No live soccer markets yet — scanning every 2 min</div>';
+    return;
+  }
+
+  panel.innerHTML = positions.map(p => {
+    const midStr   = p.lastMid !== null && p.lastMid !== undefined ? `$${p.lastMid.toFixed(3)}` : '--';
+    const entryStr = p.entryPrice !== null && p.entryPrice !== undefined ? `$${p.entryPrice.toFixed(3)}` : '--';
+    let pnlStr = ''; let pnlCls = '';
+    if (p.unrealizedPnL !== null && p.unrealizedPnL !== undefined) {
+      pnlStr = (p.unrealizedPnL >= 0 ? '+' : '') + `$${p.unrealizedPnL.toFixed(3)}`;
+      pnlCls = p.unrealizedPnL >= 0 ? 'positive' : 'negative';
+    } else if (p.pnl !== null && p.pnl !== undefined) {
+      pnlStr = (p.pnl >= 0 ? '+' : '') + `$${p.pnl.toFixed(3)}`;
+      pnlCls = p.pnl >= 0 ? 'positive' : 'negative';
+    }
+
+    const question = (p.question || p.eventTitle || '').length > 52
+      ? (p.question || p.eventTitle).slice(0, 52) + '…'
+      : (p.question || p.eventTitle || 'Soccer market');
+
+    const endStr = p.minutesLeft > 0 ? `${p.minutesLeft}m left` : 'ended';
+
+    return `<div class="activity-item" style="flex-direction:column;align-items:flex-start;gap:4px;padding:8px 10px;">
+      <div style="display:flex;align-items:center;gap:6px;width:100%;">
+        ${soccerPhaseBadge(p.phase)}
+        <span style="flex:1;font-size:12px;color:#e6edf3;line-height:1.3;">${question}</span>
+        ${pnlStr ? `<span class="${pnlCls}" style="font-weight:700;font-size:13px;white-space:nowrap;">${pnlStr}</span>` : ''}
+      </div>
+      <div style="font-size:11px;color:#8b949e;padding-left:2px;">
+        mid ${midStr}${p.phase !== 'watching' ? ` | entry ${entryStr}` : ` | threshold $${(p.threshold||0.95).toFixed(2)}`} | ${endStr}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 async function updateRedemptions() {
@@ -738,8 +820,8 @@ async function refreshAll() {
     updateMMLog(),
     updateActivities(),
     updateTrades(),
-    updatePositions(),
     updateRedemptions(),
+    updateSoccerPositions(),
     updateErrorPanel()
   ]);
 }

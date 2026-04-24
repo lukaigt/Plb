@@ -556,10 +556,11 @@ body {
   font-weight: 700;
 }
 
-.coin-btc { background: #f7931a22; color: #f7931a; }
-.coin-eth { background: #627eea22; color: #627eea; }
-.coin-sol { background: #9945ff22; color: #b77dff; }
-.coin-xrp { background: #23292f; color: #c3c3c3; }
+.coin-btc    { background: #f7931a22; color: #f7931a; }
+.coin-eth    { background: #627eea22; color: #627eea; }
+.coin-sol    { background: #9945ff22; color: #b77dff; }
+.coin-xrp    { background: #23292f;   color: #c3c3c3; }
+.coin-soccer { background: #3fb95022; color: #3fb950; }
 
 .coin-status {
   font-size: 11px;
@@ -666,8 +667,9 @@ body {
   letter-spacing: 0.5px;
 }
 
-.mc-5m  { background: #f7931a22; color: #f7931a; }
-.mc-15m { background: #58a6ff22; color: #58a6ff; }
+.mc-5m     { background: #f7931a22; color: #f7931a; }
+.mc-15m    { background: #58a6ff22; color: #58a6ff; }
+.mc-soccer { background: #3fb95022; color: #3fb950; }
 
 .mc-phase {
   font-size: 12px;

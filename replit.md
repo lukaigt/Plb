@@ -1,7 +1,11 @@
-# Polymarket BTC Hybrid Trader
+# Polymarket BTC + Soccer Bond Bot
 
 ## Overview
-This project is a trading bot designed for Polymarket BTC Up/Down 15-minute markets only (5-minute trading disabled due to poor performance). Its core purpose is to capitalize on BTC momentum signals by taking positions with a fixed take-profit exit. It incorporates profit protection mechanisms and a safety net stop loss to manage risk and lock in gains. The bot focuses exclusively on BTC markets due to their liquidity on Polymarket.
+This project runs two concurrent trading bots on Polymarket:
+
+1. **BTC Momentum Bot** — Trades 15-minute BTC Up/Down markets using momentum signals. Fixed take-profit at 70¢, trailing stop protection, 18¢ safety-net stop loss.
+
+2. **Soccer Live Bond Bot** — Monitors live in-progress soccer/football games. When a YES token midpoint reaches 95¢ (near-certain outcome), automatically buys at that price and holds to $1.00 resolution. This strategy collects a near-risk-free 5¢ yield with auto-redemption via the existing redeemer.js infrastructure.
 
 ## User Preferences
 - BTC only — deepest markets, highest volume
@@ -43,14 +47,38 @@ The bot's strategy targets a fixed take-profit exit:
 - `getStats()` returns totalFees, netPnL, todayFees, todayNetPnL, and exitReasons breakdown.
 - `MomentumSession` accumulates `cumulativeFees` and `cumulativeNetPnl` per session window.
 
+### Soccer Live Bond Bot Strategy
+The soccer bot monitors Polymarket soccer/football markets for in-progress games (using the Gamma API `tag_slug=soccer/football` filter and `endDate` proximity). When a YES token midpoint reaches **BOND_THRESHOLD** (default 95¢), it places a limit buy order and holds to $1.00 resolution, collecting the near-risk-free yield. All soccer positions are tracked through the existing redeemer.js infrastructure for on-chain collection.
+
+**Soccer Bot Config (all in .env):**
+- `SOCCER_ENABLED=true` — set to `false` to disable entirely
+- `BOND_THRESHOLD=0.95` — buy when YES token reaches this price
+- `BOND_ORDER_SIZE=5` — USD per trade
+- `BOND_MAX_POSITIONS=5` — max concurrent positions
+- `BOND_MIN_VOLUME=5000` — min 24hr market volume to consider
+- `BOND_DAILY_MAX_SPEND=50` — daily cap in USD
+
+**Soccer Bot Files:**
+- `src/soccerScanner.js` — Gamma API query for live soccer markets (12h window, soccer+football tags)
+- `src/bondStrategy.js` — BondSession class (watching → buying → holding → done/lost)
+- `src/soccerLoop.js` — Scan loop (2 min) + fast loop (15s) separate from botLoop.js
+
+### Dashboard Bug Fixes Applied
+1. **Positions panel fix**: `/api/positions` previously wrapped result in `{scan: ...}`, now returns `positionScanner.getScanResult()` directly. The broken `updatePositions()` call (which targeted non-existent DOM elements) was removed from refreshAll() since `updateRedemptions()` already handles the redeemPanel correctly.
+2. **Dead 5m card removed**: The permanently-idle 5-minute market card was replaced by the Soccer Bond panel.
+3. **Trade table market column**: Now detects `strategy === 'soccer_bond'` trades and displays them with the match name instead of "BTC-undefined".
+
 ### Project Structure Highlights
-- `server.js`: Express server and bot loop orchestration.
-- `scanner.js`: Market discovery (15m only).
-- `momentumStrategy.js`: Core trading strategy logic (MomentumSession class).
-- `botLoop.js`: Main and fast bot loop execution.
+- `server.js`: Express server and bot loop orchestration (now includes soccerLoop startup).
+- `scanner.js`: Market discovery (15m BTC only).
+- `momentumStrategy.js`: Core BTC trading strategy logic (MomentumSession class).
+- `botLoop.js`: Main and fast BTC bot loop execution.
 - `trader.js`: CLOB client interaction, order placement, and authentication.
 - `redeemer.js`, `positionScanner.js`: Handle post-resolution tasks.
 - `krakenFeed.js`: Real-time BTC price data.
+- `soccerScanner.js`: Gamma API discovery for live soccer markets.
+- `bondStrategy.js`: Soccer bond session state machine.
+- `soccerLoop.js`: Independent soccer scan + fast loops.
 - `public/`: Contains dashboard HTML, CSS, and JavaScript.
 
 ## External Dependencies

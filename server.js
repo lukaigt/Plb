@@ -26,6 +26,7 @@ const redeemer       = require('./src/redeemer');
 const positionScanner  = require('./src/positionScanner');
 const krakenFeed           = require('./src/krakenFeed');
 const { getMomentumConfig } = require('./src/momentumStrategy');
+const soccerLoop     = require('./src/soccerLoop');
 
 const app  = express();
 const PORT = parseInt(process.env.PORT) || 4000;
@@ -50,9 +51,8 @@ app.get('/api/trades',      (req, res) => res.json(logger.getTradeHistory(parseI
 app.get('/api/stats',       (req, res) => res.json(logger.getStats()));
 app.get('/api/safety',      (req, res) => res.json(safety.getStatus()));
 app.get('/api/redemptions', (req, res) => res.json(redeemer.getRedemptionStatus()));
-app.get('/api/positions',   (req, res) => res.json({
-  scan:   positionScanner.getScanResult()
-}));
+app.get('/api/positions',       (req, res) => res.json(positionScanner.getScanResult()));
+app.get('/api/soccer-positions', (req, res) => res.json(soccerLoop.getPositions()));
 app.get('/api/btc-price',   (req, res) => res.json(krakenFeed.getPriceContext()));
 app.get('/api/window-status', (req, res) => res.json(krakenFeed.getWindowStatus()));
 app.get('/api/proxy-test',  async (req, res) => res.json(await testProxy()));
@@ -144,4 +144,11 @@ app.listen(PORT, '0.0.0.0', () => {
   krakenFeed.connect();
   console.log('Kraken BTC/USD feed starting...');
   botLoop.start();
+
+  const soccerEnabled = process.env.SOCCER_ENABLED !== 'false';
+  if (soccerEnabled && process.env.WALLET_PRIVATE_KEY) {
+    soccerLoop.start();
+  } else {
+    console.log(`Soccer Bot: ${!soccerEnabled ? 'DISABLED (SOCCER_ENABLED=false)' : 'SKIPPED (no WALLET_PRIVATE_KEY)'}`);
+  }
 });
