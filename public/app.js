@@ -128,18 +128,6 @@ async function updateSoccerStats() {
       : '<span class="status-dot dot-red"></span>Off';
   }
 
-  const spendEl = document.getElementById('soccerDailySpend');
-  if (spendEl) {
-    spendEl.textContent = `$${s.dailySpend.toFixed(2)} / $${s.dailyMaxSpend}`;
-  }
-
-  const spendPb = document.getElementById('soccerSpendProgress');
-  if (spendPb && s.dailyMaxSpend > 0) {
-    const pct = Math.min(100, (s.dailySpend / s.dailyMaxSpend) * 100);
-    spendPb.style.width = `${pct}%`;
-    spendPb.style.background = pct > 80 ? '#f85149' : pct > 50 ? '#d29922' : '#58a6ff';
-  }
-
   const posEl = document.getElementById('soccerPositionsCount');
   if (posEl) {
     const parts = [];

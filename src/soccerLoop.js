@@ -177,13 +177,11 @@ function getSoccerStats() {
 
   return {
     isRunning,
-    dailySpend:      parseFloat(soccerDailySpent.toFixed(2)),
-    dailyMaxSpend:   config.dailyMaxSpend,
     activePositions,
     watchingCount,
-    winsToday:       soccerWinsToday,
-    lossesToday:     soccerLossesToday,
-    yieldCollected:  parseFloat(soccerYieldCollected.toFixed(3)),
+    winsToday:      soccerWinsToday,
+    lossesToday:    soccerLossesToday,
+    yieldCollected: parseFloat(soccerYieldCollected.toFixed(3)),
     winRate
   };
 }
