@@ -187,6 +187,12 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
     const roundedPrice = Math.round(price * 100) / 100;
     const size = parseFloat((amount / roundedPrice).toFixed(2));
 
+    // Pre-populate the SDK's internal caches to avoid live API lookups
+    // that can return responses missing `minimum_tick_size` / `neg_risk`.
+    const resolvedTickSize = String(tickSize || '0.01');
+    if (client.tickSizes) client.tickSizes[tokenId] = resolvedTickSize;
+    if (client.negRisk)   client.negRisk[tokenId]   = !!negRisk;
+
     let response;
     let lastError = null;
     const maxRetries = 3;
@@ -203,7 +209,7 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
             expiration: 0,
             taker: '0x0000000000000000000000000000000000000000'
           },
-          { tickSize, negRisk },
+          { tickSize: resolvedTickSize, negRisk: !!negRisk },
           OrderType.GTC
         );
 
@@ -244,6 +250,10 @@ async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '
     const roundedPrice = Math.max(0.02, Math.min(0.97, Math.round(price * 100) / 100));
     const roundedSize  = parseFloat(size.toFixed(2));
 
+    const resolvedTickSize = String(tickSize || '0.01');
+    if (client.tickSizes) client.tickSizes[tokenId] = resolvedTickSize;
+    if (client.negRisk)   client.negRisk[tokenId]   = !!negRisk;
+
     const response = await client.createAndPostOrder(
       {
         tokenID: tokenId,
@@ -254,7 +264,7 @@ async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '
         expiration: 0,
         taker: '0x0000000000000000000000000000000000000000'
       },
-      { tickSize, negRisk },
+      { tickSize: resolvedTickSize, negRisk: !!negRisk },
       OrderType.GTC
     );
 
