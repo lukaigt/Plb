@@ -210,20 +210,25 @@ class BondSession {
   }
 
   async checkResolutionWhileBuying() {
+    if (this.phase !== 'buying') return; // checkFill() may have already moved phase
     if (!this.market.conditionId) return;
 
-    // Check on every call (every 15s fast-loop tick) whether the market has
-    // already closed. Polymarket can resolve before the scheduled endDate.
     const res = await checkMarketResolved(this.market.conditionId);
     if (!res || (!res.resolved && !res.closed)) return;
 
+    // Market resolved while fill was not confirmed via API. The order may have
+    // actually filled on-chain even though the fill-check API returned null.
+    // Transition to 'redeeming' and let tryRedeem() check the actual on-chain
+    // balance — if tokens are there we collect them, if not it exits cleanly.
     logger.addActivity('bond_cancelled', {
-      message: `[Soccer] Market resolved before fill — no_fill for "${this.market.question.slice(0, 50)}"`
+      message: `[Soccer] Market resolved before fill confirmed — checking on-chain balance for "${this.market.question.slice(0, 50)}"`
     });
-    this.phase = 'done';
     if (this.tradeId) {
       logger.updateTrade(this.tradeId, { result: 'no_fill', exitReason: 'resolved_before_fill' });
     }
+    this.phase            = 'redeeming';
+    this._redeemAttempts  = 0;
+    this._redeemStartedAt = Date.now();
   }
 
   async checkResolution() {
@@ -307,10 +312,12 @@ class BondSession {
   }
 
   async tryRedeem() {
-    this._redeemAttempts = (this._redeemAttempts || 0) + 1;
+    this._redeemAttempts  = (this._redeemAttempts  || 0) + 1;
+    if (!this._redeemStartedAt) this._redeemStartedAt = Date.now();
 
+    const elapsedMin = Math.floor((Date.now() - this._redeemStartedAt) / 60000);
     logger.addActivity('redeemer', {
-      message: `[Soccer] Redeem attempt ${this._redeemAttempts}/3 for "${this.market.question.slice(0, 50)}"`
+      message: `[Soccer] Redeem attempt ${this._redeemAttempts} (+${elapsedMin}min) for "${this.market.question.slice(0, 50)}"`
     });
 
     const succeeded = await redeemer.redeemPosition(
@@ -322,9 +329,12 @@ class BondSession {
 
     if (succeeded) {
       this.phase = 'done';
-    } else if (this._redeemAttempts >= 3) {
+    } else if (Date.now() - this._redeemStartedAt > 2 * 60 * 60 * 1000) {
+      // On-chain market resolution (payoutDenominator becoming non-zero) can take
+      // 30–60 min after Gamma marks the market closed. Retry every 15s for up to
+      // 2 hours before giving up, so we don't abandon tokens that are redeemable.
       logger.addActivity('redeemer_error', {
-        message: `[Soccer] Giving up on redemption after 3 attempts: "${this.market.question.slice(0, 50)}"`
+        message: `[Soccer] Giving up on redemption after 2 hours: "${this.market.question.slice(0, 50)}"`
       });
       this.phase = 'done';
     }

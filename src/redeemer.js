@@ -633,15 +633,20 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
       return false;
     }
 
-    // Check on-chain that market is resolved
-    let payoutDenom;
-    try { payoutDenom = await ctf.payoutDenominator(condId); } catch {
-      logger.addActivity('redeemer', { message: `RPC error checking payout for "${label}" — will retry next tick` });
-      return false;
-    }
-    if (payoutDenom.eq(0)) {
-      logger.addActivity('redeemer', { message: `Market not yet resolved on-chain for "${label}" — will retry` });
-      return false;
+    // For standard (non-NegRisk) markets, verify on-chain resolution via CTF payoutDenominator.
+    // For NegRisk markets this check is skipped — NegRisk resolution goes through its own
+    // adapter and ctf.payoutDenominator() returns 0 even after the game ends. The redemption
+    // call itself will revert if the market is not yet resolved, which is caught below.
+    if (!negRisk) {
+      let payoutDenom;
+      try { payoutDenom = await ctf.payoutDenominator(condId); } catch {
+        logger.addActivity('redeemer', { message: `RPC error checking payout for "${label}" — will retry next tick` });
+        return false;
+      }
+      if (payoutDenom.eq(0)) {
+        logger.addActivity('redeemer', { message: `Market not yet resolved on-chain for "${label}" — will retry` });
+        return false;
+      }
     }
 
     // Check which address holds the tokens (wrapped in try/catch — RPC blips must not kill the loop)
