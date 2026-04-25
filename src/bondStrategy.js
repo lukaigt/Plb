@@ -246,11 +246,11 @@ class BondSession {
     if (!res) return;
 
     if (res.resolved || res.closed) {
-      this._finalise(res);
+      await this._finalise(res);
     }
   }
 
-  _finalise(res) {
+  async _finalise(res) {
     if (this.phase !== 'holding') { this.phase = 'done'; return; }
 
     // Derive winner from Gamma outcomePrices (authoritative).
@@ -295,11 +295,12 @@ class BondSession {
     });
 
     if (result === 'win') {
-      // Always attempt on-chain redemption on a win — the redeemer checks
-      // the actual token balance itself. Don't gate on filledTokens here because
-      // fill-check API failures leave filledTokens=0 even for real fills.
+      // Attempt on-chain redemption immediately in the same flow — the redeemer
+      // checks actual token balance itself, so no need to gate on filledTokens.
+      // If it fails, phase stays 'redeeming' and the fast loop retries every 15s.
       this.phase           = 'redeeming';
       this._redeemAttempts = 0;
+      await this.tryRedeem();
     } else {
       this.phase = 'done';
     }
@@ -309,7 +310,7 @@ class BondSession {
     this._redeemAttempts = (this._redeemAttempts || 0) + 1;
 
     logger.addActivity('redeemer', {
-      message: `[Soccer] Redeem attempt ${this._redeemAttempts} for "${this.market.question.slice(0, 50)}"`
+      message: `[Soccer] Redeem attempt ${this._redeemAttempts}/3 for "${this.market.question.slice(0, 50)}"`
     });
 
     const succeeded = await redeemer.redeemPosition(
@@ -321,9 +322,9 @@ class BondSession {
 
     if (succeeded) {
       this.phase = 'done';
-    } else if (this._redeemAttempts >= 5) {
+    } else if (this._redeemAttempts >= 3) {
       logger.addActivity('redeemer_error', {
-        message: `[Soccer] Giving up on redemption after 5 attempts: "${this.market.question.slice(0, 50)}"`
+        message: `[Soccer] Giving up on redemption after 3 attempts: "${this.market.question.slice(0, 50)}"`
       });
       this.phase = 'done';
     }
