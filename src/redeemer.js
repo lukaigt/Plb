@@ -469,20 +469,26 @@ async function checkAndRedeem() {
           continue;
         }
 
-        // Check on-chain if the market has resolved first — if not, skip silently
-        let payoutDenom;
-        try {
-          payoutDenom = await ctf.payoutDenominator(conditionId);
-        } catch (rpcErr) {
-          logger.addActivity('redeemer', {
-            message: `RPC error checking payout for "${(redemption.question || 'trade').slice(0, 40)}" — will retry`
-          });
-          continue;
-        }
+        // For standard (non-NegRisk) markets verify on-chain resolution via CTF payoutDenominator.
+        // For NegRisk markets skip this check — NegRisk resolution goes through its own adapter
+        // and ctf.payoutDenominator() returns 0 even after the game ends. The redemption call
+        // itself will revert if the market is not yet resolved, caught in the try/catch below.
+        const isNegRiskPosition = redemption.negRisk === true;
+        if (!isNegRiskPosition) {
+          let payoutDenom;
+          try {
+            payoutDenom = await ctf.payoutDenominator(conditionId);
+          } catch (rpcErr) {
+            logger.addActivity('redeemer', {
+              message: `RPC error checking payout for "${(redemption.question || 'trade').slice(0, 40)}" — will retry`
+            });
+            continue;
+          }
 
-        if (payoutDenom.eq(0)) {
-          // Market not yet resolved on-chain — wait silently
-          continue;
+          if (payoutDenom.eq(0)) {
+            // Market not yet resolved on-chain — wait silently
+            continue;
+          }
         }
 
         // Market is resolved — check token balances on EOA and Safe

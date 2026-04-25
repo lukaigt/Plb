@@ -11,7 +11,7 @@ let lastScanResult = null;
 
 async function lookupCorrectConditionId(tokenId) {
   try {
-    const url = `${GAMMA_API}/markets?clob_token_ids=${tokenId}&closed=true`;
+    const url = `${GAMMA_API}/markets?clob_token_ids=${tokenId}`;
     const res = await fetchWithTimeout(url, 10000);
     if (!res.ok) return null;
     const markets = await res.json();
