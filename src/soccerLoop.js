@@ -1,9 +1,8 @@
 const { scanLiveSoccerMarkets } = require('./soccerScanner');
 const { BondSession, getBondConfig } = require('./bondStrategy');
 const { initClient } = require('./trader');
-const safety   = require('./safety');
-const logger   = require('./logger');
-const redeemer = require('./redeemer');
+const safety = require('./safety');
+const logger = require('./logger');
 
 let isRunning       = false;
 let scanInterval    = null;
@@ -66,7 +65,7 @@ async function runScan() {
     }
 
     const activeHolding = Object.values(activeSessions)
-      .filter(s => ['buying', 'holding'].includes(s.phase)).length;
+      .filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
 
     for (const market of markets) {
       if (activeSessions[market.id]) continue;
@@ -89,7 +88,7 @@ async function runFast() {
   const client = await getClient();
 
   let activeCount = Object.values(activeSessions)
-    .filter(s => ['buying', 'holding'].includes(s.phase)).length;
+    .filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
 
   for (const session of Object.values(activeSessions)) {
     try {
@@ -117,6 +116,9 @@ async function runFast() {
 
       } else if (session.phase === 'holding') {
         await session.checkResolution();
+
+      } else if (session.phase === 'redeeming') {
+        await session.tryRedeem();
       }
 
     } catch (err) {
@@ -125,8 +127,6 @@ async function runFast() {
       });
     }
   }
-
-  try { await redeemer.checkAndRedeem(); } catch {}
 }
 
 function start() {
@@ -168,7 +168,7 @@ function getSoccerStats() {
   resetDailyIfNeeded();
   const config          = getBondConfig();
   const positions       = Object.values(activeSessions);
-  const activePositions = positions.filter(s => ['buying', 'holding'].includes(s.phase)).length;
+  const activePositions = positions.filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
   const watchingCount   = positions.filter(s => s.phase === 'watching').length;
   const totalResolved   = soccerWinsToday + soccerLossesToday;
   const winRate         = totalResolved > 0

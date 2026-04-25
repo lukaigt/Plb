@@ -205,7 +205,7 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
             price: roundedPrice,
             size,
             side: Side.BUY,
-            feeRateBps: 1000,
+            feeRateBps: 0,
             expiration: 0,
             taker: '0x0000000000000000000000000000000000000000'
           },
@@ -221,15 +221,22 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
           return { success: true, data: response, orderId: response.orderID };
         } else {
           let errMsg = response?.errorMsg || response?.error;
-          if (!errMsg) { try { errMsg = JSON.stringify(response).substring(0, 200); } catch { errMsg = 'Unknown'; } }
-          lastError = errMsg;
-          logger.addActivity('trade_error', { message: `Order rejected (attempt ${attempt}/${maxRetries}): ${errMsg}` });
+          if (!errMsg) { try { errMsg = JSON.stringify(response).substring(0, 150); } catch { errMsg = 'Unknown response'; } }
+          lastError = String(errMsg).substring(0, 150);
+          logger.addActivity('trade_error', { message: `Order rejected (attempt ${attempt}/${maxRetries}): ${lastError}` });
           if (attempt < maxRetries) await new Promise(r => setTimeout(r, 3000 * attempt));
         }
       } catch (err) {
-        const errStr = err.message || String(err);
-        const isCloudflare = errStr.includes('403') || errStr.includes('Forbidden') || errStr.includes('blocked');
-        lastError = isCloudflare ? 'Cloudflare rate-limited (403)' : errStr;
+        const raw = err.message || String(err);
+        let clean;
+        if (raw.length > 300 || raw.includes('[Circular]')) {
+          const m = raw.match(/"(?:errorMsg|error|message)"\s*:\s*"([^"]{1,120})"/);
+          clean = m ? m[1] : `HTTP ${raw.match(/statusCode.*?(\d{3})/)?.[1] || 'error'} from Polymarket (check VPS logs)`;
+        } else {
+          clean = raw.substring(0, 150);
+        }
+        const isCloudflare = clean.includes('403') || clean.includes('Forbidden') || clean.includes('blocked');
+        lastError = isCloudflare ? 'Cloudflare rate-limited (403)' : clean;
         logger.addActivity('trade_error', { message: `Trade attempt ${attempt}/${maxRetries} failed: ${lastError}` });
         if (attempt < maxRetries) await new Promise(r => setTimeout(r, 5000 * attempt));
       }
@@ -260,7 +267,7 @@ async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '
         price: roundedPrice,
         size: roundedSize,
         side: Side.SELL,
-        feeRateBps: 1000,
+        feeRateBps: 0,
         expiration: 0,
         taker: '0x0000000000000000000000000000000000000000'
       },

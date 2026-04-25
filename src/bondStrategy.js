@@ -261,7 +261,6 @@ class BondSession {
     } else if (this.lastMid !== null) {
       yesWon = this.lastMid >= 0.5;
     } else {
-      // Cannot determine outcome — log as no_fill to avoid incorrect P&L
       logger.addActivity('bond_error', {
         message: `[Soccer] Cannot determine outcome for "${this.market.question.slice(0, 50)}" — logged as no_fill`
       });
@@ -270,14 +269,13 @@ class BondSession {
       return;
     }
 
-    const tokens = this.filledTokens > 0 ? this.filledTokens : (this.filledAmount / (this.entryPrice || 0.95));
-    const grossPnl    = yesWon ? (tokens * 1.0) - this.filledAmount : -this.filledAmount;
-    const fee         = this.filledAmount * ESTIMATED_FEE_RATE;
-    const netPnl      = grossPnl - fee;
-    const result      = yesWon ? 'win' : 'loss';
+    const tokens   = this.filledTokens > 0 ? this.filledTokens : (this.filledAmount / (this.entryPrice || 0.95));
+    const grossPnl = yesWon ? (tokens * 1.0) - this.filledAmount : -this.filledAmount;
+    const fee      = this.filledAmount * ESTIMATED_FEE_RATE;
+    const netPnl   = grossPnl - fee;
+    const result   = yesWon ? 'win' : 'loss';
 
     this.pnl        = grossPnl;
-    this.phase      = 'done';
     this.resolvedAt = new Date().toISOString();
 
     if (result === 'win') safety.recordWin(Math.abs(grossPnl));
@@ -297,18 +295,37 @@ class BondSession {
     });
 
     if (result === 'win' && this.filledTokens > 0) {
-      redeemer.addPendingRedemption({
-        conditionId:   this.market.conditionId,
-        tokenId:       this.market.yesTokenId,
-        negRisk:       this.market.negRisk,
-        marketEndTime: this.market.endDate,
-        action:        'SOCCER_BOND',
-        side:          'YES',
-        size:          this.filledAmount,
-        price:         this.entryPrice || 0.95,
-        question:      this.market.question
-      });
+      // Switch to 'redeeming' phase — the fast loop retries every 15s until done
+      this.phase          = 'redeeming';
+      this._redeemAttempts = 0;
+    } else {
+      this.phase = 'done';
     }
+  }
+
+  async tryRedeem() {
+    this._redeemAttempts = (this._redeemAttempts || 0) + 1;
+
+    logger.addActivity('redeemer', {
+      message: `[Soccer] Redeem attempt ${this._redeemAttempts} for "${this.market.question.slice(0, 50)}"`
+    });
+
+    const succeeded = await redeemer.redeemPosition(
+      this.market.conditionId,
+      this.market.yesTokenId,
+      this.market.negRisk,
+      this.market.question
+    );
+
+    if (succeeded) {
+      this.phase = 'done';
+    } else if (this._redeemAttempts >= 5) {
+      logger.addActivity('redeemer_error', {
+        message: `[Soccer] Giving up on redemption after 5 attempts: "${this.market.question.slice(0, 50)}"`
+      });
+      this.phase = 'done';
+    }
+    // else: stay in 'redeeming' — fast loop retries on next 15s tick
   }
 
   getStatus() {

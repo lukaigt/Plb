@@ -610,6 +610,86 @@ async function checkAndRedeem() {
   }
 }
 
+async function redeemPosition(conditionId, tokenId, negRisk, question) {
+  const privateKey = process.env.WALLET_PRIVATE_KEY;
+  if (!privateKey) {
+    logger.addActivity('redeemer_error', { message: 'Cannot redeem: WALLET_PRIVATE_KEY not set' });
+    return false;
+  }
+
+  const label = (question || conditionId || 'position').slice(0, 50);
+
+  try {
+    const provider = await getWorkingProvider();
+    const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+    const wallet = new ethers.Wallet(cleanKey, provider);
+    const safAddr = await getProxyWalletAddress();
+    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const wrappedCollateral = await getWrappedCollateral(provider);
+
+    const condId = formatConditionId(conditionId);
+    if (!condId) {
+      logger.addActivity('redeemer_error', { message: `Invalid conditionId for "${label}"` });
+      return false;
+    }
+
+    // Check on-chain that market is resolved
+    let payoutDenom;
+    try { payoutDenom = await ctf.payoutDenominator(condId); } catch {
+      logger.addActivity('redeemer', { message: `RPC error checking payout for "${label}" — will retry next tick` });
+      return false;
+    }
+    if (payoutDenom.eq(0)) {
+      logger.addActivity('redeemer', { message: `Market not yet resolved on-chain for "${label}" — will retry` });
+      return false;
+    }
+
+    // Check which address holds the tokens
+    const eoaHas  = tokenId ? !(await ctf.balanceOf(wallet.address, tokenId)).eq(0) : false;
+    const safeHas = (safAddr && tokenId) ? !(await ctf.balanceOf(safAddr, tokenId)).eq(0) : false;
+
+    if (!eoaHas && !safeHas) {
+      logger.addActivity('redeemer', { message: `No token balance found on EOA or Safe for "${label}" — will retry` });
+      return false;
+    }
+
+    const redeemFromSafe = !eoaHas && safeHas;
+    logger.addActivity('redeemer', {
+      message: `Redeeming "${label}" from ${redeemFromSafe ? 'Safe' : 'EOA'} — ${negRisk ? 'NegRisk' : 'CTF'} first`
+    });
+
+    const attempts = negRisk
+      ? [{ negRisk: true, label: 'NegRiskAdapter' }, { negRisk: false, label: 'CTF' }]
+      : [{ negRisk: false, label: 'CTF' }, { negRisk: true, label: 'NegRiskAdapter' }];
+
+    for (const att of attempts) {
+      try {
+        let tx;
+        if (redeemFromSafe && safAddr) {
+          tx = await redeemViaSafe(wallet, condId, att.negRisk, safAddr, provider, wrappedCollateral, tokenId);
+        } else {
+          tx = await redeemViaEOA(wallet, condId, att.negRisk, provider, wrappedCollateral, tokenId);
+        }
+        const receipt = await tx.wait();
+        redemptionHistory.push({ question, conditionId, tokenId, status: 'redeemed', txHash: receipt.transactionHash, redeemedAt: new Date().toISOString() });
+        logger.addActivity('redeem_success', {
+          message: `COLLECTED via ${att.label}! TX: ${receipt.transactionHash.substring(0, 20)}... | "${label}"`
+        });
+        return true;
+      } catch (err) {
+        logger.addActivity('redeemer', { message: `${att.label} failed for "${label}": ${(err.message || '').substring(0, 80)} — trying next` });
+      }
+    }
+
+    logger.addActivity('redeemer_error', { message: `All redeem methods failed for "${label}" — will retry next tick` });
+    return false;
+
+  } catch (err) {
+    logger.addActivity('redeemer_error', { message: `redeemPosition error for "${label}": ${(err.message || '').substring(0, 80)}` });
+    return false;
+  }
+}
+
 function getRedemptionStatus() {
   return {
     pending: pendingRedemptions.map(r => ({
@@ -638,5 +718,6 @@ function getRedemptionStatus() {
 module.exports = {
   addPendingRedemption,
   checkAndRedeem,
+  redeemPosition,
   getRedemptionStatus
 };
