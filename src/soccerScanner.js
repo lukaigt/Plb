@@ -1,8 +1,10 @@
 const logger = require('./logger');
 
-const GAMMA_API       = 'https://gamma-api.polymarket.com';
-const TAG_SLUGS       = ['soccer', 'football'];
-const WINDOW_HOURS    = 12;
+const GAMMA_API    = 'https://gamma-api.polymarket.com';
+const TAG_SLUGS    = ['soccer', 'football'];
+const WINDOW_HOURS = 12;
+const PAGE_LIMIT   = 100;
+const MAX_PAGES    = 5;
 
 async function fetchWithTimeout(url, timeout = 12000) {
   const controller = new AbortController();
@@ -18,16 +20,26 @@ async function fetchWithTimeout(url, timeout = 12000) {
 }
 
 async function fetchTagEvents(tagSlug) {
-  try {
-    const url = `${GAMMA_API}/events?tag_slug=${tagSlug}&active=true&closed=false&limit=100&order=volume24hr&ascending=false`;
-    const res = await fetchWithTimeout(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data) ? data : [];
-  } catch (err) {
-    logger.addActivity('soccer_scan_error', { message: `Gamma API error (${tagSlug}): ${err.message?.slice(0, 60)}` });
-    return [];
+  const allEvents = [];
+  let offset = 0;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    try {
+      const url = `${GAMMA_API}/events?tag_slug=${tagSlug}&active=true&closed=false&limit=${PAGE_LIMIT}&offset=${offset}&order=volume24hr&ascending=false`;
+      const res = await fetchWithTimeout(url);
+      if (!res.ok) break;
+      const data = await res.json();
+      const batch = Array.isArray(data) ? data : [];
+      allEvents.push(...batch);
+      if (batch.length < PAGE_LIMIT) break;
+      offset += PAGE_LIMIT;
+    } catch (err) {
+      logger.addActivity('soccer_scan_error', { message: `Gamma API error (${tagSlug} page ${page + 1}): ${err.message?.slice(0, 60)}` });
+      break;
+    }
   }
+
+  return allEvents;
 }
 
 function isInWindow(endDateStr) {
@@ -40,36 +52,59 @@ function isInWindow(endDateStr) {
   return diff >= -maxPastMs && diff <= maxFutureMs;
 }
 
-async function scanLiveSoccerMarkets(minVolume = 5000) {
-  const seenIds    = new Set();
-  const liveMarkets = [];
+async function scanLiveSoccerMarkets(minVolume = 500) {
+  const seenEventIds = new Set();
+  const allEvents    = [];
 
-  const allEvents = [];
   for (const tag of TAG_SLUGS) {
     const events = await fetchTagEvents(tag);
-    allEvents.push(...events);
+    for (const e of events) {
+      const key = e.id || e.slug || JSON.stringify(e);
+      if (!seenEventIds.has(key)) {
+        seenEventIds.add(key);
+        allEvents.push(e);
+      }
+    }
   }
 
   const now = new Date();
 
+  const seenMarketIds  = new Set();
+  const liveMarkets    = [];
+  let   cntFuture      = 0;
+  let   cntExpired     = 0;
+  let   cntLowVol      = 0;
+  let   cntNoAccept    = 0;
+  let   cntPreKickoff  = 0;
+
   for (const event of allEvents) {
     if (!event.active || event.closed) continue;
-    if (!isInWindow(event.endDate)) continue;
     if (!Array.isArray(event.markets)) continue;
 
-    // Exclude games that haven't started yet.
-    // event.startDate on game-level events is the game kickoff time.
-    // (Futures markets are already excluded by the 12h endDate window.)
+    const endDiff = event.endDate ? (new Date(event.endDate) - now) : null;
+
+    if (endDiff !== null && endDiff > WINDOW_HOURS * 60 * 60 * 1000) {
+      cntFuture++;
+      continue;
+    }
+    if (endDiff !== null && endDiff < -3 * 60 * 60 * 1000) {
+      cntExpired++;
+      continue;
+    }
+
     if (event.startDate) {
       const kickoff = new Date(event.startDate);
-      if (kickoff > now) continue;
+      if (kickoff > now) {
+        cntPreKickoff++;
+        continue;
+      }
     }
 
     for (const market of event.markets) {
       const marketKey = market.conditionId || market.id;
-      if (!marketKey || seenIds.has(marketKey)) continue;
+      if (!marketKey || seenMarketIds.has(marketKey)) continue;
       if (!market.active || market.closed) continue;
-      if (market.acceptingOrders === false) continue;
+      if (market.acceptingOrders === false) { cntNoAccept++; continue; }
 
       let tokenIds = [];
       try {
@@ -87,11 +122,11 @@ async function scanLiveSoccerMarkets(minVolume = 5000) {
         if (raw.length >= 2) outcomes = raw;
       } catch {}
 
-      const vol24h = parseFloat(market.volume24hr || market.volumeNum || 0);
+      const vol24h   = parseFloat(market.volume24hr || market.volumeNum || 0);
       const volTotal = parseFloat(market.volume || 0);
-      if (vol24h < minVolume && volTotal < minVolume) continue;
+      if (vol24h < minVolume && volTotal < minVolume) { cntLowVol++; continue; }
 
-      seenIds.add(marketKey);
+      seenMarketIds.add(marketKey);
       liveMarkets.push({
         id:          marketKey,
         conditionId: market.conditionId || null,
@@ -108,11 +143,9 @@ async function scanLiveSoccerMarkets(minVolume = 5000) {
     }
   }
 
-  if (liveMarkets.length > 0) {
-    logger.addActivity('soccer_scan', {
-      message: `Found ${liveMarkets.length} live/imminent soccer market(s) in window`
-    });
-  }
+  logger.addActivity('soccer_scan', {
+    message: `Scan: ${allEvents.length} events fetched → ${liveMarkets.length} live market(s) found | skipped: ${cntFuture} future, ${cntExpired} expired, ${cntPreKickoff} pre-kickoff, ${cntLowVol} low-vol, ${cntNoAccept} not-accepting-orders`
+  });
 
   return liveMarkets;
 }

@@ -12,7 +12,7 @@ function getBondConfig() {
     threshold:    parseFloat(process.env.BOND_THRESHOLD)   || 0.95,
     orderSize:    parseFloat(process.env.BOND_ORDER_SIZE)  || 5,
     maxPositions: parseInt(process.env.BOND_MAX_POSITIONS) || 5,
-    minVolume:    parseFloat(process.env.BOND_MIN_VOLUME)  || 5000
+    minVolume:    parseFloat(process.env.BOND_MIN_VOLUME)  || 500
   };
 }
 
@@ -210,11 +210,10 @@ class BondSession {
   }
 
   async checkResolutionWhileBuying() {
-    const now     = Date.now();
-    const endDate = new Date(this.market.endDate);
-    if (now <= endDate.getTime()) return;
-
     if (!this.market.conditionId) return;
+
+    // Check on every call (every 15s fast-loop tick) whether the market has
+    // already closed. Polymarket can resolve before the scheduled endDate.
     const res = await checkMarketResolved(this.market.conditionId);
     if (!res || (!res.resolved && !res.closed)) return;
 
@@ -234,16 +233,15 @@ class BondSession {
 
     await this.pollPrice();
 
-    const endDate  = new Date(this.market.endDate);
-    const pastEnd  = now > endDate.getTime();
-
-    if (!pastEnd) return;
-
     if (!this.market.conditionId) {
       logger.addActivity('bond_error', { message: `[Soccer] No conditionId for resolution check: ${this.market.question.slice(0, 50)}` });
       return;
     }
 
+    // Check resolution every 30s regardless of endDate.
+    // Polymarket closes markets as soon as the game ends — often 15-30+ min
+    // before the scheduled endDate buffer — so waiting for pastEnd causes
+    // filled positions to sit unredeemed for a long time.
     const res = await checkMarketResolved(this.market.conditionId);
     if (!res) return;
 
