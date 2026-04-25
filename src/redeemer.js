@@ -644,18 +644,36 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
       return false;
     }
 
-    // Check which address holds the tokens
-    const eoaHas  = tokenId ? !(await ctf.balanceOf(wallet.address, tokenId)).eq(0) : false;
-    const safeHas = (safAddr && tokenId) ? !(await ctf.balanceOf(safAddr, tokenId)).eq(0) : false;
+    // Check which address holds the tokens (wrapped in try/catch — RPC blips must not kill the loop)
+    let eoaHas = false;
+    let safeHas = false;
+    try {
+      if (tokenId) eoaHas = !(await ctf.balanceOf(wallet.address, tokenId)).eq(0);
+    } catch (e) {
+      logger.addActivity('redeemer', { message: `RPC error checking EOA balance for "${label}": ${(e.message||'').slice(0,60)} — will retry` });
+      return false;
+    }
+    try {
+      if (safAddr && tokenId) safeHas = !(await ctf.balanceOf(safAddr, tokenId)).eq(0);
+    } catch (e) {
+      logger.addActivity('redeemer', { message: `RPC error checking Safe balance for "${label}": ${(e.message||'').slice(0,60)} — will retry` });
+      return false;
+    }
 
     if (!eoaHas && !safeHas) {
-      logger.addActivity('redeemer', { message: `No token balance found on EOA or Safe for "${label}" — will retry` });
+      if (!safAddr) {
+        logger.addActivity('redeemer_error', {
+          message: `CRITICAL: Proxy wallet address unknown — cannot check Safe balance for "${label}". Add PROXY_WALLET_ADDRESS=<your_safe_addr> to .env`
+        });
+      } else {
+        logger.addActivity('redeemer', { message: `No token balance on EOA (${wallet.address.slice(0,10)}…) or Safe (${safAddr.slice(0,10)}…) for "${label}" — market may not be resolved yet, will retry` });
+      }
       return false;
     }
 
     const redeemFromSafe = !eoaHas && safeHas;
     logger.addActivity('redeemer', {
-      message: `Redeeming "${label}" from ${redeemFromSafe ? 'Safe' : 'EOA'} — ${negRisk ? 'NegRisk' : 'CTF'} first`
+      message: `Redeeming "${label}" from ${redeemFromSafe ? `Safe (${safAddr.slice(0,10)}…)` : `EOA (${wallet.address.slice(0,10)}…)`} — trying ${negRisk ? 'NegRisk then CTF' : 'CTF then NegRisk'}`
     });
 
     const attempts = negRisk
@@ -671,9 +689,20 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
           tx = await redeemViaEOA(wallet, condId, att.negRisk, provider, wrappedCollateral, tokenId);
         }
         const receipt = await tx.wait();
+
+        // For Safe transactions, verify the inner call actually succeeded (execTransaction
+        // returns status=1 even when the inner call reverts — only ExecutionFailure reveals it)
+        if (redeemFromSafe && safAddr) {
+          const ok = verifyRedemptionReceipt(receipt, safAddr);
+          if (!ok) {
+            logger.addActivity('redeemer', { message: `${att.label} via Safe — ExecutionFailure on-chain for "${label}" — trying next method` });
+            continue;
+          }
+        }
+
         redemptionHistory.push({ question, conditionId, tokenId, status: 'redeemed', txHash: receipt.transactionHash, redeemedAt: new Date().toISOString() });
         logger.addActivity('redeem_success', {
-          message: `COLLECTED via ${att.label}! TX: ${receipt.transactionHash.substring(0, 20)}... | "${label}"`
+          message: `COLLECTED via ${att.label} (${redeemFromSafe ? 'Safe' : 'EOA'})! TX: ${receipt.transactionHash.substring(0, 20)}… | "${label}"`
         });
         return true;
       } catch (err) {
