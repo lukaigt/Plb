@@ -109,4 +109,21 @@ app.listen(PORT, '0.0.0.0', () => {
   } else {
     console.log(`Soccer Bot: ${!soccerEnabled ? 'DISABLED (SOCCER_ENABLED=false)' : 'SKIPPED (no WALLET_PRIVATE_KEY)'}`);
   }
+
+  // Auto-scan existing wallet positions on startup (after 60s so CLOB client
+  // has time to initialise and proxy wallet address is resolved), then repeat
+  // every 5 minutes so any positions resolved while the bot was offline or from
+  // a previous session get collected automatically without pressing Force Redeem.
+  if (process.env.WALLET_PRIVATE_KEY) {
+    const autoScanAndRedeem = async () => {
+      try {
+        const result = await positionScanner.scanExistingPositions();
+        if (result.redeemable > 0) await redeemer.checkAndRedeem();
+      } catch (err) {
+        logger.addActivity('bot', { message: `Auto-scan error: ${err.message?.slice(0, 80)}` });
+      }
+    };
+    setTimeout(autoScanAndRedeem, 60 * 1000);
+    setInterval(autoScanAndRedeem, 5 * 60 * 1000);
+  }
 });
