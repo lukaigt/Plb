@@ -15,8 +15,6 @@ let soccerYieldCollected = 0;
 let lastResetDate   = new Date().toDateString();
 
 const activeSessions = {};
-// Markets that failed to enter — blocked for 30 minutes before retry
-const failedMarkets = {};
 
 function resetDailyIfNeeded() {
   const today = new Date().toDateString();
@@ -54,25 +52,10 @@ async function runScan() {
   try {
     const markets = await scanLiveSoccerMarkets(config.minVolume);
 
-    const now = Date.now();
-    const FAIL_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
-
-    // Expire old cooldowns
-    for (const id of Object.keys(failedMarkets)) {
-      if (now - failedMarkets[id] > FAIL_COOLDOWN_MS) delete failedMarkets[id];
-    }
-
     for (const id of Object.keys(activeSessions)) {
       const session = activeSessions[id];
       if (session.phase === 'done') {
         recordSessionOutcome(session);
-        // If the session never filled (order failed), block re-entry for 30 min
-        if (session.filledAmount === 0) {
-          failedMarkets[id] = now;
-          logger.addActivity('bond_error', {
-            message: `[Soccer] Market ${id.slice(0,12)}... blocked for 30 min after failed entry`
-          });
-        }
         delete activeSessions[id];
         continue;
       }
@@ -87,7 +70,6 @@ async function runScan() {
 
     for (const market of markets) {
       if (activeSessions[market.id]) continue;
-      if (failedMarkets[market.id]) continue; // still in cooldown
       if (activeHolding >= config.maxPositions) continue;
 
       activeSessions[market.id] = new BondSession(market, config);
