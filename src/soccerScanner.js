@@ -42,16 +42,6 @@ async function fetchTagEvents(tagSlug) {
   return allEvents;
 }
 
-function isInWindow(endDateStr) {
-  if (!endDateStr) return false;
-  const end  = new Date(endDateStr);
-  const now  = new Date();
-  const maxFutureMs = WINDOW_HOURS * 60 * 60 * 1000;
-  const maxPastMs   = 3 * 60 * 60 * 1000;
-  const diff = end - now;
-  return diff >= -maxPastMs && diff <= maxFutureMs;
-}
-
 async function scanLiveSoccerMarkets(minVolume = 500) {
   const seenEventIds = new Set();
   const allEvents    = [];
