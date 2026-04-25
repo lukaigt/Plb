@@ -5,6 +5,8 @@ const safety = require('./safety');
 const logger = require('./logger');
 
 let isRunning       = false;
+let isScanRunning   = false;
+let isFastRunning   = false;
 let scanInterval    = null;
 let fastInterval    = null;
 let soccerDailySpent    = 0;
@@ -14,6 +16,9 @@ let soccerYieldCollected = 0;
 let lastResetDate   = new Date().toDateString();
 
 const activeSessions = {};
+// Once a market has been entered (or attempted), never re-enter it this session —
+// even if the order failed and the session was cleaned up.
+const enteredMarkets = new Set();
 
 function resetDailyIfNeeded() {
   const today = new Date().toDateString();
@@ -23,6 +28,7 @@ function resetDailyIfNeeded() {
     soccerLossesToday    = 0;
     soccerYieldCollected = 0;
     lastResetDate        = today;
+    enteredMarkets.clear(); // new day — allow fresh entries on recurring events
   }
 }
 
@@ -43,11 +49,13 @@ async function getClient() {
 
 async function runScan() {
   if (!isRunning) return;
+  if (isScanRunning) return; // skip if previous scan still in progress
 
   const config   = getBondConfig();
   const canTrade = safety.canTrade();
-  if (!canTrade.allowed) return;
+  if (!canTrade.allowed) return; // bail before locking — no async work started
 
+  isScanRunning = true;
   try {
     const markets = await scanLiveSoccerMarkets(config.minVolume);
 
@@ -67,9 +75,27 @@ async function runScan() {
     const activeHolding = Object.values(activeSessions)
       .filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
 
+    const minElapsedMs = (parseInt(process.env.BOND_MIN_ELAPSED_MINUTES) || 30) * 60 * 1000;
+    const now = Date.now();
+
     for (const market of markets) {
+      // Never create a second session for a market we've already acted on
       if (activeSessions[market.id]) continue;
+      if (enteredMarkets.has(market.id)) continue;
       if (activeHolding >= config.maxPositions) continue;
+
+      // Skip markets where the game started less than BOND_MIN_ELAPSED_MINUTES ago
+      if (market.startDate) {
+        const elapsed = now - new Date(market.startDate).getTime();
+        if (elapsed < minElapsedMs) {
+          const minsElapsed = Math.floor(elapsed / 60000);
+          const minsNeeded  = Math.floor(minElapsedMs / 60000);
+          logger.addActivity('soccer_scan', {
+            message: `Skipping "${market.question.slice(0, 50)}" — only ${minsElapsed}min into game (need ${minsNeeded}min)`
+          });
+          continue;
+        }
+      }
 
       activeSessions[market.id] = new BondSession(market, config);
     }
@@ -78,54 +104,63 @@ async function runScan() {
     logger.addActivity('bond_error', {
       message: `Soccer scan loop error: ${err.message?.slice(0, 80)}`
     });
+  } finally {
+    isScanRunning = false;
   }
 }
 
 async function runFast() {
   if (!isRunning) return;
+  if (isFastRunning) return;
+  isFastRunning = true;
 
-  const config = getBondConfig();
-  const client = await getClient();
+  try {
+    const config = getBondConfig();
+    const client = await getClient();
+    let activeCount = Object.values(activeSessions)
+      .filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
 
-  let activeCount = Object.values(activeSessions)
-    .filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
-
-  for (const session of Object.values(activeSessions)) {
-    try {
-      if (session.phase === 'done') {
-        recordSessionOutcome(session);
-        delete activeSessions[session.id];
-        continue;
-      }
-
-      if (session.phase === 'watching') {
-        await session.pollPrice();
-        if (session.shouldEnter()) {
-          const canTrade = safety.canTrade();
-          if (!canTrade.allowed) continue;
-
-          if (activeCount < config.maxPositions) {
-            const entered = await session.enter(client);
-            if (entered) activeCount++;
-          }
+    for (const session of Object.values(activeSessions)) {
+      try {
+        if (session.phase === 'done') {
+          recordSessionOutcome(session);
+          delete activeSessions[session.id];
+          continue;
         }
 
-      } else if (session.phase === 'buying') {
-        await session.checkFill(client);
-        await session.checkResolutionWhileBuying();
+        if (session.phase === 'watching') {
+          await session.pollPrice();
+          if (session.shouldEnter()) {
+            const canTrade = safety.canTrade();
+            if (!canTrade.allowed) continue;
+            if (activeCount < config.maxPositions) {
+              // Mark as entered BEFORE the async call — prevents any scan from
+              // creating a duplicate session for this market while order is in flight
+              enteredMarkets.add(session.id);
+              const entered = await session.enter(client);
+              if (entered) activeCount++;
+            }
+          }
 
-      } else if (session.phase === 'holding') {
-        await session.checkResolution();
+        } else if (session.phase === 'buying') {
+          await session.checkFill(client);
+          await session.checkResolutionWhileBuying();
 
-      } else if (session.phase === 'redeeming') {
-        await session.tryRedeem();
+        } else if (session.phase === 'holding') {
+          await session.checkResolution();
+
+        } else if (session.phase === 'redeeming') {
+          await session.tryRedeem();
+        }
+
+      } catch (err) {
+        logger.addActivity('bond_error', {
+          message: `Fast loop error (${session.market?.question?.slice(0, 40)}): ${err.message?.slice(0, 60)}`
+        });
       }
-
-    } catch (err) {
-      logger.addActivity('bond_error', {
-        message: `Soccer fast loop error (${session.market?.question?.slice(0, 40)}): ${err.message?.slice(0, 60)}`
-      });
     }
+  } finally {
+    isFastRunning = false;
   }
 }
 
@@ -134,6 +169,7 @@ function start() {
   isRunning = true;
 
   const config = getBondConfig();
+  const minElapsed = parseInt(process.env.BOND_MIN_ELAPSED_MINUTES) || 30;
   logger.addActivity('bot', {
     message: [
       'Soccer Bond Bot started — monitoring live soccer markets',
@@ -141,8 +177,10 @@ function start() {
       `  Order size:    $${config.orderSize} per trade`,
       `  Max positions: ${config.maxPositions} concurrent open bets`,
       `  Min volume:    $${config.minVolume.toLocaleString()} 24hr volume`,
+      `  Min elapsed:   ${minElapsed}min into game before entry`,
       `  Loss limit:    $${process.env.DAILY_LOSS_LIMIT || 30} daily (bot stops if hit)`,
-      `  Scan interval: every 2 min | price poll: every 15s`
+      `  Scan interval: every 2 min | price poll: every 15s`,
+      `  Duplicate guard: once entered, a market is never re-entered`
     ].join('\n')
   });
 

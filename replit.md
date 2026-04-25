@@ -20,7 +20,10 @@ The bot monitors Polymarket soccer/football markets for in-progress games (Gamma
 
 - Watches price every 15s (fast loop)
 - On resolution, derives winner from Gamma `outcomePrices` (authoritative). Falls back to last mid >= 0.5 only if Gamma data unavailable. Logs `no_fill` if outcome truly cannot be determined.
-- On win: queues redemption via `redeemer.addPendingRedemption()` (collected automatically)
+- On win: session transitions to `phase='redeeming'` — fast loop calls `tryRedeem()` every 15s until confirmed on-chain
+- Duplicate guard: once a market is entered (or attempted), it is added to `enteredMarkets` Set and never re-entered even if the session is cleaned up
+- Early-game filter: `BOND_MIN_ELAPSED_MINUTES` (default 30) — skip markets where game started less than N minutes ago
+- Overlap guard: `isScanRunning` / `isFastRunning` flags prevent concurrent loop executions
 - Safety: `safety.canTrade()` checked before every entry; `BOND_MAX_POSITIONS` enforced atomically
 
 **Soccer Bot Config (all in .env):**
@@ -30,6 +33,7 @@ The bot monitors Polymarket soccer/football markets for in-progress games (Gamma
 - `BOND_MAX_POSITIONS=5` — max concurrent positions
 - `BOND_MIN_VOLUME=5000` — min 24hr market volume to consider
 - `BOND_DAILY_MAX_SPEND=50` — daily cap in USD
+- `BOND_MIN_ELAPSED_MINUTES=30` — only enter games 30+ minutes old (avoids early lead false signals)
 
 ## Technical Implementation
 - **Backend**: Node.js + Express server, port 5000 (dev) or 4000 (VPS)

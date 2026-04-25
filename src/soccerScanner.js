@@ -125,6 +125,7 @@ async function scanLiveSoccerMarkets(minVolume = 500) {
         yesTokenId:  tokenIds[0],
         noTokenId:   tokenIds[1],
         yesOutcome:  outcomes[0] || 'Yes',
+        startDate:   event.startDate || market.startDate || null,
         endDate:     market.endDate || event.endDate,
         volume24hr:  vol24h,
         negRisk:     market.negRisk === true || market.negRisk === 'true' || event.negRisk === true,

@@ -294,9 +294,11 @@ class BondSession {
       message: `[Soccer] RESOLVED ${result.toUpperCase()} "${this.market.question.slice(0, 50)}" | gross=${grossPnl >= 0 ? '+' : ''}$${grossPnl.toFixed(3)} | net=${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(3)}`
     });
 
-    if (result === 'win' && this.filledTokens > 0) {
-      // Switch to 'redeeming' phase — the fast loop retries every 15s until done
-      this.phase          = 'redeeming';
+    if (result === 'win') {
+      // Always attempt on-chain redemption on a win — the redeemer checks
+      // the actual token balance itself. Don't gate on filledTokens here because
+      // fill-check API failures leave filledTokens=0 even for real fills.
+      this.phase           = 'redeeming';
       this._redeemAttempts = 0;
     } else {
       this.phase = 'done';
