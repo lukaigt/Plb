@@ -205,7 +205,6 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
             price: roundedPrice,
             size,
             side: Side.BUY,
-            feeRateBps: 0,
             expiration: 0,
             taker: '0x0000000000000000000000000000000000000000'
           },
@@ -267,7 +266,6 @@ async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '
         price: roundedPrice,
         size: roundedSize,
         side: Side.SELL,
-        feeRateBps: 0,
         expiration: 0,
         taker: '0x0000000000000000000000000000000000000000'
       },
