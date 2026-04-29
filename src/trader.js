@@ -1,5 +1,5 @@
 const { ClobClient, Side, OrderType, AssetType, Chain } = require('@polymarket/clob-client-v2');
-const { createWalletClient, createPublicClient, http, maxUint256 } = require('viem');
+const { createWalletClient, createPublicClient, http, fallback, maxUint256 } = require('viem');
 const { polygon } = require('viem/chains');
 const { privateKeyToAccount } = require('viem/accounts');
 const { ethers } = require('ethers');
@@ -9,9 +9,10 @@ const logger = require('./logger');
 const CLOB_HOST = 'https://clob.polymarket.com';
 
 const POLYGON_RPCS = [
-  'https://polygon-rpc.com',
+  'https://polygon-bor-rpc.publicnode.com',
   'https://rpc.ankr.com/polygon',
-  'https://matic-mainnet.chainstacklabs.com'
+  'https://polygon.llamarpc.com',
+  'https://polygon-rpc.com'
 ];
 
 const USDC_CONTRACTS = [
@@ -112,15 +113,17 @@ async function initClient(privateKey) {
     const account = privateKeyToAccount(cleanKey);
     eoaAddress = account.address;
 
+    const rpcTransport = fallback(POLYGON_RPCS.map(rpc => http(rpc)));
+
     const walletClient = createWalletClient({
       account,
       chain: polygon,
-      transport: http('https://polygon-rpc.com')
+      transport: rpcTransport
     });
 
     const publicClient = createPublicClient({
       chain: polygon,
-      transport: http('https://polygon-rpc.com')
+      transport: rpcTransport
     });
 
     logger.addActivity('trader', { message: `Wallet address: ${eoaAddress.substring(0, 8)}...${eoaAddress.substring(eoaAddress.length - 6)}` });
