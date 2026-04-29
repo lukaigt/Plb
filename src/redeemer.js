@@ -9,10 +9,10 @@ const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
 const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
 
 const POLYGON_RPCS = [
-  'https://polygon-rpc.com',
-  'https://rpc-mainnet.matic.quiknode.pro',
+  'https://polygon-bor-rpc.publicnode.com',
+  'https://rpc.ankr.com/polygon',
   'https://polygon.llamarpc.com',
-  'https://polygon-mainnet.public.blastapi.io'
+  'https://polygon-rpc.com'
 ];
 
 const CTF_ABI = [
