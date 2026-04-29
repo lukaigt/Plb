@@ -25,6 +25,8 @@ const USDC_DECIMALS = 6;
 
 // pUSD token and V2 exchange contracts on Polygon
 const PUSD_ADDRESS    = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB';
+const CTF_ADDRESS     = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'; // unchanged
+const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296'; // unchanged
 const V2_EXCHANGES    = [
   { address: '0xE111180000d2663C0091e4f400237545B87B996B', name: 'Exchange V2' },
   { address: '0xe2222d279d744050d28e00520010520000310F59', name: 'NegRisk Exchange V2' }
@@ -33,6 +35,11 @@ const ERC20_FULL_ABI = [
   { name: 'balanceOf',  type: 'function', stateMutability: 'view',       inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
   { name: 'allowance',  type: 'function', stateMutability: 'view',       inputs: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }], outputs: [{ type: 'uint256' }] },
   { name: 'approve',    type: 'function', stateMutability: 'nonpayable',  inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }], outputs: [{ type: 'bool' }] }
+];
+// ERC-1155 operator approval — required so NegRiskAdapter can pull CTF tokens from the EOA
+const ERC1155_ABI = [
+  { name: 'isApprovedForAll', type: 'function', stateMutability: 'view',      inputs: [{ name: 'account', type: 'address' }, { name: 'operator', type: 'address' }], outputs: [{ type: 'bool' }] },
+  { name: 'setApprovalForAll', type: 'function', stateMutability: 'nonpayable', inputs: [{ name: 'operator', type: 'address' }, { name: 'approved', type: 'bool' }],    outputs: [] }
 ];
 
 let _cachedBalance    = null;
@@ -193,6 +200,32 @@ async function initClient(privateKey) {
       } catch (err) {
         logger.addActivity('trader_error', { message: `Approve failed for ${exchange.name}: ${err.message?.slice(0, 100)}` });
       }
+    }
+
+    // Ensure CTF ERC-1155 tokens are approved for NegRiskAdapter.
+    // Without this, NegRiskAdapter.redeemPositions() reverts because it cannot
+    // pull conditional tokens from the EOA via safeTransferFrom.
+    try {
+      const isApproved = await publicClient.readContract({
+        address: CTF_ADDRESS,
+        abi: ERC1155_ABI,
+        functionName: 'isApprovedForAll',
+        args: [eoaAddress, NEG_RISK_ADAPTER]
+      });
+      if (isApproved) {
+        logger.addActivity('trader', { message: 'CTF already approved for NegRiskAdapter' });
+      } else {
+        logger.addActivity('trader', { message: 'Approving CTF for NegRiskAdapter (needed for soccer redemptions)...' });
+        const txHash = await walletClient.writeContract({
+          address: CTF_ADDRESS,
+          abi: ERC1155_ABI,
+          functionName: 'setApprovalForAll',
+          args: [NEG_RISK_ADAPTER, true]
+        });
+        logger.addActivity('trader', { message: `CTF approved for NegRiskAdapter — tx: ${txHash.slice(0, 18)}...` });
+      }
+    } catch (err) {
+      logger.addActivity('trader_error', { message: `CTF setApprovalForAll failed: ${err.message?.slice(0, 100)}` });
     }
 
     // Ping Polymarket backend to sync the balance/allowance it sees
