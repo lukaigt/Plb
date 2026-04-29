@@ -2,7 +2,6 @@ const logger = require('./logger');
 
 const GAMMA_API    = 'https://gamma-api.polymarket.com';
 const TAG_SLUGS    = ['soccer', 'football'];
-const WINDOW_HOURS = 3;
 const PAGE_LIMIT   = 100;
 const MAX_PAGES    = 5;
 
@@ -61,7 +60,6 @@ async function scanLiveSoccerMarkets(minVolume = 500) {
 
   const seenMarketIds  = new Set();
   const liveMarkets    = [];
-  let   cntFuture      = 0;
   let   cntExpired     = 0;
   let   cntLowVol      = 0;
   let   cntNoAccept    = 0;
@@ -129,7 +127,7 @@ async function scanLiveSoccerMarkets(minVolume = 500) {
         yesTokenId:  tokenIds[0],
         noTokenId:   tokenIds[1],
         yesOutcome:  outcomes[0] || 'Yes',
-        startDate:   kickoffRaw || null,
+        startDate:   kickoff.toISOString(),
         endDate:     market.endDate || event.endDate,
         volume24hr:  vol24h,
         negRisk:     market.negRisk === true || market.negRisk === 'true' || event.negRisk === true,
@@ -139,7 +137,7 @@ async function scanLiveSoccerMarkets(minVolume = 500) {
   }
 
   logger.addActivity('soccer_scan', {
-    message: `Scan: ${allEvents.length} events fetched → ${liveMarkets.length} live market(s) found | skipped: ${cntFuture} future, ${cntExpired} expired, ${cntPreKickoff} pre-kickoff, ${cntLowVol} low-vol, ${cntNoAccept} not-accepting-orders`
+    message: `Scan: ${allEvents.length} events fetched → ${liveMarkets.length} live market(s) found | skipped: ${cntPreKickoff} pre-kickoff, ${cntExpired} expired, ${cntLowVol} low-vol, ${cntNoAccept} not-accepting-orders`
   });
 
   return liveMarkets;
