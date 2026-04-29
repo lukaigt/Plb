@@ -385,43 +385,27 @@ const COLLATERAL_ADDRESSES = new Set([
 ]);
 
 function verifyRedemptionReceipt(receipt, safAddr) {
-  if (!safAddr) {
-    return receipt.status === 1;
-  }
+  if (receipt.status !== 1) return false;
 
-  const safeLower = safAddr.toLowerCase();
-
-  let hasExecutionSuccess = false;
   let hasExecutionFailure = false;
   let hasCollateralTransfer = false;
 
   for (const log of receipt.logs) {
-    if (log.address.toLowerCase() === safeLower) {
-      if (log.topics[0] === EXECUTION_SUCCESS_TOPIC) {
-        hasExecutionSuccess = true;
-      } else if (log.topics[0] === EXECUTION_FAILURE_TOPIC) {
-        hasExecutionFailure = true;
-      }
+    // Safe-specific: inner call failure despite outer tx status=1
+    if (safAddr && log.address.toLowerCase() === safAddr.toLowerCase()) {
+      if (log.topics[0] === EXECUTION_FAILURE_TOPIC) hasExecutionFailure = true;
     }
-
+    // Any ERC-20 Transfer from pUSD or USDC.e = collateral actually moved
     if (COLLATERAL_ADDRESSES.has(log.address.toLowerCase()) && log.topics[0] === TRANSFER_TOPIC) {
       hasCollateralTransfer = true;
     }
   }
 
-  if (hasExecutionFailure) {
-    return false;
-  }
+  if (hasExecutionFailure) return false;
 
-  if (hasExecutionSuccess && hasCollateralTransfer) {
-    return true;
-  }
-
-  if (hasExecutionSuccess) {
-    return true;
-  }
-
-  return false;
+  // Require a collateral transfer — if CTF/NegRisk was called on the wrong contract
+  // or with zero balance, the tx still returns status=1 but no payout happens.
+  return hasCollateralTransfer;
 }
 
 async function batchBalanceCheck(ctf, address, redemptions) {
@@ -511,31 +495,18 @@ async function checkAndRedeem() {
           continue;
         }
 
-        // For standard (non-NegRisk) markets verify on-chain resolution via CTF payoutDenominator.
-        // For NegRisk markets skip this check — NegRisk resolution goes through its own adapter
-        // and ctf.payoutDenominator() returns 0 even after the game ends. The redemption call
-        // itself will revert if the market is not yet resolved, caught in the try/catch below.
+        // Skip payoutDenominator pre-check entirely — it returns 0 for ALL NegRisk markets
+        // (most Polymarket soccer markets) even after resolution, causing silent false-negatives.
+        // The on-chain redemption call itself reverts if the market is unresolved; that revert
+        // is caught below and triggers a retry. Let the contract be the gate.
         const isNegRiskPosition = redemption.negRisk === true;
-        if (!isNegRiskPosition) {
-          let payoutDenom;
-          try {
-            payoutDenom = await ctf.payoutDenominator(conditionId);
-          } catch (rpcErr) {
-            logger.addActivity('redeemer', {
-              message: `RPC error checking payout for "${(redemption.question || 'trade').slice(0, 40)}" — will retry`
-            });
-            continue;
-          }
 
-          if (payoutDenom.eq(0)) {
-            // Market not yet resolved on-chain — wait silently
-            continue;
-          }
-        }
-
-        // Market is resolved — check token balances on EOA and Safe
+        // Check token balances on EOA and Safe
         const eoaHasBalance = await hasTokenBalance(ctf, wallet.address, redemption.tokenId);
         const safeHasBalance = safAddr ? await hasTokenBalance(ctf, safAddr, redemption.tokenId) : false;
+        logger.addActivity('redeemer', {
+          message: `Balance check "${(redemption.question || 'trade').slice(0, 40)}" | EOA: ${eoaHasBalance} | Safe: ${safeHasBalance} | negRisk: ${isNegRiskPosition}`
+        });
 
         if (!eoaHasBalance && !safeHasBalance) {
           const retryCount = redemption.balanceRetryCount || 0;
@@ -689,21 +660,10 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
       return false;
     }
 
-    // For standard (non-NegRisk) markets, verify on-chain resolution via CTF payoutDenominator.
-    // For NegRisk markets this check is skipped — NegRisk resolution goes through its own
-    // adapter and ctf.payoutDenominator() returns 0 even after the game ends. The redemption
-    // call itself will revert if the market is not yet resolved, which is caught below.
-    if (!negRisk) {
-      let payoutDenom;
-      try { payoutDenom = await ctf.payoutDenominator(condId); } catch {
-        logger.addActivity('redeemer', { message: `RPC error checking payout for "${label}" — will retry next tick` });
-        return false;
-      }
-      if (payoutDenom.eq(0)) {
-        logger.addActivity('redeemer', { message: `Market not yet resolved on-chain for "${label}" — will retry` });
-        return false;
-      }
-    }
+    // Skip payoutDenominator pre-check entirely — it returns 0 for ALL NegRisk markets
+    // (most Polymarket soccer markets) even after resolution, causing silent false-negatives.
+    // The on-chain redemption call itself reverts if the market is unresolved; that revert
+    // is caught below and triggers a retry. Let the contract be the gate.
 
     // Check which address holds the tokens (wrapped in try/catch — RPC blips must not kill the loop)
     let eoaHas = false;
@@ -721,20 +681,24 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
       return false;
     }
 
+    logger.addActivity('redeemer', {
+      message: `Balance check "${label}" | EOA(${wallet.address.slice(0,10)}…): ${eoaHas} | Safe(${safAddr ? safAddr.slice(0,10)+'…' : 'unknown'}): ${safeHas} | negRisk: ${negRisk}`
+    });
+
     if (!eoaHas && !safeHas) {
       if (!safAddr) {
         logger.addActivity('redeemer_error', {
-          message: `CRITICAL: Proxy wallet address unknown — cannot check Safe balance for "${label}". Add PROXY_WALLET_ADDRESS=<your_safe_addr> to .env`
+          message: `CRITICAL: Proxy wallet unknown — set PROXY_WALLET_ADDRESS in .env. EOA has no tokens for "${label}"`
         });
       } else {
-        logger.addActivity('redeemer', { message: `No token balance on EOA (${wallet.address.slice(0,10)}…) or Safe (${safAddr.slice(0,10)}…) for "${label}" — market may not be resolved yet, will retry` });
+        logger.addActivity('redeemer', { message: `No tokens on EOA or Safe for "${label}" — market may not yet be resolved on-chain, will retry` });
       }
       return false;
     }
 
     const redeemFromSafe = !eoaHas && safeHas;
     logger.addActivity('redeemer', {
-      message: `Redeeming "${label}" from ${redeemFromSafe ? `Safe (${safAddr.slice(0,10)}…)` : `EOA (${wallet.address.slice(0,10)}…)`} — trying ${negRisk ? 'NegRisk then CTF' : 'CTF then NegRisk'}`
+      message: `Attempting redemption "${label}" from ${redeemFromSafe ? `Safe (${safAddr.slice(0,10)}…)` : `EOA (${wallet.address.slice(0,10)}…)`} — trying ${negRisk ? 'NegRisk then CTF' : 'CTF then NegRisk'}`
     });
 
     const attempts = negRisk
@@ -751,14 +715,12 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
         }
         const receipt = await tx.wait();
 
-        // For Safe transactions, verify the inner call actually succeeded (execTransaction
-        // returns status=1 even when the inner call reverts — only ExecutionFailure reveals it)
-        if (redeemFromSafe && safAddr) {
-          const ok = verifyRedemptionReceipt(receipt, safAddr);
-          if (!ok) {
-            logger.addActivity('redeemer', { message: `${att.label} via Safe — ExecutionFailure on-chain for "${label}" — trying next method` });
-            continue;
-          }
+        // Verify a collateral transfer actually happened — a tx can return status=1
+        // with zero payout if called on the wrong contract or with no token balance.
+        const ok = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null);
+        if (!ok) {
+          logger.addActivity('redeemer', { message: `${att.label} tx mined but no collateral transferred for "${label}" — trying next method` });
+          continue;
         }
 
         redemptionHistory.push({ question, conditionId, tokenId, status: 'redeemed', txHash: receipt.transactionHash, redeemedAt: new Date().toISOString() });
