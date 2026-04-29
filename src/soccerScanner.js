@@ -2,7 +2,7 @@ const logger = require('./logger');
 
 const GAMMA_API    = 'https://gamma-api.polymarket.com';
 const TAG_SLUGS    = ['soccer', 'football'];
-const WINDOW_HOURS = 12;
+const WINDOW_HOURS = 3;
 const PAGE_LIMIT   = 100;
 const MAX_PAGES    = 5;
 
@@ -82,12 +82,15 @@ async function scanLiveSoccerMarkets(minVolume = 500) {
       continue;
     }
 
-    if (event.startDate) {
-      const kickoff = new Date(event.startDate);
-      if (kickoff > now) {
-        cntPreKickoff++;
-        continue;
-      }
+    // Require a startDate and require the game to have already kicked off
+    if (!event.startDate) {
+      cntPreKickoff++;
+      continue;
+    }
+    const kickoff = new Date(event.startDate);
+    if (kickoff > now) {
+      cntPreKickoff++;
+      continue;
     }
 
     for (const market of event.markets) {
