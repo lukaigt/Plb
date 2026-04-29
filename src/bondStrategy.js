@@ -103,11 +103,14 @@ class BondSession {
   }
 
   shouldEnter() {
-    // Must be at or above threshold but below 0.999 — at 1.000 the game is
-    // already over and Polymarket rejects prices >= 1.0 (no yield left).
+    // Must be at or above threshold but below the market's max valid price.
+    // At 1.000 the game is over and the CLOB rejects prices >= 1.0 (no yield left).
+    const tickNum  = parseFloat(this.market.tickSize || '0.01') || 0.01;
+    const decimals = tickNum <= 0.001 ? 3 : 2;
+    const maxPrice = parseFloat((1.0 - tickNum).toFixed(decimals));
     return this.lastMid !== null
       && this.lastMid >= this.config.threshold
-      && this.lastMid < 0.999;
+      && this.lastMid <= maxPrice;
   }
 
   async enter(client) {
@@ -115,11 +118,14 @@ class BondSession {
     const privateKey = process.env.WALLET_PRIVATE_KEY;
     if (!privateKey) return false;
 
-    // Cap price at 0.999 — CLOB rejects exactly 1.0
-    const price    = Math.min(this.lastMid, 0.999);
     const amount   = this.config.orderSize;
     const negRisk  = this.market.negRisk;
     const tickSize = this.market.tickSize || '0.01';
+    // Cap price strictly below 1.0 using the market's actual tick size
+    const tickNum  = parseFloat(tickSize) || 0.01;
+    const decimals = tickNum <= 0.001 ? 3 : 2;
+    const maxPrice = parseFloat((1.0 - tickNum).toFixed(decimals));
+    const price    = Math.min(this.lastMid, maxPrice);
 
     logger.addActivity('bond_entry', {
       message: `[Soccer] ENTERING "${this.market.question.slice(0, 55)}" | mid=${price.toFixed(3)} >= threshold=${this.config.threshold} | $${amount} buy`

@@ -131,14 +131,29 @@ async function initClient(privateKey) {
       await clobClient.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
       logger.addActivity('trader', { message: 'pUSD (COLLATERAL) allowance approved on V2 exchange' });
     } catch (err) {
-      logger.addActivity('trader', { message: `COLLATERAL allowance call failed (may already be set): ${err.message?.slice(0, 80)}` });
+      logger.addActivity('trader_error', { message: `COLLATERAL allowance approval FAILED — check MATIC gas balance: ${err.message?.slice(0, 100)}` });
     }
 
     try {
       await clobClient.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
       logger.addActivity('trader', { message: 'CONDITIONAL (token) allowance approved — sells enabled' });
     } catch (err) {
-      logger.addActivity('trader', { message: `CONDITIONAL allowance call failed (may already be set): ${err.message?.slice(0, 80)}` });
+      logger.addActivity('trader_error', { message: `CONDITIONAL allowance approval FAILED: ${err.message?.slice(0, 100)}` });
+    }
+
+    // Verify actual pUSD balance visible to the exchange — if 0, orders will fail
+    try {
+      const bal = await clobClient.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+      const balNum = parseFloat(bal?.balance || bal?.allowance || 0) / 1e6;
+      if (balNum > 0) {
+        logger.addActivity('trader', { message: `pUSD balance on exchange: $${balNum.toFixed(2)}` });
+      } else {
+        logger.addActivity('trader_error', {
+          message: 'WARNING: pUSD balance visible to exchange is $0 — orders will fail. Ensure you have pUSD in your wallet AND MATIC for gas. Check polymarket.com to wrap USDC → pUSD.'
+        });
+      }
+    } catch (err) {
+      logger.addActivity('trader', { message: `Balance check skipped: ${err.message?.slice(0, 60)}` });
     }
 
     proxyWalletAddress = await fetchProxyWallet();
@@ -200,10 +215,16 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
   }
 
   try {
-    const roundedPrice = Math.round(price * 100) / 100;
-    const size = parseFloat((amount / roundedPrice).toFixed(2));
-
     const resolvedTickSize = String(tickSize || '0.01');
+    const tickNum  = parseFloat(resolvedTickSize) || 0.01;
+    const decimals = tickNum <= 0.001 ? 3 : 2;
+    // Round price to the market's tick precision, then hard-cap below 1.0
+    const maxValidPrice = parseFloat((1.0 - tickNum).toFixed(decimals));
+    const roundedPrice  = Math.min(
+      Math.round(price * (10 ** decimals)) / (10 ** decimals),
+      maxValidPrice
+    );
+    const size = parseFloat((amount / roundedPrice).toFixed(2));
 
     let response;
     let lastError = null;
