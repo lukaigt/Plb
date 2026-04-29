@@ -8,12 +8,13 @@
     "dev": "node server.js"
   },
   "dependencies": {
-    "@polymarket/clob-client": "^5.2.1",
+    "@polymarket/clob-client-v2": "^1.0.2",
     "dotenv": "^16.6.1",
     "ethers": "^5.7.2",
     "express": "^4.22.1",
     "http-proxy-agent": "^7.0.2",
     "https-proxy-agent": "^7.0.6",
+    "viem": "^2.48.4",
     "ws": "^8.19.0"
   }
 }

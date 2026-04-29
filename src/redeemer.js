@@ -3,7 +3,8 @@ const logger = require('./logger');
 const trader = require('./trader');
 
 const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
-const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+const PUSD_ADDRESS  = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB'; // V2 collateral (pUSD)
+const USDC_ADDRESS  = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // V1 collateral (USDC.e, legacy)
 const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
 const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
 
@@ -166,7 +167,7 @@ function formatConditionId(rawConditionId) {
   }
 }
 
-function encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts) {
+function encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts, collateral) {
   if (negRisk) {
     const iface = new ethers.utils.Interface(NEG_RISK_ABI);
     return iface.encodeFunctionData('redeemPositions', [
@@ -174,9 +175,11 @@ function encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts) {
       amounts || [1]
     ]);
   } else {
+    // collateral defaults to pUSD (V2); fall back to USDC.e only for pre-V2 positions
+    const collateralAddr = collateral || PUSD_ADDRESS;
     const iface = new ethers.utils.Interface(CTF_ABI);
     return iface.encodeFunctionData('redeemPositions', [
-      USDC_ADDRESS,
+      collateralAddr,
       ethers.constants.HashZero,
       conditionId,
       [1, 2]
@@ -290,15 +293,30 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
 
     return tx;
   } else {
+    // Try pUSD first (V2 markets), then fall back to USDC.e (V1/legacy positions)
     const contract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
-    const tx = await contract.redeemPositions(
-      USDC_ADDRESS,
-      ethers.constants.HashZero,
-      conditionId,
-      [1, 2],
-      { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
-    );
-    return tx;
+    const collaterals = [
+      { addr: PUSD_ADDRESS, label: 'pUSD' },
+      { addr: USDC_ADDRESS, label: 'USDC.e' }
+    ];
+    let lastErr;
+    for (const col of collaterals) {
+      try {
+        logger.addActivity('redeemer', { message: `CTF redeem: trying ${col.label} as collateral...` });
+        const tx = await contract.redeemPositions(
+          col.addr,
+          ethers.constants.HashZero,
+          conditionId,
+          [1, 2],
+          { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
+        );
+        return tx;
+      } catch (err) {
+        lastErr = err;
+        logger.addActivity('redeemer', { message: `CTF ${col.label} failed: ${(err.message||'').slice(0,60)} — trying next` });
+      }
+    }
+    throw lastErr;
   }
 }
 
@@ -322,10 +340,29 @@ async function redeemViaSafe(wallet, conditionId, negRisk, safAddr, provider, wr
     }
   }
 
-  const redeemData = encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts);
+  if (negRisk) {
+    const redeemData = encodeRedeemCall(conditionId, true, wrappedCollateral, amounts);
+    return await signAndExecSafe(wallet, safeContract, targetAddress, redeemData, provider);
+  }
 
-  const tx = await signAndExecSafe(wallet, safeContract, targetAddress, redeemData, provider);
-  return tx;
+  // Non-negRisk: try pUSD first (V2 markets), then USDC.e (V1/legacy)
+  const collaterals = [
+    { addr: PUSD_ADDRESS, label: 'pUSD' },
+    { addr: USDC_ADDRESS, label: 'USDC.e' }
+  ];
+  let lastErr;
+  for (const col of collaterals) {
+    try {
+      logger.addActivity('redeemer', { message: `Safe CTF redeem: trying ${col.label} as collateral...` });
+      const redeemData = encodeRedeemCall(conditionId, false, wrappedCollateral, amounts, col.addr);
+      const tx = await signAndExecSafe(wallet, safeContract, targetAddress, redeemData, provider);
+      return tx;
+    } catch (err) {
+      lastErr = err;
+      logger.addActivity('redeemer', { message: `Safe CTF ${col.label} failed: ${(err.message||'').slice(0,60)} — trying next` });
+    }
+  }
+  throw lastErr;
 }
 
 async function hasTokenBalance(ctf, walletAddress, tokenId) {
@@ -340,7 +377,12 @@ async function hasTokenBalance(ctf, walletAddress, tokenId) {
 
 const EXECUTION_SUCCESS_TOPIC = ethers.utils.id('ExecutionSuccess(bytes32,uint256)');
 const EXECUTION_FAILURE_TOPIC = ethers.utils.id('ExecutionFailure(bytes32,uint256)');
-const USDC_TRANSFER_TOPIC = ethers.utils.id('Transfer(address,address,uint256)');
+const TRANSFER_TOPIC = ethers.utils.id('Transfer(address,address,uint256)');
+// Both pUSD (V2) and USDC.e (V1 legacy) emit ERC-20 Transfer on redemption
+const COLLATERAL_ADDRESSES = new Set([
+  PUSD_ADDRESS.toLowerCase(),
+  USDC_ADDRESS.toLowerCase()
+]);
 
 function verifyRedemptionReceipt(receipt, safAddr) {
   if (!safAddr) {
@@ -351,7 +393,7 @@ function verifyRedemptionReceipt(receipt, safAddr) {
 
   let hasExecutionSuccess = false;
   let hasExecutionFailure = false;
-  let hasUSDCTransfer = false;
+  let hasCollateralTransfer = false;
 
   for (const log of receipt.logs) {
     if (log.address.toLowerCase() === safeLower) {
@@ -362,8 +404,8 @@ function verifyRedemptionReceipt(receipt, safAddr) {
       }
     }
 
-    if (log.address.toLowerCase() === USDC_ADDRESS.toLowerCase() && log.topics[0] === USDC_TRANSFER_TOPIC) {
-      hasUSDCTransfer = true;
+    if (COLLATERAL_ADDRESSES.has(log.address.toLowerCase()) && log.topics[0] === TRANSFER_TOPIC) {
+      hasCollateralTransfer = true;
     }
   }
 
@@ -371,7 +413,7 @@ function verifyRedemptionReceipt(receipt, safAddr) {
     return false;
   }
 
-  if (hasExecutionSuccess && hasUSDCTransfer) {
+  if (hasExecutionSuccess && hasCollateralTransfer) {
     return true;
   }
 

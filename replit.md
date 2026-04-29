@@ -39,9 +39,20 @@ The bot monitors Polymarket soccer/football markets for in-progress games (Gamma
 - **Backend**: Node.js + Express server, port 5000 (dev) or 4000 (VPS)
 - **Scan Loop**: Every 2 minutes — discovers live soccer/football markets via Gamma API
 - **Fast Loop**: Every 15 seconds — polls YES token midpoints, checks fills, checks resolution
-- **Order Placement**: Polymarket CLOB SDK (`@polymarket/clob-client`)
-- **Auto-Redemption**: On-chain via Polygon smart contracts. NegRisk markets use NegRiskAdapter, then fallback to CTF.
+- **Order Placement**: Polymarket CLOB V2 SDK (`@polymarket/clob-client-v2` + `viem`). Migrated April 2026.
+- **Auto-Redemption**: On-chain via Polygon smart contracts. NegRisk markets use NegRiskAdapter, then fallback to CTF. Non-negRisk tries pUSD first, then USDC.e (legacy fallback for pre-V2 positions).
 - **Safety Controls**: Daily loss limit, kill switch, max positions cap, daily spend cap
+
+## CLOB V2 Migration (April 28, 2026)
+Polymarket launched CLOB V2, replacing USDC.e with pUSD and deploying new exchange contracts.
+- **Collateral**: pUSD `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB` (replaces USDC.e)
+- **Exchange V2**: `0xE111180000d2663C0091e4f400237545B87B996B`
+- **NegRisk Exchange V2**: `0xe2222d279d744050d28e00520010520000310F59`
+- **CTF**: `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` (UNCHANGED — redemption unaffected)
+- **NegRisk Adapter**: `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` (UNCHANGED)
+- SDK constructor now uses options object `{ host, chain: Chain.POLYGON, signer: viemWalletClient, creds }`
+- `feeRateBps`, `expiration`, `taker`, `nonce` removed from order struct. `timestamp` (ms) added by SDK.
+- User must wrap USDC.e → pUSD on polymarket.com before new bets can be placed.
 
 ## Dashboard
 - Live soccer position panel — phase badges (WATCHING / ENTERED / HOLDING / DONE / LOST), mid price, entry price, unrealized P&L, time left

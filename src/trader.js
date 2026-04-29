@@ -1,19 +1,22 @@
-const { ClobClient, Side, OrderType, AssetType } = require('@polymarket/clob-client');
-const { Wallet, ethers } = require('ethers');
+const { ClobClient, Side, OrderType, AssetType, Chain } = require('@polymarket/clob-client-v2');
+const { createWalletClient, http } = require('viem');
+const { privateKeyToAccount } = require('viem/accounts');
+const { ethers } = require('ethers');
 const crypto = require('crypto');
 const logger = require('./logger');
 
 const CLOB_HOST = 'https://clob.polymarket.com';
-const CHAIN_ID  = 137;
 
 const POLYGON_RPCS = [
   'https://polygon-rpc.com',
   'https://rpc.ankr.com/polygon',
   'https://matic-mainnet.chainstacklabs.com'
 ];
+
 const USDC_CONTRACTS = [
-  '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
-  '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'
+  '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB', // pUSD (V2, primary)
+  '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // USDC.e (V1, legacy)
+  '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'  // native USDC
 ];
 const ERC20_ABI     = ['function balanceOf(address) view returns (uint256)'];
 const USDC_DECIMALS = 6;
@@ -91,8 +94,15 @@ async function initClient(privateKey) {
 
   try {
     const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
-    const signer = new Wallet(cleanKey);
-    eoaAddress = signer.address;
+
+    // V2: use viem to create the wallet client
+    const account = privateKeyToAccount(cleanKey);
+    eoaAddress = account.address;
+
+    const walletClient = createWalletClient({
+      account,
+      transport: http('https://polygon-rpc.com')
+    });
 
     logger.addActivity('trader', { message: `Wallet address: ${eoaAddress.substring(0, 8)}...${eoaAddress.substring(eoaAddress.length - 6)}` });
 
@@ -105,15 +115,21 @@ async function initClient(privateKey) {
       return null;
     }
 
-    const apiCreds = { key: apiKey, secret: apiSecret, passphrase };
+    const creds = { key: apiKey, secret: apiSecret, passphrase };
 
-    clobClient = new ClobClient(CLOB_HOST, CHAIN_ID, signer, apiCreds, 0);
+    // V2 constructor uses options object with chain enum instead of positional args
+    clobClient = new ClobClient({
+      host: CLOB_HOST,
+      chain: Chain.POLYGON,
+      signer: walletClient,
+      creds
+    });
 
-    logger.addActivity('trader', { message: 'CLOB client initialized' });
+    logger.addActivity('trader', { message: 'CLOB V2 client initialized' });
 
     try {
       await clobClient.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
-      logger.addActivity('trader', { message: 'COLLATERAL (USDC) allowance approved' });
+      logger.addActivity('trader', { message: 'pUSD (COLLATERAL) allowance approved on V2 exchange' });
     } catch (err) {
       logger.addActivity('trader', { message: `COLLATERAL allowance call failed (may already be set): ${err.message?.slice(0, 80)}` });
     }
@@ -179,7 +195,7 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
   const client = await initClient(privateKey);
 
   if (!client) {
-    logger.addActivity('trade_error', { message: 'Cannot trade: CLOB client not initialized' });
+    logger.addActivity('trade_error', { message: 'Cannot trade: CLOB V2 client not initialized' });
     return { success: false, error: 'CLOB client not initialized' };
   }
 
@@ -187,11 +203,7 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
     const roundedPrice = Math.round(price * 100) / 100;
     const size = parseFloat((amount / roundedPrice).toFixed(2));
 
-    // Pre-populate the SDK's internal caches to avoid live API lookups
-    // that can return responses missing `minimum_tick_size` / `neg_risk`.
     const resolvedTickSize = String(tickSize || '0.01');
-    if (client.tickSizes) client.tickSizes[tokenId] = resolvedTickSize;
-    if (client.negRisk)   client.negRisk[tokenId]   = !!negRisk;
 
     let response;
     let lastError = null;
@@ -199,14 +211,13 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        // V2: expiration and taker are gone from the order struct
         response = await client.createAndPostOrder(
           {
             tokenID: tokenId,
             price: roundedPrice,
             size,
-            side: Side.BUY,
-            expiration: 0,
-            taker: '0x0000000000000000000000000000000000000000'
+            side: Side.BUY
           },
           { tickSize: resolvedTickSize, negRisk: !!negRisk },
           OrderType.GTC
@@ -257,17 +268,14 @@ async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '
     const roundedSize  = parseFloat(size.toFixed(2));
 
     const resolvedTickSize = String(tickSize || '0.01');
-    if (client.tickSizes) client.tickSizes[tokenId] = resolvedTickSize;
-    if (client.negRisk)   client.negRisk[tokenId]   = !!negRisk;
 
+    // V2: expiration and taker removed
     const response = await client.createAndPostOrder(
       {
         tokenID: tokenId,
         price: roundedPrice,
         size: roundedSize,
-        side: Side.SELL,
-        expiration: 0,
-        taker: '0x0000000000000000000000000000000000000000'
+        side: Side.SELL
       },
       { tickSize: resolvedTickSize, negRisk: !!negRisk },
       OrderType.GTC
