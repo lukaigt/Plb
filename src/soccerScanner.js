@@ -71,33 +71,34 @@ async function scanLiveSoccerMarkets(minVolume = 500) {
     if (!event.active || event.closed) continue;
     if (!Array.isArray(event.markets)) continue;
 
-    const endDiff = event.endDate ? (new Date(event.endDate) - now) : null;
-
-    if (endDiff !== null && endDiff > WINDOW_HOURS * 60 * 60 * 1000) {
-      cntFuture++;
-      continue;
-    }
-    if (endDiff !== null && endDiff < -3 * 60 * 60 * 1000) {
-      cntExpired++;
-      continue;
-    }
-
-    // Require a startDate and require the game to have already kicked off
-    if (!event.startDate) {
-      cntPreKickoff++;
-      continue;
-    }
-    const kickoff = new Date(event.startDate);
-    if (kickoff > now) {
-      cntPreKickoff++;
-      continue;
-    }
-
     for (const market of event.markets) {
       const marketKey = market.conditionId || market.id;
       if (!marketKey || seenMarketIds.has(marketKey)) continue;
       if (!market.active || market.closed) continue;
       if (market.acceptingOrders === false) { cntNoAccept++; continue; }
+
+      // Use the actual game kickoff time — NOT startDate (that's market creation date)
+      // gameStartTime on market or startTime on event are the real kickoff fields
+      const kickoffRaw = market.gameStartTime || event.startTime || null;
+      if (!kickoffRaw) {
+        cntPreKickoff++;
+        continue;
+      }
+      const kickoffStr     = String(kickoffRaw).replace(' ', 'T').replace(/\+00$/, '+00:00');
+      const kickoff        = new Date(kickoffStr);
+      if (isNaN(kickoff.getTime())) { cntPreKickoff++; continue; }
+      const minutesElapsed = (now - kickoff) / 60000;
+
+      if (minutesElapsed < 0) {
+        // Kickoff hasn't happened yet — not live
+        cntPreKickoff++;
+        continue;
+      }
+      if (minutesElapsed > 180) {
+        // Kicked off more than 3 hours ago — almost certainly finished
+        cntExpired++;
+        continue;
+      }
 
       let tokenIds = [];
       try {
@@ -128,7 +129,7 @@ async function scanLiveSoccerMarkets(minVolume = 500) {
         yesTokenId:  tokenIds[0],
         noTokenId:   tokenIds[1],
         yesOutcome:  outcomes[0] || 'Yes',
-        startDate:   event.startDate || market.startDate || null,
+        startDate:   kickoffRaw || null,
         endDate:     market.endDate || event.endDate,
         volume24hr:  vol24h,
         negRisk:     market.negRisk === true || market.negRisk === 'true' || event.negRisk === true,
