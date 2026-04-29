@@ -1,7 +1,5 @@
 const http = require('http');
 const https = require('https');
-const fs = require('fs');
-const path = require('path');
 const logger = require('./logger');
 
 let proxyConfigured = false;
@@ -20,57 +18,6 @@ function installSafeJsonStringify() {
     };
     return originalStringify.call(JSON, value, safeReplacer, space);
   };
-  console.log('[PROXY] Safe JSON.stringify installed (handles circular references)');
-}
-
-function patchClobClient(proxyUrl) {
-  const helpersPath = path.join(
-    path.dirname(require.resolve('@polymarket/clob-client')),
-    'http-helpers',
-    'index.js'
-  );
-
-  const backupPath = helpersPath + '.original';
-
-  if (fs.existsSync(backupPath)) {
-    fs.copyFileSync(backupPath, helpersPath);
-    console.log('[PROXY] Restored original CLOB client from backup');
-  }
-
-  let code = fs.readFileSync(helpersPath, 'utf8');
-
-  if (code.includes('__PROXY_PATCHED__')) {
-    console.log('[PROXY] CLOB client has stale patch, reinstalling fresh copy...');
-    try {
-      require('child_process').execSync('npm install @polymarket/clob-client --force --no-audit 2>/dev/null', { cwd: path.resolve(__dirname, '..') });
-      code = fs.readFileSync(helpersPath, 'utf8');
-      console.log('[PROXY] Fresh CLOB client installed');
-    } catch (e) {
-      console.error('[PROXY] Could not reinstall CLOB client:', e.message);
-      return false;
-    }
-  }
-
-  fs.copyFileSync(helpersPath, backupPath);
-
-  const originalLine = 'return await axios({ method, url: endpoint, headers, data, params });';
-
-  if (!code.includes(originalLine)) {
-    console.error('[PROXY] Could not find axios call in CLOB client to patch');
-    return false;
-  }
-
-  const agentSetup = `import { HttpsProxyAgent } from 'https-proxy-agent';\nconst __proxyAgent = new HttpsProxyAgent(${JSON.stringify(proxyUrl)});\n`;
-  code = agentSetup + code;
-
-  const patchedLine = `// __PROXY_PATCHED__
-    return await axios({ method, url: endpoint, headers, data, params, httpsAgent: __proxyAgent, httpAgent: __proxyAgent, proxy: false });`;
-
-  code = code.replace(originalLine, patchedLine);
-
-  fs.writeFileSync(helpersPath, code, 'utf8');
-  console.log('[PROXY] CLOB client http-helpers patched successfully');
-  return true;
 }
 
 function setupProxy() {
@@ -93,17 +40,11 @@ function setupProxy() {
     http.globalAgent = httpAgent;
     https.globalAgent = httpsAgent;
 
-    const patched = patchClobClient(proxyUrl);
-
     const maskedUrl = proxyUrl.replace(/:([^@:]+)@/, ':****@');
-    console.log(`[PROXY] Global agents overridden: ${maskedUrl}`);
-    console.log(`[PROXY] CLOB client patched: ${patched}`);
-    logger.addActivity('proxy', { message: `Proxy active (CLOB patched=${patched}): ${maskedUrl}` });
+    logger.addActivity('proxy', { message: `Proxy active: ${maskedUrl}` });
     proxyConfigured = true;
     return true;
   } catch (err) {
-    console.error(`[PROXY ERROR] ${err.message}`);
-    console.error(err.stack);
     logger.addActivity('proxy_error', { message: `Failed to configure proxy: ${err.message}` });
     return false;
   }
