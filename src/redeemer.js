@@ -26,6 +26,58 @@ const NEG_RISK_ABI = [
   'function wcol() view returns (address)'
 ];
 
+// ERC-1155 operator approval — NegRiskAdapter pulls CTF tokens from the EOA
+// via safeTransferFrom, so the EOA must have set this operator approval.
+const ERC1155_APPROVAL_ABI = [
+  'function isApprovedForAll(address account, address operator) view returns (bool)',
+  'function setApprovalForAll(address operator, bool approved)'
+];
+
+// Session cache + in-flight promise lock so concurrent callers (auto-redeem,
+// bondStrategy, manual force-redeem) don't all submit duplicate approval txs.
+let _negRiskApprovalVerified = false;
+let _negRiskApprovalInFlight = null;
+
+async function ensureNegRiskApproval(wallet, provider) {
+  if (_negRiskApprovalVerified) return true;
+  if (_negRiskApprovalInFlight) return _negRiskApprovalInFlight;
+
+  _negRiskApprovalInFlight = (async () => {
+    try {
+      const ctf = new ethers.Contract(CTF_ADDRESS, ERC1155_APPROVAL_ABI, provider);
+      const isApproved = await ctf.isApprovedForAll(wallet.address, NEG_RISK_ADAPTER);
+      if (isApproved) {
+        logger.addActivity('redeemer', { message: 'CTF approval for NegRiskAdapter already set' });
+        _negRiskApprovalVerified = true;
+        return true;
+      }
+      logger.addActivity('redeemer', { message: 'Setting CTF setApprovalForAll(NegRiskAdapter, true) — required for redemption...' });
+      const ctfWriter = new ethers.Contract(CTF_ADDRESS, ERC1155_APPROVAL_ABI, wallet);
+      const gasPrice = await provider.getGasPrice();
+      const tx = await ctfWriter.setApprovalForAll(NEG_RISK_ADAPTER, true, {
+        gasPrice: gasPrice.mul(2),
+        gasLimit: 100000
+      });
+      logger.addActivity('redeemer', { message: `Approval tx sent: ${tx.hash.slice(0, 18)}... waiting for confirmation` });
+      const receipt = await tx.wait();
+      if (receipt.status === 1) {
+        logger.addActivity('redeemer', { message: `CTF approval confirmed on-chain (block ${receipt.blockNumber})` });
+        _negRiskApprovalVerified = true;
+        return true;
+      }
+      logger.addActivity('redeemer_error', { message: 'Approval tx mined but reverted (status=0)' });
+      return false;
+    } catch (err) {
+      logger.addActivity('redeemer_error', { message: `ensureNegRiskApproval error: ${(err.message||'').slice(0,120)}` });
+      return false;
+    } finally {
+      _negRiskApprovalInFlight = null;
+    }
+  })();
+
+  return _negRiskApprovalInFlight;
+}
+
 const SAFE_FACTORY_ABI = [
   'function computeProxyAddress(address owner) view returns (address)'
 ];
@@ -268,6 +320,13 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
 
     if (balance.eq(0)) {
       throw new Error('No token balance for NegRiskAdapter redemption');
+    }
+
+    // Bulletproof: ensure ERC-1155 operator approval is set before invoking adapter.
+    // Without this, redeemPositions reverts because the adapter cannot pull tokens.
+    const approved = await ensureNegRiskApproval(wallet, provider);
+    if (!approved) {
+      throw new Error('CTF setApprovalForAll(NegRiskAdapter) failed — cannot redeem');
     }
 
     let outcomeInfo = await lookupOutcomeIndex(conditionId, tokenId);
