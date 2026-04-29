@@ -1,5 +1,6 @@
 const { ClobClient, Side, OrderType, AssetType, Chain } = require('@polymarket/clob-client-v2');
-const { createWalletClient, http } = require('viem');
+const { createWalletClient, createPublicClient, http, maxUint256 } = require('viem');
+const { polygon } = require('viem/chains');
 const { privateKeyToAccount } = require('viem/accounts');
 const { ethers } = require('ethers');
 const crypto = require('crypto');
@@ -20,6 +21,18 @@ const USDC_CONTRACTS = [
 ];
 const ERC20_ABI     = ['function balanceOf(address) view returns (uint256)'];
 const USDC_DECIMALS = 6;
+
+// pUSD token and V2 exchange contracts on Polygon
+const PUSD_ADDRESS    = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB';
+const V2_EXCHANGES    = [
+  { address: '0xE111180000d2663C0091e4f400237545B87B996B', name: 'Exchange V2' },
+  { address: '0xe2222d279d744050d28e00520010520000310F59', name: 'NegRisk Exchange V2' }
+];
+const ERC20_FULL_ABI = [
+  { name: 'balanceOf',  type: 'function', stateMutability: 'view',       inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
+  { name: 'allowance',  type: 'function', stateMutability: 'view',       inputs: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }], outputs: [{ type: 'uint256' }] },
+  { name: 'approve',    type: 'function', stateMutability: 'nonpayable',  inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }], outputs: [{ type: 'bool' }] }
+];
 
 let _cachedBalance    = null;
 let _balanceFetchedAt = 0;
@@ -101,6 +114,12 @@ async function initClient(privateKey) {
 
     const walletClient = createWalletClient({
       account,
+      chain: polygon,
+      transport: http('https://polygon-rpc.com')
+    });
+
+    const publicClient = createPublicClient({
+      chain: polygon,
       transport: http('https://polygon-rpc.com')
     });
 
@@ -127,34 +146,57 @@ async function initClient(privateKey) {
 
     logger.addActivity('trader', { message: 'CLOB V2 client initialized' });
 
+    // Check on-chain pUSD balance
+    let pusdBalance = 0n;
     try {
-      await clobClient.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
-      logger.addActivity('trader', { message: 'pUSD (COLLATERAL) allowance approved on V2 exchange' });
-    } catch (err) {
-      logger.addActivity('trader_error', { message: `COLLATERAL allowance approval FAILED — check MATIC gas balance: ${err.message?.slice(0, 100)}` });
-    }
-
-    try {
-      await clobClient.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
-      logger.addActivity('trader', { message: 'CONDITIONAL (token) allowance approved — sells enabled' });
-    } catch (err) {
-      logger.addActivity('trader_error', { message: `CONDITIONAL allowance approval FAILED: ${err.message?.slice(0, 100)}` });
-    }
-
-    // Verify actual pUSD balance visible to the exchange — if 0, orders will fail
-    try {
-      const bal = await clobClient.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
-      const balNum = parseFloat(bal?.balance || bal?.allowance || 0) / 1e6;
-      if (balNum > 0) {
-        logger.addActivity('trader', { message: `pUSD balance on exchange: $${balNum.toFixed(2)}` });
+      pusdBalance = await publicClient.readContract({
+        address: PUSD_ADDRESS,
+        abi: ERC20_FULL_ABI,
+        functionName: 'balanceOf',
+        args: [eoaAddress]
+      });
+      const balUsd = Number(pusdBalance) / 1e6;
+      if (balUsd > 0) {
+        logger.addActivity('trader', { message: `pUSD wallet balance: $${balUsd.toFixed(2)}` });
       } else {
-        logger.addActivity('trader_error', {
-          message: 'WARNING: pUSD balance visible to exchange is $0 — orders will fail. Ensure you have pUSD in your wallet AND MATIC for gas. Check polymarket.com to wrap USDC → pUSD.'
-        });
+        logger.addActivity('trader_error', { message: `WARNING: pUSD wallet balance is $0 — orders will fail. Convert your USDC.e to pUSD on polymarket.com first.` });
       }
     } catch (err) {
-      logger.addActivity('trader', { message: `Balance check skipped: ${err.message?.slice(0, 60)}` });
+      logger.addActivity('trader', { message: `pUSD balance check failed: ${err.message?.slice(0, 60)}` });
     }
+
+    // Ensure pUSD is approved for both V2 exchange contracts on Polygon (on-chain approve)
+    for (const exchange of V2_EXCHANGES) {
+      try {
+        const allowance = await publicClient.readContract({
+          address: PUSD_ADDRESS,
+          abi: ERC20_FULL_ABI,
+          functionName: 'allowance',
+          args: [eoaAddress, exchange.address]
+        });
+
+        if (allowance > 0n) {
+          logger.addActivity('trader', { message: `pUSD already approved for ${exchange.name}` });
+        } else {
+          logger.addActivity('trader', { message: `Sending pUSD approve for ${exchange.name}...` });
+          const txHash = await walletClient.writeContract({
+            address: PUSD_ADDRESS,
+            abi: ERC20_FULL_ABI,
+            functionName: 'approve',
+            args: [exchange.address, maxUint256]
+          });
+          logger.addActivity('trader', { message: `pUSD approved for ${exchange.name} — tx: ${txHash.slice(0, 18)}...` });
+        }
+      } catch (err) {
+        logger.addActivity('trader_error', { message: `Approve failed for ${exchange.name}: ${err.message?.slice(0, 100)}` });
+      }
+    }
+
+    // Ping Polymarket backend to sync the balance/allowance it sees
+    try {
+      await clobClient.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+      await clobClient.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
+    } catch (_) {}
 
     proxyWalletAddress = await fetchProxyWallet();
     if (!proxyWalletAddress) {
