@@ -617,32 +617,40 @@ async function checkAndRedeem() {
 
         if (!redeemed) {
           const errMsg = lastError || 'All methods failed';
-          redemption.status = 'error';
-          redemption.error = errMsg.substring(0, 100);
           redemption.retryCount = (redemption.retryCount || 0) + 1;
-          if (redemption.retryCount >= 3) {
+          const elapsedMs = Date.now() - new Date(redemption.addedAt || 0).getTime();
+          const elapsedMin = Math.floor(elapsedMs / 60000);
+          if (elapsedMs > 2 * 60 * 60 * 1000) {
+            redemption.status = 'error';
+            redemption.error = errMsg.substring(0, 100);
             redemptionHistory.push({ ...redemption });
             logger.addActivity('redeemer_error', {
-              message: `Redeem failed after 3 retries: ${errMsg.substring(0, 80)}`
+              message: `Redeem failed after 2 hours (${redemption.retryCount} attempts) — giving up: ${errMsg.substring(0, 60)}`
             });
           } else {
             redemption.status = 'waiting';
             logger.addActivity('redeemer_error', {
-              message: `Redeem failed (attempt ${redemption.retryCount}/3, will retry): ${errMsg.substring(0, 60)}`
+              message: `Redeem failed (attempt ${redemption.retryCount}, +${elapsedMin}min, will retry): ${errMsg.substring(0, 60)}`
             });
           }
         }
       } catch (err) {
-        redemption.status = 'error';
-        redemption.error = err.message?.substring(0, 100);
+        const elapsedMs = Date.now() - new Date(redemption.addedAt || 0).getTime();
+        if (elapsedMs > 2 * 60 * 60 * 1000) {
+          redemption.status = 'error';
+          redemption.error = err.message?.substring(0, 100);
+          redemptionHistory.push({ ...redemption });
+        } else {
+          redemption.status = 'waiting';
+        }
         logger.addActivity('redeemer_error', {
-          message: `Redeem check error: ${err.message?.substring(0, 80)}`
+          message: `Redeem check error (will retry): ${err.message?.substring(0, 80)}`
         });
       }
     }
 
     const completed = pendingRedemptions.filter(r =>
-      r.status === 'redeemed' || r.status === 'no_payout' || (r.status === 'error' && r.retryCount >= 3)
+      r.status === 'redeemed' || r.status === 'no_payout' || r.status === 'error'
     );
     for (const done of completed) {
       const idx = pendingRedemptions.indexOf(done);
