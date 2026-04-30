@@ -21,9 +21,13 @@ const CTF_ABI = [
   'function balanceOf(address owner, uint256 tokenId) view returns (uint256)'
 ];
 
+// NegRiskAdapter has the same redeemPositions interface as CTF — takes
+// (collateralToken, parentCollectionId, conditionId, indexSets).
+// wcol (wrapped collateral) must be used as the collateralToken for NegRisk markets.
 const NEG_RISK_ABI = [
-  'function redeemPositions(bytes32 conditionId, uint256[] amounts)',
-  'function wcol() view returns (address)'
+  'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
+  'function wcol() view returns (address)',
+  'function balanceOf(address account, uint256 id) view returns (uint256)'
 ];
 
 // ERC-1155 operator approval — NegRiskAdapter pulls CTF tokens from the EOA
@@ -379,49 +383,47 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
   const gasPrice = await provider.getGasPrice();
 
   if (negRisk) {
+    // NegRiskAdapter.redeemPositions has the SAME interface as CTF.redeemPositions:
+    //   redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)
+    // The collateralToken MUST be wcol (the adapter's wrapped collateral), not pUSD or USDC.e.
+    // indexSets [1, 2] = YES (bit 0) + NO (bit 1) — CTF ignores any where balance is 0.
+    if (!wrappedCollateral) {
+      throw new Error('NegRiskAdapter: wrappedCollateral (wcol) address not available');
+    }
+
     const contract = new ethers.Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, wallet);
     const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
 
-    let balance = ethers.BigNumber.from(0);
+    // Tokens may live on CTF (most common — exchange settles directly to CTF positions)
+    // or on the NegRiskAdapter (if acquired via split). Check both.
+    let ctfBal = ethers.BigNumber.from(0);
+    let adapterBal = ethers.BigNumber.from(0);
     if (tokenId) {
-      balance = await ctf.balanceOf(wallet.address, tokenId);
+      ctfBal = await ctf.balanceOf(wallet.address, tokenId);
+      adapterBal = await contract.balanceOf(wallet.address, tokenId);
     }
+    const balance = ctfBal.gt(0) ? ctfBal : adapterBal;
 
     if (balance.eq(0)) {
-      throw new Error('No token balance for NegRiskAdapter redemption');
+      throw new Error('No token balance for NegRiskAdapter redemption (checked CTF + adapter)');
     }
 
-    // Bulletproof: ensure ERC-1155 operator approval is set before invoking adapter.
-    // Without this, redeemPositions reverts because the adapter cannot pull tokens.
+    // Ensure ERC-1155 operator approval so adapter can pull CTF tokens.
     const approved = await ensureNegRiskApproval(wallet, provider);
     if (!approved) {
       throw new Error('CTF setApprovalForAll(NegRiskAdapter) failed — cannot redeem');
     }
 
-    // Verify approval is actually visible on-chain (catches RPC inconsistency)
+    // Verify approval is actually on-chain (catches RPC/caching inconsistency)
     const ctfRead = new ethers.Contract(CTF_ADDRESS, ERC1155_APPROVAL_ABI, provider);
     const approvalState = await ctfRead.isApprovedForAll(wallet.address, NEG_RISK_ADAPTER);
     logger.addActivity('redeemer', {
-      message: `Pre-redeem state | balance: ${ethers.utils.formatUnits(balance, 6)} | approval: ${approvalState} | conditionId: ${String(conditionId).slice(0, 14)}...`
+      message: `NegRisk pre-redeem | ctfBal: ${ethers.utils.formatUnits(ctfBal, 6)} | adapterBal: ${ethers.utils.formatUnits(adapterBal, 6)} | approval: ${approvalState} | wcol: ${wrappedCollateral.slice(0, 10)}...`
     });
 
-    let outcomeInfo = await lookupOutcomeIndex(conditionId, tokenId);
-    let amounts;
-    if (outcomeInfo) {
-      amounts = new Array(outcomeInfo.total).fill(ethers.BigNumber.from(0));
-      amounts[outcomeInfo.index] = balance;
-      logger.addActivity('redeemer', {
-        message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens (outcome ${outcomeInfo.index} of ${outcomeInfo.total})`
-      });
-    } else {
-      amounts = [balance, ethers.BigNumber.from(0)];
-      logger.addActivity('redeemer', {
-        message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens (defaulting to outcome 0)`
-      });
-    }
-
-    // Pre-flight: simulate the call to capture the actual revert reason without wasting gas.
-    const sim = await simulateCall(contract, 'redeemPositions', [conditionId, amounts]);
+    // Pre-flight: simulate to capture the actual revert reason without spending gas.
+    const simArgs = [wrappedCollateral, ethers.constants.HashZero, conditionId, [1, 2]];
+    const sim = await simulateCall(contract, 'redeemPositions', simArgs);
     if (!sim.ok) {
       logger.addActivity('redeemer_error', {
         message: `NegRiskAdapter would revert. Reason: ${sim.reason}`
@@ -429,9 +431,14 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
       throw new Error(`NegRiskAdapter revert: ${sim.reason}`);
     }
 
+    logger.addActivity('redeemer', {
+      message: `NegRiskAdapter simulation OK — submitting redemption (wcol collateral)...`
+    });
     const tx = await contract.redeemPositions(
+      wrappedCollateral,
+      ethers.constants.HashZero,
       conditionId,
-      amounts,
+      [1, 2],
       { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
     );
 
