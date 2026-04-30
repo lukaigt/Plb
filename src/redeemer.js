@@ -389,21 +389,14 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
     // amounts[outcomeIndex] = token balance to redeem; all others = 0.
     // The adapter pulls CTF tokens from msg.sender via safeTransferFrom (needs approval)
     // and pays out in wcol (wrapped collateral).
+    //
+    // NOTE: Do NOT check ctf.payoutDenominator() for NegRisk markets — the NegRiskAdapter
+    // uses its own internal resolution tracking that is separate from the CTF oracle path.
+    // payoutDenominator returns 0 for NegRisk conditionIds even after the game is over.
+    // The NegRiskAdapter.redeemPositions call will revert if the market is truly unresolved
+    // (caught by the simulation below) so the contract is the gate, not payoutDenominator.
     const contract = new ethers.Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, wallet);
     const ctf     = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
-
-    // Check on-chain resolution FIRST — payoutDenominator = 0 means oracle hasn't
-    // pushed results yet. Skip (no gas wasted) and let retry handle it.
-    const denominator = await ctf.payoutDenominator(conditionId);
-    if (denominator.eq(0)) {
-      logger.addActivity('redeemer', {
-        message: `NegRisk market not yet resolved on-chain (payoutDenominator=0) — will retry`
-      });
-      throw new Error('Market not yet resolved on-chain — retry later');
-    }
-    logger.addActivity('redeemer', {
-      message: `NegRisk market resolved on-chain (payoutDenominator=${denominator.toString()}) — proceeding`
-    });
 
     let ctfBal = ethers.BigNumber.from(0);
     let adapterBal = ethers.BigNumber.from(0);
@@ -769,8 +762,9 @@ async function checkAndRedeem() {
                     wallet
                   );
                   if (attempt.negRisk) {
+                    // NegRiskAdapter uses 2-arg interface: redeemPositions(bytes32, uint256[])
                     await redeemContract.callStatic.redeemPositions(
-                      wrappedCollateral, ethers.constants.HashZero, conditionId, [1, 2],
+                      conditionId, [1, 2],
                       { blockTag: txReceipt.blockNumber }
                     );
                   }
@@ -952,11 +946,11 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
         // with zero payout if called on the wrong contract or with no token balance.
         const ok = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null, wrappedCollateral);
         if (!ok) {
-          // payoutDenominator > 0 (checked above) so the market IS resolved.
-          // Zero payout means this outcome lost (bot holds losing tokens) or
-          // a collateral mismatch. Log clearly and don't retry the same method.
+          // Tx mined (status=1) but no collateral Transfer event — zero payout.
+          // Either this outcome lost, the collateral token didn't match, or the
+          // market resolved against us. Log with tx hash so it can be checked.
           logger.addActivity('redeemer_error', {
-            message: `${att.label} tx mined — 0 payout for "${label}". Market resolved but this outcome may have lost. TX: ${receipt.transactionHash.slice(0, 20)}…`
+            message: `${att.label} tx mined — 0 payout for "${label}". Outcome may have lost or collateral mismatch. TX: ${receipt.transactionHash.slice(0, 20)}…`
           });
           continue;
         }
