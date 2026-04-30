@@ -27,6 +27,7 @@ let soccerWinsToday     = 0;
 let soccerLossesToday   = 0;
 let soccerYieldCollected = 0;
 let lastResetDate   = new Date().toDateString();
+let lastWatchSummaryAt  = 0;
 
 const activeSessions = {};
 // Once a market has been entered (or attempted), never re-enter it this session —
@@ -143,6 +144,13 @@ async function runFast() {
 
         if (session.phase === 'watching') {
           await session.pollPrice();
+
+          // Log if this market is near or at the threshold
+          if (session.lastMid !== null && session.lastMid >= config.threshold - 0.03) {
+            logger.addActivity(isAllSportsMode() ? 'sports_scan' : 'soccer_scan', {
+              message: `NEAR THRESHOLD: "${session.market.question.slice(0, 55)}" YES=${session.lastMid.toFixed(3)} (threshold=${config.threshold})`
+            });
+          }
           if (session.shouldEnter()) {
             const canTrade = safety.canTrade();
             if (!canTrade.allowed) continue;
@@ -172,6 +180,30 @@ async function runFast() {
         });
       }
     }
+    // Periodic summary every 2 minutes so the user can see the bot is actively watching
+    const now = Date.now();
+    if (now - lastWatchSummaryAt > 2 * 60 * 1000) {
+      lastWatchSummaryAt = now;
+      const sessions = Object.values(activeSessions);
+      const watching  = sessions.filter(s => s.phase === 'watching');
+      const active    = sessions.filter(s => ['buying','holding','redeeming'].includes(s.phase));
+
+      // Find top 5 markets by YES price
+      const byPrice = watching
+        .filter(s => s.lastMid !== null)
+        .sort((a, b) => b.lastMid - a.lastMid)
+        .slice(0, 5);
+
+      const topStr = byPrice.length > 0
+        ? byPrice.map(s => `${s.lastMid.toFixed(3)} ${s.market.question.slice(0, 30)}`).join(' | ')
+        : 'prices not yet fetched';
+
+      const scanType = isAllSportsMode() ? 'sports_scan' : 'soccer_scan';
+      logger.addActivity(scanType, {
+        message: `Watching ${watching.length} markets | ${active.length} active position(s) | Top YES prices: ${topStr}`
+      });
+    }
+
   } finally {
     isFastRunning = false;
   }

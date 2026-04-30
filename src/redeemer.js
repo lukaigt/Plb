@@ -724,7 +724,41 @@ async function checkAndRedeem() {
               tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider, wrappedCollateral, redemption.tokenId);
             }
 
-            const receipt = await tx.wait();
+            let receipt;
+            try {
+              receipt = await tx.wait();
+            } catch (waitErr) {
+              // tx mined but reverted (status=0). Re-simulate at mined block to get real reason.
+              lastError = waitErr.message || String(waitErr);
+              let revertReason = '(no revert data)';
+              try {
+                const txData = tx;
+                const txReceipt = await provider.getTransactionReceipt(tx.hash).catch(() => null);
+                if (txReceipt && txReceipt.blockNumber) {
+                  const redeemContract = new ethers.Contract(
+                    attempt.negRisk ? NEG_RISK_ADAPTER : CTF_ADDRESS,
+                    attempt.negRisk ? NEG_RISK_ABI : CTF_ABI,
+                    wallet
+                  );
+                  if (attempt.negRisk) {
+                    await redeemContract.callStatic.redeemPositions(
+                      wrappedCollateral, ethers.constants.HashZero, conditionId, [1, 2],
+                      { blockTag: txReceipt.blockNumber }
+                    );
+                  }
+                  revertReason = '(succeeded in replay — transient state issue)';
+                } else {
+                  revertReason = extractRevertReason(waitErr);
+                }
+              } catch (replayErr) {
+                revertReason = extractRevertReason(replayErr);
+              }
+              logger.addActivity('redeemer_error', {
+                message: `${attempt.label} tx reverted on-chain. Reason: ${revertReason}`
+              });
+              throw waitErr;
+            }
+
             const internalSuccess = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null, wrappedCollateral);
 
             if (!internalSuccess) {
@@ -758,23 +792,27 @@ async function checkAndRedeem() {
           redemption.retryCount = (redemption.retryCount || 0) + 1;
           const elapsedMs = Date.now() - new Date(redemption.addedAt || 0).getTime();
           const elapsedMin = Math.floor(elapsedMs / 60000);
-          if (elapsedMs > 2 * 60 * 60 * 1000) {
+          const elapsedHr  = (elapsedMs / 3600000).toFixed(1);
+          // 48-hour window: Polymarket uses UMA protocol for on-chain resolution which can
+          // take 24–72 hours after game end. Giving up at 2h meant we were quitting before
+          // the oracle had even pushed results to the contract.
+          if (elapsedMs > 48 * 60 * 60 * 1000) {
             redemption.status = 'error';
             redemption.error = errMsg.substring(0, 100);
             redemptionHistory.push({ ...redemption });
             logger.addActivity('redeemer_error', {
-              message: `Redeem failed after 2 hours (${redemption.retryCount} attempts) — giving up: ${errMsg.substring(0, 60)}`
+              message: `Redeem failed after 48 hours (${redemption.retryCount} attempts) — giving up: ${errMsg.substring(0, 60)}`
             });
           } else {
             redemption.status = 'waiting';
             logger.addActivity('redeemer_error', {
-              message: `Redeem failed (attempt ${redemption.retryCount}, +${elapsedMin}min, will retry): ${errMsg.substring(0, 60)}`
+              message: `Redeem failed (attempt ${redemption.retryCount}, +${elapsedHr}h, will retry): ${errMsg.substring(0, 60)}`
             });
           }
         }
       } catch (err) {
         const elapsedMs = Date.now() - new Date(redemption.addedAt || 0).getTime();
-        if (elapsedMs > 2 * 60 * 60 * 1000) {
+        if (elapsedMs > 48 * 60 * 60 * 1000) {
           redemption.status = 'error';
           redemption.error = err.message?.substring(0, 100);
           redemptionHistory.push({ ...redemption });
