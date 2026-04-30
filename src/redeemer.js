@@ -14,8 +14,6 @@ const POLYGON_RPCS = [
   'https://polygon-rpc.com'
 ];
 
-// Try pUSD first (all new V2 markets), then USDC.e (legacy V1 positions).
-// callStatic on each will tell us which collateral the position was created with.
 const COLLATERALS = [
   { addr: PUSD_ADDRESS, label: 'pUSD'   },
   { addr: USDC_ADDRESS, label: 'USDC.e' }
@@ -38,9 +36,9 @@ const SAFE_ABI = [
   'function getThreshold() view returns (uint256)'
 ];
 
-const TRANSFER_TOPIC           = ethers.utils.id('Transfer(address,address,uint256)');
-const EXECUTION_FAILURE_TOPIC  = ethers.utils.id('ExecutionFailure(bytes32,uint256)');
-const KNOWN_COLLATERALS        = new Set([PUSD_ADDRESS.toLowerCase(), USDC_ADDRESS.toLowerCase()]);
+const TRANSFER_TOPIC          = ethers.utils.id('Transfer(address,address,uint256)');
+const EXECUTION_FAILURE_TOPIC = ethers.utils.id('ExecutionFailure(bytes32,uint256)');
+const KNOWN_COLLATERALS       = new Set([PUSD_ADDRESS.toLowerCase(), USDC_ADDRESS.toLowerCase()]);
 
 const pendingRedemptions = [];
 const redemptionHistory  = [];
@@ -50,8 +48,8 @@ let   isChecking         = false;
 // ─── Provider ────────────────────────────────────────────────────────────────
 
 async function getWorkingProvider() {
-  const customRpc  = process.env.POLYGON_RPC_URL;
-  const rpcsToTry  = customRpc ? [customRpc, ...POLYGON_RPCS] : POLYGON_RPCS;
+  const customRpc = process.env.POLYGON_RPC_URL;
+  const rpcsToTry = customRpc ? [customRpc, ...POLYGON_RPCS] : POLYGON_RPCS;
   for (const rpc of rpcsToTry) {
     try {
       const provider = new ethers.providers.JsonRpcProvider(rpc);
@@ -84,11 +82,11 @@ async function getProxyWalletAddress() {
   const privateKey = process.env.WALLET_PRIVATE_KEY;
   if (privateKey) {
     try {
-      const provider = await getWorkingProvider();
-      const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
-      const eoaAddress = new ethers.Wallet(cleanKey).address;
-      const factory  = new ethers.Contract(SAFE_FACTORY_ADDRESS, SAFE_FACTORY_ABI, provider);
-      const computed = await factory.computeProxyAddress(eoaAddress);
+      const provider  = await getWorkingProvider();
+      const cleanKey  = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+      const eoaAddr   = new ethers.Wallet(cleanKey).address;
+      const factory   = new ethers.Contract(SAFE_FACTORY_ADDRESS, SAFE_FACTORY_ABI, provider);
+      const computed  = await factory.computeProxyAddress(eoaAddr);
       if (computed && computed !== ethers.constants.AddressZero) {
         safeAddress = computed;
         logger.addActivity('redeemer', { message: `Proxy wallet (SafeFactory): ${computed.slice(0, 10)}...` });
@@ -117,18 +115,9 @@ function formatConditionId(raw) {
   } catch { return null; }
 }
 
-async function hasTokenBalance(provider, walletAddress, tokenId) {
-  if (!tokenId) return true;
-  try {
-    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
-    const bal = await ctf.balanceOf(walletAddress, tokenId);
-    return bal.gt(0);
-  } catch { return true; }
-}
-
-// Require a real ERC-20 Transfer from a known collateral (pUSD or USDC.e).
-// A tx can return status=1 with zero payout if the wrong collateral is used or
-// balance is zero — the Transfer check catches that false-positive correctly.
+// Require a real ERC-20 Transfer from pUSD or USDC.e in the receipt.
+// CTF.redeemPositions(wrongCollateral or zeroBalance) returns status=1 with NO Transfer.
+// Requiring a Transfer prevents declaring "COLLECTED" on a zero-payout tx.
 function verifyRedemptionReceipt(receipt, safAddr) {
   if (receipt.status !== 1) return false;
   if (safAddr) {
@@ -144,77 +133,121 @@ function verifyRedemptionReceipt(receipt, safAddr) {
   );
 }
 
-// ─── Core redemption ─────────────────────────────────────────────────────────
+// ─── Find which collateral the market uses (callStatic = no gas) ──────────────
+//
+// payoutDenominator() is NOT used here because it returns 0 for NegRisk markets
+// (soccer, NBA, NFL, etc.) even after the game ends — it would permanently block
+// all sports redemptions. callStatic is the correct resolution gate.
 
-// Strategy: try CTF.redeemPositions with pUSD, then USDC.e.
-// callStatic is the ONLY resolution gate — payoutDenominator() is NOT used
-// because it returns 0 for NegRisk markets (soccer, NBA, NFL, etc.) even
-// after the game ends. callStatic reverts → we catch → retry later.
-async function redeemViaEOA(wallet, conditionId, provider) {
-  const gasPrice = await provider.getGasPrice();
-  const contract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
-
-  let lastErr;
+async function findResolvedCollateral(provider, conditionId) {
+  const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
   for (const col of COLLATERALS) {
     try {
-      logger.addActivity('redeemer', { message: `Trying CTF + ${col.label} (callStatic)...` });
-      await contract.callStatic.redeemPositions(
-        col.addr, ethers.constants.HashZero, conditionId, [1, 2]
-      );
-      logger.addActivity('redeemer', { message: `callStatic OK (${col.label}) — submitting tx...` });
-      const tx = await contract.redeemPositions(
-        col.addr, ethers.constants.HashZero, conditionId, [1, 2],
-        { gasPrice: gasPrice.mul(2), gasLimit: 300000 }
-      );
-      return tx;
+      await ctf.callStatic.redeemPositions(col.addr, ethers.constants.HashZero, conditionId, [1, 2]);
+      logger.addActivity('redeemer', { message: `callStatic OK: market resolved, collateral is ${col.label}` });
+      return col;
     } catch (err) {
-      lastErr = err;
-      const reason = err.reason || err.message || '';
-      logger.addActivity('redeemer', { message: `CTF ${col.label} failed: ${reason.slice(0, 80)} — trying next` });
+      logger.addActivity('redeemer', {
+        message: `callStatic ${col.label}: ${(err.reason || err.message || '').slice(0, 60)}`
+      });
     }
   }
-  throw lastErr || new Error('All CTF collaterals failed');
+  return null;
 }
 
-async function redeemViaSafe(wallet, conditionId, safAddr, provider) {
+// ─── EOA redemption ───────────────────────────────────────────────────────────
+
+async function redeemViaEOA(wallet, conditionId, col, provider) {
+  const gasPrice = await provider.getGasPrice();
+  const contract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
+  logger.addActivity('redeemer', { message: `EOA: submitting CTF + ${col.label}...` });
+  const tx = await contract.redeemPositions(
+    col.addr, ethers.constants.HashZero, conditionId, [1, 2],
+    { gasPrice: gasPrice.mul(2), gasLimit: 300000 }
+  );
+  return tx;
+}
+
+// ─── Safe redemption ──────────────────────────────────────────────────────────
+
+async function redeemViaSafe(wallet, conditionId, col, safAddr, provider) {
   const safeContract = new ethers.Contract(safAddr, SAFE_ABI, wallet);
   const iface        = new ethers.utils.Interface(CTF_ABI);
   const nonce        = await safeContract.nonce();
   const gasPrice     = await provider.getGasPrice();
 
-  let lastErr;
-  for (const col of COLLATERALS) {
-    try {
-      logger.addActivity('redeemer', { message: `Safe: trying CTF + ${col.label}...` });
-      const data = iface.encodeFunctionData('redeemPositions', [
-        col.addr, ethers.constants.HashZero, conditionId, [1, 2]
-      ]);
+  const data = iface.encodeFunctionData('redeemPositions', [
+    col.addr, ethers.constants.HashZero, conditionId, [1, 2]
+  ]);
 
-      const txHash = await safeContract.getTransactionHash(
-        CTF_ADDRESS, 0, data, 0, 0, 0, 0,
-        ethers.constants.AddressZero, ethers.constants.AddressZero, nonce
-      );
+  const txHash = await safeContract.getTransactionHash(
+    CTF_ADDRESS, 0, data, 0, 0, 0, 0,
+    ethers.constants.AddressZero, ethers.constants.AddressZero, nonce
+  );
 
-      const signature = await wallet.signMessage(ethers.utils.arrayify(txHash));
-      const sigBytes  = ethers.utils.arrayify(signature);
-      let v = sigBytes[64];
-      if (v < 27) v += 27;
-      v += 4;
-      sigBytes[64] = v;
-      const adjustedSig = ethers.utils.hexlify(sigBytes);
+  const signature = await wallet.signMessage(ethers.utils.arrayify(txHash));
+  const sigBytes  = ethers.utils.arrayify(signature);
+  let v = sigBytes[64];
+  if (v < 27) v += 27;
+  v += 4;
+  sigBytes[64] = v;
+  const adjustedSig = ethers.utils.hexlify(sigBytes);
 
-      const tx = await safeContract.execTransaction(
-        CTF_ADDRESS, 0, data, 0, 0, 0, 0,
-        ethers.constants.AddressZero, ethers.constants.AddressZero, adjustedSig,
-        { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
-      );
-      return tx;
-    } catch (err) {
-      lastErr = err;
-      logger.addActivity('redeemer', { message: `Safe CTF ${col.label} failed: ${(err.message || '').slice(0, 60)} — trying next` });
+  logger.addActivity('redeemer', { message: `Safe: submitting CTF + ${col.label}...` });
+  const tx = await safeContract.execTransaction(
+    CTF_ADDRESS, 0, data, 0, 0, 0, 0,
+    ethers.constants.AddressZero, ethers.constants.AddressZero, adjustedSig,
+    { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
+  );
+  return tx;
+}
+
+// ─── Core: try EOA, then Safe if EOA gets no Transfer ─────────────────────────
+//
+// IMPORTANT: CTF.redeemPositions succeeds with status=1 even when balance is 0.
+// This means a "successful" EOA tx can still pay out nothing if the tokens are
+// on the Safe/proxy wallet. We detect this with the Transfer event check, then
+// automatically fall through to the Safe path.
+
+async function attemptRedeem(wallet, conditionId, col, safAddr, provider, label) {
+  // 1. Try EOA
+  try {
+    const tx      = await redeemViaEOA(wallet, conditionId, col, provider);
+    const receipt = await tx.wait();
+    if (verifyRedemptionReceipt(receipt, null)) {
+      return { success: true, via: 'EOA', txHash: receipt.transactionHash };
     }
+    logger.addActivity('redeemer', {
+      message: `EOA tx mined but no ${col.label} Transfer — tokens may be on Safe. Trying Safe...`
+    });
+  } catch (err) {
+    logger.addActivity('redeemer', {
+      message: `EOA tx failed: ${(err.reason || err.message || '').slice(0, 80)} — trying Safe...`
+    });
   }
-  throw lastErr || new Error('All Safe CTF collaterals failed');
+
+  // 2. Try Safe (tokens may have been settled there by the exchange)
+  if (!safAddr) {
+    logger.addActivity('redeemer_error', {
+      message: `EOA had no tokens and PROXY_WALLET_ADDRESS is unknown — set it in .env to redeem from Safe`
+    });
+    return { success: false };
+  }
+
+  try {
+    const tx      = await redeemViaSafe(wallet, conditionId, col, safAddr, provider);
+    const receipt = await tx.wait();
+    if (verifyRedemptionReceipt(receipt, safAddr)) {
+      return { success: true, via: 'Safe', txHash: receipt.transactionHash };
+    }
+    logger.addActivity('redeemer', { message: `Safe also got no ${col.label} Transfer — may already be redeemed` });
+  } catch (err) {
+    logger.addActivity('redeemer', {
+      message: `Safe tx failed: ${(err.reason || err.message || '').slice(0, 80)}`
+    });
+  }
+
+  return { success: false };
 }
 
 // ─── Pending redemption queue ─────────────────────────────────────────────────
@@ -226,7 +259,7 @@ function addPendingRedemption(trade) {
   }
 
   const existing = pendingRedemptions.find(r =>
-    (r.tokenId    && trade.tokenId    && r.tokenId    === trade.tokenId) ||
+    (r.tokenId     && trade.tokenId     && r.tokenId     === trade.tokenId) ||
     (r.conditionId && trade.conditionId && r.conditionId === trade.conditionId && r.side === trade.side)
   );
   if (existing) return;
@@ -269,8 +302,7 @@ async function checkAndRedeem() {
     const now   = Date.now();
     const ready = pendingRedemptions.filter(r => {
       if (r.status !== 'waiting') return false;
-      const endTime = new Date(r.marketEndTime).getTime();
-      return now >= endTime + 30_000;
+      return now >= new Date(r.marketEndTime).getTime() + 30_000;
     });
 
     if (ready.length === 0) { isChecking = false; return; }
@@ -287,79 +319,46 @@ async function checkAndRedeem() {
           continue;
         }
 
-        const eoaHas  = await hasTokenBalance(provider, wallet.address, redemption.tokenId);
-        const safeHas = safAddr ? await hasTokenBalance(provider, safAddr, redemption.tokenId) : false;
-        logger.addActivity('redeemer', {
-          message: `Balance check "${(redemption.question || 'trade').slice(0, 40)}" | EOA: ${eoaHas} | Safe: ${safeHas}`
-        });
+        const label = (redemption.question || 'trade').slice(0, 40);
 
-        if (!eoaHas && !safeHas) {
-          const retries = redemption.balanceRetryCount || 0;
-          if (retries < 3) {
-            redemption.balanceRetryCount = retries + 1;
-            logger.addActivity('redeemer', { message: `No token balance (retry ${retries + 1}/3): "${(redemption.question || '').slice(0, 40)}"` });
-            continue;
-          }
-          redemption.status    = 'no_payout';
-          redemption.redeemedAt = new Date().toISOString();
-          redemptionHistory.push({ ...redemption });
-          logger.addActivity('redeemer', { message: `No tokens after 3 checks — marking lost: "${(redemption.question || '').slice(0, 40)}"` });
+        // Find the correct collateral via callStatic — also confirms market is resolved.
+        // If null → market not resolved yet → retry silently next cycle.
+        const col = await findResolvedCollateral(provider, conditionId);
+        if (!col) {
+          logger.addActivity('redeemer', { message: `"${label}": not yet resolved on-chain — will retry` });
           continue;
         }
 
-        const fromSafe = !eoaHas && safeHas;
-        logger.addActivity('redeemer', {
-          message: `Tokens on ${fromSafe ? 'Safe' : 'EOA'} — attempting redemption: "${(redemption.question || '').slice(0, 40)}"`
-        });
-
         redemption.status = 'redeeming';
-        let redeemed = false;
-        let lastError = null;
+        const result = await attemptRedeem(wallet, conditionId, col, safAddr, provider, label);
 
-        try {
-          const tx      = fromSafe && safAddr
-            ? await redeemViaSafe(wallet, conditionId, safAddr, provider)
-            : await redeemViaEOA(wallet, conditionId, provider);
-          const receipt = await tx.wait();
-          const ok      = verifyRedemptionReceipt(receipt, fromSafe ? safAddr : null);
+        if (result.success) {
+          redemption.status     = 'redeemed';
+          redemption.txHash     = result.txHash;
+          redemption.redeemedAt = new Date().toISOString();
+          redemptionHistory.push({ ...redemption });
 
-          if (ok) {
-            redemption.status     = 'redeemed';
-            redemption.txHash     = receipt.transactionHash;
-            redemption.redeemedAt = new Date().toISOString();
-            redemptionHistory.push({ ...redemption });
-            redeemed = true;
+          const winIds = redemption.tradeIds || (redemption.tradeId ? [redemption.tradeId] : []);
+          for (const tid of winIds) logger.updateTrade(tid, { result: 'win', pnl: 0 });
 
-            const winIds = redemption.tradeIds || (redemption.tradeId ? [redemption.tradeId] : []);
-            for (const tid of winIds) logger.updateTrade(tid, { result: 'win', pnl: 0 });
-
-            logger.addActivity('redeem_success', {
-              message: `COLLECTED! TX: ${receipt.transactionHash.slice(0, 20)}... | "${(redemption.question || '').slice(0, 40)}"`
-            });
-          } else {
-            lastError = 'Tx mined but no collateral Transfer event — position may already be redeemed';
-            logger.addActivity('redeemer', { message: lastError });
-          }
-        } catch (err) {
-          lastError = err.message || String(err);
-          logger.addActivity('redeemer', { message: `Redeem tx failed: ${lastError.slice(0, 80)}` });
-        }
-
-        if (!redeemed) {
+          logger.addActivity('redeem_success', {
+            message: `COLLECTED via ${result.via}! TX: ${result.txHash.slice(0, 20)}... | "${label}"`
+          });
+        } else {
           redemption.retryCount = (redemption.retryCount || 0) + 1;
           const elapsedMs  = Date.now() - new Date(redemption.addedAt || 0).getTime();
           const elapsedMin = Math.floor(elapsedMs / 60000);
           if (elapsedMs > 2 * 60 * 60 * 1000) {
             redemption.status = 'error';
-            redemption.error  = (lastError || 'All methods failed').slice(0, 100);
+            redemption.error  = 'EOA + Safe both returned no Transfer after 2h';
             redemptionHistory.push({ ...redemption });
             logger.addActivity('redeemer_error', {
-              message: `Gave up after 2h (${redemption.retryCount} attempts): ${(lastError || '').slice(0, 60)}`
+              message: `Gave up after 2h (${redemption.retryCount} attempts): "${label}"`
             });
           } else {
             redemption.status = 'waiting';
             logger.addActivity('redeemer_error', {
-              message: `Will retry (attempt ${redemption.retryCount}, +${elapsedMin}min): ${(lastError || '').slice(0, 60)}`
+              message: `Retry (attempt ${redemption.retryCount}, +${elapsedMin}min): "${label}"`
             });
           }
         }
@@ -414,61 +413,38 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
       return false;
     }
 
-    let eoaHas = false, safeHas = false;
-    try {
-      if (tokenId) eoaHas = await hasTokenBalance(provider, wallet.address, tokenId);
-    } catch (e) {
-      logger.addActivity('redeemer', { message: `RPC error checking EOA balance for "${label}" — will retry` });
-      return false;
-    }
-    try {
-      if (safAddr && tokenId) safeHas = await hasTokenBalance(provider, safAddr, tokenId);
-    } catch (e) {
-      logger.addActivity('redeemer', { message: `RPC error checking Safe balance for "${label}" — will retry` });
+    // callStatic finds the right collateral and confirms market is resolved.
+    // If null → not resolved yet → return false so bondStrategy retries next tick.
+    const col = await findResolvedCollateral(provider, condId);
+    if (!col) {
+      logger.addActivity('redeemer', { message: `"${label}": not yet resolved — will retry` });
       return false;
     }
 
-    logger.addActivity('redeemer', {
-      message: `Balance check "${label}" | EOA(${wallet.address.slice(0, 10)}…): ${eoaHas} | Safe(${safAddr ? safAddr.slice(0, 10) + '…' : 'unknown'}): ${safeHas}`
-    });
+    // Try EOA first; if EOA gets no Transfer (tokens on Safe), try Safe automatically.
+    const result = await attemptRedeem(wallet, condId, col, safAddr, provider, label);
 
-    if (!eoaHas && !safeHas) {
-      logger.addActivity('redeemer', { message: `No tokens found for "${label}" — market may not be resolved yet, will retry` });
-      return false;
-    }
-
-    const fromSafe = !eoaHas && safeHas;
-    logger.addActivity('redeemer', {
-      message: `Redeeming "${label}" from ${fromSafe ? `Safe (${safAddr.slice(0, 10)}…)` : `EOA (${wallet.address.slice(0, 10)}…)`}`
-    });
-
-    const tx      = fromSafe && safAddr
-      ? await redeemViaSafe(wallet, condId, safAddr, provider)
-      : await redeemViaEOA(wallet, condId, provider);
-    const receipt = await tx.wait();
-    const ok      = verifyRedemptionReceipt(receipt, fromSafe ? safAddr : null);
-
-    if (ok) {
+    if (result.success) {
       redemptionHistory.push({
         question, conditionId, tokenId,
-        status: 'redeemed',
-        txHash: receipt.transactionHash,
+        status:     'redeemed',
+        txHash:     result.txHash,
         redeemedAt: new Date().toISOString()
       });
       logger.addActivity('redeem_success', {
-        message: `COLLECTED (${fromSafe ? 'Safe' : 'EOA'})! TX: ${receipt.transactionHash.slice(0, 20)}… | "${label}"`
+        message: `COLLECTED via ${result.via}! TX: ${result.txHash.slice(0, 20)}… | "${label}"`
       });
       return true;
     }
 
     logger.addActivity('redeemer', {
-      message: `Tx mined but no collateral Transfer for "${label}" — will retry next tick`
+      message: `Both EOA and Safe got no Transfer for "${label}" — will retry next tick`
     });
     return false;
 
   } catch (err) {
     logger.addActivity('redeemer', {
-      message: `redeemPosition failed for "${label}": ${(err.reason || err.message || '').slice(0, 80)} — will retry`
+      message: `redeemPosition error for "${label}": ${(err.reason || err.message || '').slice(0, 80)} — will retry`
     });
     return false;
   }
@@ -494,10 +470,10 @@ function getRedemptionStatus() {
       txHash:     r.txHash || null,
       redeemedAt: r.redeemedAt
     })),
-    safeAddress:    safeAddress || null,
-    totalRedeemed:  redemptionHistory.filter(r => r.status === 'redeemed').length,
-    totalLost:      redemptionHistory.filter(r => r.status === 'no_payout').length,
-    totalErrors:    redemptionHistory.filter(r => r.status === 'error').length
+    safeAddress:   safeAddress || null,
+    totalRedeemed: redemptionHistory.filter(r => r.status === 'redeemed').length,
+    totalLost:     redemptionHistory.filter(r => r.status === 'no_payout').length,
+    totalErrors:   redemptionHistory.filter(r => r.status === 'error').length
   };
 }
 
