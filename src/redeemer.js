@@ -296,7 +296,6 @@ async function redeemViaSafe(wallet, conditionId, col, safAddr, provider) {
   const { data, signature } = await buildSafeSignature(wallet, safeContract, conditionId, col);
 
   logger.addActivity('redeemer', { message: `Safe: submitting CTF + ${col.label}...` });
-  const safeNonce = await safeContract.nonce();
   const tx = await safeContract.execTransaction(
     CTF_ADDRESS, 0, data, 0, 0, 0, 0,
     ethers.constants.AddressZero, ethers.constants.AddressZero, signature,
