@@ -165,9 +165,12 @@ async function buildSafeSignature(wallet, safeContract, conditionId, col) {
 
 async function findResolvedCollateral(provider, conditionId) {
   const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+  // Must specify a non-zero `from` address — CTF reverts on balance queries for address(0).
+  // Using a well-known non-zero dummy address so the simulation works regardless of who holds tokens.
+  const callOpts = { from: '0x000000000000000000000000000000000000dEaD' };
   for (const col of COLLATERALS) {
     try {
-      await ctf.callStatic.redeemPositions(col.addr, ethers.constants.HashZero, conditionId, [1, 2]);
+      await ctf.callStatic.redeemPositions(col.addr, ethers.constants.HashZero, conditionId, [1, 2], callOpts);
       logger.addActivity('redeemer', { message: `callStatic OK: market resolved, collateral is ${col.label}` });
       return col;
     } catch (err) {
