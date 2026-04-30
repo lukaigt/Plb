@@ -35,13 +35,16 @@ The bot monitors Polymarket soccer/football markets for in-progress games (Gamma
 - `BOND_MIN_VOLUME=5000` — min 24hr market volume to consider
 - `BOND_DAILY_MAX_SPEND=50` — daily cap in USD
 - `BOND_MIN_ELAPSED_MINUTES=30` — only enter games 30+ minutes old (avoids early lead false signals)
+- `RELAYER_API_KEY=<key>` — Polymarket Relayer API key (gasless redemption, primary path). Get from polymarket.com → Settings → API Keys → Relayer
+- `RELAYER_API_KEY_ADDRESS=0xe82dEec5...` — EOA address matching the Relayer API key
+- `PROXY_WALLET_ADDRESS=0x94eAb3d7...` — Gnosis Safe proxy wallet address (fallback if Relayer unavailable)
 
 ## Technical Implementation
 - **Backend**: Node.js + Express server, port 5000 (dev) or 4000 (VPS)
 - **Scan Loop**: Every 2 minutes — discovers live soccer/football markets via Gamma API
 - **Fast Loop**: Every 15 seconds — polls YES token midpoints, checks fills, checks resolution
 - **Order Placement**: Polymarket CLOB V2 SDK (`@polymarket/clob-client-v2` + `viem`). Migrated April 2026.
-- **Auto-Redemption**: On-chain via Polygon smart contracts. NegRisk markets use NegRiskAdapter, then fallback to CTF. Non-negRisk tries pUSD first, then USDC.e (legacy fallback for pre-V2 positions).
+- **Auto-Redemption**: Primary path: Polymarket Relayer API (gasless, `POST https://relayer-v2.polymarket.com/submit`). Fallback: direct EOA on-chain, then Gnosis Safe on-chain. callStatic gates resolution check (payoutDenominator NOT used — always 0 for NegRisk/soccer markets).
 - **Safety Controls**: Daily loss limit, kill switch, max positions cap, daily spend cap
 
 ## CLOB V2 Migration (April 28, 2026)

@@ -1,11 +1,14 @@
 const { ethers } = require('ethers');
-const logger = require('./logger');
-const trader = require('./trader');
+const axios      = require('axios');
+const logger     = require('./logger');
+const trader     = require('./trader');
 
 const CTF_ADDRESS          = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
 const PUSD_ADDRESS         = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB';
 const USDC_ADDRESS         = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
+
+const RELAYER_BASE = 'https://relayer-v2.polymarket.com';
 
 const POLYGON_RPCS = [
   'https://polygon-bor-rpc.publicnode.com',
@@ -116,8 +119,6 @@ function formatConditionId(raw) {
 }
 
 // Require a real ERC-20 Transfer from pUSD or USDC.e in the receipt.
-// CTF.redeemPositions(wrongCollateral or zeroBalance) returns status=1 with NO Transfer.
-// Requiring a Transfer prevents declaring "COLLECTED" on a zero-payout tx.
 function verifyRedemptionReceipt(receipt, safAddr) {
   if (receipt.status !== 1) return false;
   if (safAddr) {
@@ -133,11 +134,34 @@ function verifyRedemptionReceipt(receipt, safAddr) {
   );
 }
 
+// ─── Build Safe signature (shared by Relayer + direct Safe paths) ─────────────
+
+async function buildSafeSignature(wallet, safeContract, conditionId, col) {
+  const iface    = new ethers.utils.Interface(CTF_ABI);
+  const nonce    = await safeContract.nonce();
+  const data     = iface.encodeFunctionData('redeemPositions', [
+    col.addr, ethers.constants.HashZero, conditionId, [1, 2]
+  ]);
+
+  const txHash = await safeContract.getTransactionHash(
+    CTF_ADDRESS, 0, data, 0, 0, 0, 0,
+    ethers.constants.AddressZero, ethers.constants.AddressZero, nonce
+  );
+
+  const rawSig   = await wallet.signMessage(ethers.utils.arrayify(txHash));
+  const sigBytes = ethers.utils.arrayify(rawSig);
+  let v = sigBytes[64];
+  if (v < 27) v += 27;
+  v += 4;
+  sigBytes[64] = v;
+
+  return { data, nonce: nonce.toString(), signature: ethers.utils.hexlify(sigBytes) };
+}
+
 // ─── Find which collateral the market uses (callStatic = no gas) ──────────────
 //
-// payoutDenominator() is NOT used here because it returns 0 for NegRisk markets
-// (soccer, NBA, NFL, etc.) even after the game ends — it would permanently block
-// all sports redemptions. callStatic is the correct resolution gate.
+// payoutDenominator() is NOT used because it returns 0 for NegRisk markets
+// (soccer, NBA, NFL, etc.) even after the game ends. callStatic is the correct gate.
 
 async function findResolvedCollateral(provider, conditionId) {
   const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
@@ -155,7 +179,103 @@ async function findResolvedCollateral(provider, conditionId) {
   return null;
 }
 
-// ─── EOA redemption ───────────────────────────────────────────────────────────
+// ─── Relayer redemption (gasless, primary path) ───────────────────────────────
+
+async function redeemViaRelayer(wallet, conditionId, col, safAddr, provider) {
+  const relayerKey     = process.env.RELAYER_API_KEY;
+  const relayerAddress = process.env.RELAYER_API_KEY_ADDRESS || wallet.address;
+
+  if (!relayerKey) return null;
+  if (!safAddr)    return null;
+
+  try {
+    const safeContract = new ethers.Contract(safAddr, SAFE_ABI, provider);
+    const { data, nonce, signature } = await buildSafeSignature(wallet, safeContract, conditionId, col);
+
+    const body = {
+      from:        wallet.address,
+      to:          CTF_ADDRESS,
+      proxyWallet: safAddr,
+      data,
+      nonce,
+      signature,
+      signatureParams: {
+        gasPrice:       '0',
+        operation:      '0',
+        safeTxnGas:     '0',
+        baseGas:        '0',
+        gasToken:       ethers.constants.AddressZero,
+        refundReceiver: ethers.constants.AddressZero
+      },
+      type: 'SAFE'
+    };
+
+    logger.addActivity('redeemer', { message: `Relayer: submitting CTF + ${col.label} (gasless)...` });
+
+    const submitRes = await axios.post(`${RELAYER_BASE}/submit`, body, {
+      headers: {
+        'RELAYER_API_KEY':         relayerKey,
+        'RELAYER_API_KEY_ADDRESS': relayerAddress,
+        'Content-Type':            'application/json'
+      },
+      timeout: 30000
+    });
+
+    const { transactionID, state } = submitRes.data || {};
+    if (!transactionID) {
+      logger.addActivity('redeemer', { message: `Relayer submit returned no transactionID: ${JSON.stringify(submitRes.data).slice(0, 100)}` });
+      return null;
+    }
+
+    logger.addActivity('redeemer', { message: `Relayer accepted txID=${transactionID} state=${state} — polling for hash...` });
+
+    // Poll for tx hash (up to 3 minutes)
+    const deadline = Date.now() + 3 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 8000));
+      try {
+        const pollRes = await axios.get(`${RELAYER_BASE}/transaction`, {
+          params:  { id: transactionID },
+          headers: {
+            'RELAYER_API_KEY':         relayerKey,
+            'RELAYER_API_KEY_ADDRESS': relayerAddress
+          },
+          timeout: 10000
+        });
+        const tx = pollRes.data || {};
+        logger.addActivity('redeemer', { message: `Relayer poll: state=${tx.state} hash=${tx.transactionHash || 'pending'}` });
+
+        if (tx.transactionHash) {
+          const receipt = await provider.waitForTransaction(tx.transactionHash, 1, 60000);
+          if (verifyRedemptionReceipt(receipt, safAddr)) {
+            return { success: true, via: 'Relayer', txHash: tx.transactionHash };
+          }
+          logger.addActivity('redeemer', { message: `Relayer tx mined but no ${col.label} Transfer in receipt` });
+          return { success: false };
+        }
+
+        if (tx.state === 'STATE_FAILED' || tx.state === 'FAILED') {
+          logger.addActivity('redeemer', { message: `Relayer tx failed: ${JSON.stringify(tx).slice(0, 100)}` });
+          return { success: false };
+        }
+      } catch (pollErr) {
+        logger.addActivity('redeemer', { message: `Relayer poll error: ${pollErr.message?.slice(0, 60)}` });
+      }
+    }
+
+    logger.addActivity('redeemer', { message: `Relayer polling timed out for txID=${transactionID}` });
+    return { success: false };
+
+  } catch (err) {
+    const msg = err.response?.data
+      ? JSON.stringify(err.response.data).slice(0, 120)
+      : (err.message || '').slice(0, 100);
+    logger.addActivity('redeemer', { message: `Relayer submit error: ${msg}` });
+    return null;
+  }
+}
+
+// ─── EOA redemption (fallback 1) ─────────────────────────────────────────────
 
 async function redeemViaEOA(wallet, conditionId, col, provider) {
   const gasPrice = await provider.getGasPrice();
@@ -168,49 +288,44 @@ async function redeemViaEOA(wallet, conditionId, col, provider) {
   return tx;
 }
 
-// ─── Safe redemption ──────────────────────────────────────────────────────────
+// ─── Safe redemption (fallback 2) ────────────────────────────────────────────
 
 async function redeemViaSafe(wallet, conditionId, col, safAddr, provider) {
   const safeContract = new ethers.Contract(safAddr, SAFE_ABI, wallet);
-  const iface        = new ethers.utils.Interface(CTF_ABI);
-  const nonce        = await safeContract.nonce();
   const gasPrice     = await provider.getGasPrice();
-
-  const data = iface.encodeFunctionData('redeemPositions', [
-    col.addr, ethers.constants.HashZero, conditionId, [1, 2]
-  ]);
-
-  const txHash = await safeContract.getTransactionHash(
-    CTF_ADDRESS, 0, data, 0, 0, 0, 0,
-    ethers.constants.AddressZero, ethers.constants.AddressZero, nonce
-  );
-
-  const signature = await wallet.signMessage(ethers.utils.arrayify(txHash));
-  const sigBytes  = ethers.utils.arrayify(signature);
-  let v = sigBytes[64];
-  if (v < 27) v += 27;
-  v += 4;
-  sigBytes[64] = v;
-  const adjustedSig = ethers.utils.hexlify(sigBytes);
+  const { data, signature } = await buildSafeSignature(wallet, safeContract, conditionId, col);
 
   logger.addActivity('redeemer', { message: `Safe: submitting CTF + ${col.label}...` });
+  const safeNonce = await safeContract.nonce();
   const tx = await safeContract.execTransaction(
     CTF_ADDRESS, 0, data, 0, 0, 0, 0,
-    ethers.constants.AddressZero, ethers.constants.AddressZero, adjustedSig,
+    ethers.constants.AddressZero, ethers.constants.AddressZero, signature,
     { gasPrice: gasPrice.mul(2), gasLimit: 500000 }
   );
   return tx;
 }
 
-// ─── Core: try EOA, then Safe if EOA gets no Transfer ─────────────────────────
+// ─── Core: Relayer → EOA → Safe ───────────────────────────────────────────────
 //
-// IMPORTANT: CTF.redeemPositions succeeds with status=1 even when balance is 0.
-// This means a "successful" EOA tx can still pay out nothing if the tokens are
-// on the Safe/proxy wallet. We detect this with the Transfer event check, then
-// automatically fall through to the Safe path.
+// 1. Try Relayer (gasless) — requires RELAYER_API_KEY + proxy wallet
+// 2. Try EOA direct — needs MATIC gas
+// 3. Try Safe direct — needs MATIC gas
 
-async function attemptRedeem(wallet, conditionId, col, safAddr, provider, label) {
-  // 1. Try EOA
+async function attemptRedeem(wallet, conditionId, col, safAddr, provider) {
+
+  // 1. Relayer (gasless, primary)
+  const relayerResult = await redeemViaRelayer(wallet, conditionId, col, safAddr, provider);
+  if (relayerResult !== null) {
+    // null = relayer not configured or couldn't submit → fall through
+    // {success: true}  = collected!
+    // {success: false} = relayer submitted but tx failed/no transfer
+    if (relayerResult.success) return relayerResult;
+    logger.addActivity('redeemer', { message: `Relayer path failed — trying EOA direct...` });
+  } else if (process.env.RELAYER_API_KEY) {
+    logger.addActivity('redeemer', { message: `Relayer submit returned null — trying EOA direct...` });
+  }
+
+  // 2. EOA direct
   try {
     const tx      = await redeemViaEOA(wallet, conditionId, col, provider);
     const receipt = await tx.wait();
@@ -226,7 +341,7 @@ async function attemptRedeem(wallet, conditionId, col, safAddr, provider, label)
     });
   }
 
-  // 2. Try Safe (tokens may have been settled there by the exchange)
+  // 3. Safe direct
   if (!safAddr) {
     logger.addActivity('redeemer_error', {
       message: `EOA had no tokens and PROXY_WALLET_ADDRESS is unknown — set it in .env to redeem from Safe`
@@ -321,8 +436,6 @@ async function checkAndRedeem() {
 
         const label = (redemption.question || 'trade').slice(0, 40);
 
-        // Find the correct collateral via callStatic — also confirms market is resolved.
-        // If null → market not resolved yet → retry silently next cycle.
         const col = await findResolvedCollateral(provider, conditionId);
         if (!col) {
           logger.addActivity('redeemer', { message: `"${label}": not yet resolved on-chain — will retry` });
@@ -330,7 +443,7 @@ async function checkAndRedeem() {
         }
 
         redemption.status = 'redeeming';
-        const result = await attemptRedeem(wallet, conditionId, col, safAddr, provider, label);
+        const result = await attemptRedeem(wallet, conditionId, col, safAddr, provider);
 
         if (result.success) {
           redemption.status     = 'redeemed';
@@ -350,7 +463,7 @@ async function checkAndRedeem() {
           const elapsedMin = Math.floor(elapsedMs / 60000);
           if (elapsedMs > 2 * 60 * 60 * 1000) {
             redemption.status = 'error';
-            redemption.error  = 'EOA + Safe both returned no Transfer after 2h';
+            redemption.error  = 'All paths (Relayer, EOA, Safe) returned no Transfer after 2h';
             redemptionHistory.push({ ...redemption });
             logger.addActivity('redeemer_error', {
               message: `Gave up after 2h (${redemption.retryCount} attempts): "${label}"`
@@ -413,16 +526,13 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
       return false;
     }
 
-    // callStatic finds the right collateral and confirms market is resolved.
-    // If null → not resolved yet → return false so bondStrategy retries next tick.
     const col = await findResolvedCollateral(provider, condId);
     if (!col) {
       logger.addActivity('redeemer', { message: `"${label}": not yet resolved — will retry` });
       return false;
     }
 
-    // Try EOA first; if EOA gets no Transfer (tokens on Safe), try Safe automatically.
-    const result = await attemptRedeem(wallet, condId, col, safAddr, provider, label);
+    const result = await attemptRedeem(wallet, condId, col, safAddr, provider);
 
     if (result.success) {
       redemptionHistory.push({
@@ -438,7 +548,7 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
     }
 
     logger.addActivity('redeemer', {
-      message: `Both EOA and Safe got no Transfer for "${label}" — will retry next tick`
+      message: `All paths (Relayer, EOA, Safe) returned no Transfer for "${label}" — will retry next tick`
     });
     return false;
 
