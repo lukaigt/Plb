@@ -1,8 +1,21 @@
 const { scanLiveSoccerMarkets } = require('./soccerScanner');
+const { scanLiveSportsMarkets } = require('./sportsScanner');
 const { BondSession, getBondConfig } = require('./bondStrategy');
 const { initClient } = require('./trader');
 const safety = require('./safety');
 const logger = require('./logger');
+
+function isAllSportsMode() {
+  const v = (process.env.ALL_SPORTS_ENABLED || '').toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes';
+}
+
+async function scanMarkets(minVolume) {
+  if (isAllSportsMode()) {
+    return scanLiveSportsMarkets(minVolume);
+  }
+  return scanLiveSoccerMarkets(minVolume);
+}
 
 let isRunning       = false;
 let isScanRunning   = false;
@@ -57,7 +70,7 @@ async function runScan() {
 
   isScanRunning = true;
   try {
-    const markets = await scanLiveSoccerMarkets(config.minVolume);
+    const markets = await scanMarkets(config.minVolume);
 
     for (const id of Object.keys(activeSessions)) {
       const session = activeSessions[id];
@@ -90,7 +103,7 @@ async function runScan() {
         if (elapsed < minElapsedMs) {
           const minsElapsed = Math.floor(elapsed / 60000);
           const minsNeeded  = Math.floor(minElapsedMs / 60000);
-          logger.addActivity('soccer_scan', {
+          logger.addActivity(isAllSportsMode() ? 'sports_scan' : 'soccer_scan', {
             message: `Skipping "${market.question.slice(0, 50)}" — only ${minsElapsed}min into game (need ${minsNeeded}min)`
           });
           continue;
@@ -170,9 +183,12 @@ function start() {
 
   const config = getBondConfig();
   const minElapsed = parseInt(process.env.BOND_MIN_ELAPSED_MINUTES) || 30;
+  const allSports = isAllSportsMode();
   logger.addActivity('bot', {
     message: [
-      'Soccer Bond Bot started — monitoring live soccer markets',
+      allSports
+        ? 'Sports Bond Bot started — monitoring ALL live sports markets (soccer, NFL, NBA, MLB, NHL, tennis, golf, UFC, cricket, rugby, F1 + more)'
+        : 'Soccer Bond Bot started — monitoring live soccer markets',
       `  Threshold:     ${(config.threshold * 100).toFixed(0)}¢ (buy when YES token reaches this)`,
       `  Order size:    $${config.orderSize} per trade`,
       `  Max positions: ${config.maxPositions} concurrent open bets`,
@@ -180,7 +196,8 @@ function start() {
       `  Min elapsed:   ${minElapsed}min into game before entry`,
       `  Loss limit:    $${process.env.DAILY_LOSS_LIMIT || 30} daily (bot stops if hit)`,
       `  Scan interval: every 2 min | price poll: every 15s`,
-      `  Duplicate guard: once entered, a market is never re-entered`
+      `  Duplicate guard: once entered, a market is never re-entered`,
+      `  Mode:          ${allSports ? 'ALL_SPORTS' : 'SOCCER_ONLY'}`
     ].join('\n')
   });
 

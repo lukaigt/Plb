@@ -1,12 +1,12 @@
-# Soccer Bond Bot
+# Sports Bond Bot
 
 ## Overview
 This project runs a single trading bot on Polymarket:
 
-**Soccer Live Bond Bot** — Monitors live in-progress soccer/football games. When a YES token midpoint reaches 95¢ (near-certain outcome), automatically buys at that price and holds to $1.00 resolution. Collects a near-risk-free 5¢ yield per trade with full auto-redemption on-chain.
+**Sports Live Bond Bot** — Monitors live in-progress sports events (soccer, NFL, NBA, MLB, NHL, tennis, golf, UFC, cricket, rugby, F1 and more). When a YES token midpoint reaches 95¢ (near-certain outcome), automatically buys at that price and holds to $1.00 resolution. Collects a near-risk-free 5¢ yield per trade with full auto-redemption on-chain.
 
 ## User Preferences
-- Soccer only — no crypto/BTC
+- Sports only — no crypto/BTC/elections
 - Never deploy on Replit — VPS at port 4000 with pm2 only
 - Deploy command: `cd ~/polymarket-bot && git stash && git pull && npm install && pm2 restart polymarket-bot && pm2 logs polymarket-bot`
 - Dashboard must show everything the bot is doing
@@ -26,8 +26,9 @@ The bot monitors Polymarket soccer/football markets for in-progress games (Gamma
 - Overlap guard: `isScanRunning` / `isFastRunning` flags prevent concurrent loop executions
 - Safety: `safety.canTrade()` checked before every entry; `BOND_MAX_POSITIONS` enforced atomically
 
-**Soccer Bot Config (all in .env):**
+**Bot Config (all in .env):**
 - `SOCCER_ENABLED=true` — set to `false` to disable entirely
+- `ALL_SPORTS_ENABLED=true` — when set, scans ALL sports (soccer, NFL, NBA, MLB, NHL, tennis, golf, UFC, cricket, rugby, F1, esports). When `false` or unset, soccer-only mode
 - `BOND_THRESHOLD=0.95` — buy when YES token reaches this price
 - `BOND_ORDER_SIZE=5` — USD per trade
 - `BOND_MAX_POSITIONS=5` — max concurrent positions
@@ -67,7 +68,8 @@ Polymarket launched CLOB V2, replacing USDC.e with pUSD and deploying new exchan
 
 ## Project Structure
 - `server.js` — Express server, API routes, starts soccerLoop on boot
-- `src/soccerScanner.js` — Gamma API discovery for live soccer/football markets
+- `src/soccerScanner.js` — Gamma API discovery for live soccer/football markets only
+- `src/sportsScanner.js` — Gamma API discovery for ALL live sports markets (19 tag slugs, deduped)
 - `src/bondStrategy.js` — BondSession state machine + resolution + redemption queue
 - `src/soccerLoop.js` — Scan loop (2 min) + fast loop (15s)
 - `src/trader.js` — CLOB client, order placement, auth
