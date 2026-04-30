@@ -9,10 +9,10 @@ const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
 const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
 
 const POLYGON_RPCS = [
-  'https://polygon-bor-rpc.publicnode.com',
-  'https://rpc.ankr.com/polygon',
+  'https://polygon-rpc.com',
+  'https://rpc-mainnet.matic.quiknode.pro',
   'https://polygon.llamarpc.com',
-  'https://polygon-rpc.com'
+  'https://polygon-mainnet.public.blastapi.io'
 ];
 
 const CTF_ABI = [
@@ -21,67 +21,10 @@ const CTF_ABI = [
   'function balanceOf(address owner, uint256 tokenId) view returns (uint256)'
 ];
 
-// NegRiskAdapter has a 2-argument redeemPositions (confirmed in deployed bytecode):
-//   redeemPositions(bytes32 conditionId, uint256[] amounts)
-// where amounts[i] = how many tokens to redeem for outcome i (others = 0).
-// This is DIFFERENT from CTF which takes (address, bytes32, bytes32, uint256[]).
 const NEG_RISK_ABI = [
   'function redeemPositions(bytes32 conditionId, uint256[] amounts)',
-  'function wcol() view returns (address)',
-  'function balanceOf(address account, uint256 id) view returns (uint256)'
+  'function wcol() view returns (address)'
 ];
-
-// ERC-1155 operator approval — NegRiskAdapter pulls CTF tokens from the EOA
-// via safeTransferFrom, so the EOA must have set this operator approval.
-const ERC1155_APPROVAL_ABI = [
-  'function isApprovedForAll(address account, address operator) view returns (bool)',
-  'function setApprovalForAll(address operator, bool approved)'
-];
-
-// Session cache + in-flight promise lock so concurrent callers (auto-redeem,
-// bondStrategy, manual force-redeem) don't all submit duplicate approval txs.
-let _negRiskApprovalVerified = false;
-let _negRiskApprovalInFlight = null;
-
-async function ensureNegRiskApproval(wallet, provider) {
-  if (_negRiskApprovalVerified) return true;
-  if (_negRiskApprovalInFlight) return _negRiskApprovalInFlight;
-
-  _negRiskApprovalInFlight = (async () => {
-    try {
-      const ctf = new ethers.Contract(CTF_ADDRESS, ERC1155_APPROVAL_ABI, provider);
-      const isApproved = await ctf.isApprovedForAll(wallet.address, NEG_RISK_ADAPTER);
-      if (isApproved) {
-        logger.addActivity('redeemer', { message: 'CTF approval for NegRiskAdapter already set' });
-        _negRiskApprovalVerified = true;
-        return true;
-      }
-      logger.addActivity('redeemer', { message: 'Setting CTF setApprovalForAll(NegRiskAdapter, true) — required for redemption...' });
-      const ctfWriter = new ethers.Contract(CTF_ADDRESS, ERC1155_APPROVAL_ABI, wallet);
-      const gasPrice = await provider.getGasPrice();
-      const tx = await ctfWriter.setApprovalForAll(NEG_RISK_ADAPTER, true, {
-        gasPrice: gasPrice.mul(2),
-        gasLimit: 100000
-      });
-      logger.addActivity('redeemer', { message: `Approval tx sent: ${tx.hash.slice(0, 18)}... waiting for confirmation` });
-      const receipt = await tx.wait();
-      if (receipt.status === 1) {
-        logger.addActivity('redeemer', { message: `CTF approval confirmed on-chain (block ${receipt.blockNumber})` });
-        _negRiskApprovalVerified = true;
-        return true;
-      }
-      logger.addActivity('redeemer_error', { message: 'Approval tx mined but reverted (status=0)' });
-      return false;
-    } catch (err) {
-      logger.addActivity('redeemer_error', { message: `ensureNegRiskApproval error: ${(err.message||'').slice(0,120)}` });
-      return false;
-    } finally {
-      _negRiskApprovalInFlight = null;
-    }
-  })();
-
-  return _negRiskApprovalInFlight;
-}
 
 const SAFE_FACTORY_ABI = [
   'function computeProxyAddress(address owner) view returns (address)'
@@ -171,7 +114,7 @@ function addPendingRedemption(trade) {
   });
 
   logger.addActivity('redeemer', {
-    message: `Tracking trade for redemption: ${trade.question || 'BTC trade'} | conditionId: ${trade.conditionId.substring(0, 15)}...`
+    message: `Tracking trade for redemption: ${trade.question || 'trade'} | conditionId: ${trade.conditionId.substring(0, 15)}...`
   });
 }
 
@@ -199,7 +142,6 @@ async function getWorkingProvider() {
   return new ethers.providers.JsonRpcProvider(POLYGON_RPCS[0]);
 }
 
-
 function formatConditionId(rawConditionId) {
   if (!rawConditionId) return null;
 
@@ -224,7 +166,7 @@ function formatConditionId(rawConditionId) {
   }
 }
 
-function encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts, collateral) {
+function encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts, collateralOverride) {
   if (negRisk) {
     const iface = new ethers.utils.Interface(NEG_RISK_ABI);
     return iface.encodeFunctionData('redeemPositions', [
@@ -232,11 +174,10 @@ function encodeRedeemCall(conditionId, negRisk, wrappedCollateral, amounts, coll
       amounts || [1]
     ]);
   } else {
-    // collateral defaults to pUSD (V2); fall back to USDC.e only for pre-V2 positions
-    const collateralAddr = collateral || PUSD_ADDRESS;
+    const collateral = collateralOverride || PUSD_ADDRESS;
     const iface = new ethers.utils.Interface(CTF_ABI);
     return iface.encodeFunctionData('redeemPositions', [
-      collateralAddr,
+      collateral,
       ethers.constants.HashZero,
       conditionId,
       [1, 2]
@@ -311,139 +252,37 @@ async function lookupOutcomeIndex(conditionId, tokenId) {
   }
 }
 
-// Extract the on-chain revert reason from an ethers v5 error object.
-// Looks at multiple possible locations because providers nest the revert data differently.
-function extractRevertReason(err) {
-  if (!err) return 'unknown';
-  // Direct reason string (some RPCs)
-  if (err.reason && err.reason !== 'transaction failed' && err.reason.length < 200) {
-    return err.reason;
-  }
-  // Standard Error(string) revert: 0x08c379a0 + abi-encoded string
-  const dataCandidates = [
-    err.data,
-    err.error?.data,
-    err.error?.error?.data,
-    err.error?.error?.error?.data,
-    err.error?.body,
-  ].filter(Boolean);
-  for (const d of dataCandidates) {
-    if (typeof d === 'string') {
-      // Try Error(string) selector
-      if (d.startsWith('0x08c379a0')) {
-        try {
-          const decoded = ethers.utils.defaultAbiCoder.decode(['string'], '0x' + d.slice(10));
-          return `revert: ${decoded[0]}`;
-        } catch {}
-      }
-      // Try Panic(uint256) selector
-      if (d.startsWith('0x4e487b71')) {
-        try {
-          const code = ethers.utils.defaultAbiCoder.decode(['uint256'], '0x' + d.slice(10));
-          return `panic(0x${code[0].toHexString().slice(2).padStart(2, '0')})`;
-        } catch {}
-      }
-      // Try parsing JSON body (some RPCs return {jsonrpc:..., error:{message:"...execution reverted: REASON"}})
-      if (d.startsWith('{')) {
-        try {
-          const parsed = JSON.parse(d);
-          const msg = parsed?.error?.message || parsed?.message;
-          if (msg) {
-            const m = msg.match(/execution reverted:?\s*(.+?)(?:["}]|$)/i);
-            if (m) return `revert: ${m[1].trim()}`;
-            return msg.slice(0, 150);
-          }
-        } catch {}
-      }
-      // Bare hex revert data with no selector match
-      if (d.startsWith('0x') && d.length > 2 && d.length <= 200) {
-        return `revert data: ${d.slice(0, 80)}`;
-      }
-    }
-  }
-  // Fallback: parse "execution reverted" out of the message
-  const msg = err.message || String(err);
-  const m = msg.match(/execution reverted:?\s*([^"]+?)(?:["\\]|$)/i);
-  if (m) return `revert: ${m[1].trim().slice(0, 150)}`;
-  if (err.code) return `${err.code} (no reason returned)`;
-  return msg.slice(0, 150);
-}
-
-// Run a callStatic simulation to capture the revert reason BEFORE wasting gas.
-// Returns { ok: true } on success, or { ok: false, reason: '...' } on revert.
-async function simulateCall(contract, methodName, args) {
-  try {
-    await contract.callStatic[methodName](...args);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: extractRevertReason(err) };
-  }
-}
-
 async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedCollateral, tokenId) {
   const gasPrice = await provider.getGasPrice();
 
   if (negRisk) {
-    // NegRiskAdapter.redeemPositions (confirmed 2-arg interface in deployed bytecode):
-    //   redeemPositions(bytes32 conditionId, uint256[] amounts)
-    // amounts[outcomeIndex] = token balance to redeem; all others = 0.
-    // The adapter pulls CTF tokens from msg.sender via safeTransferFrom (needs approval)
-    // and pays out in wcol (wrapped collateral).
-    //
-    // NOTE: Do NOT check ctf.payoutDenominator() for NegRisk markets — the NegRiskAdapter
-    // uses its own internal resolution tracking that is separate from the CTF oracle path.
-    // payoutDenominator returns 0 for NegRisk conditionIds even after the game is over.
-    // The NegRiskAdapter.redeemPositions call will revert if the market is truly unresolved
-    // (caught by the simulation below) so the contract is the gate, not payoutDenominator.
     const contract = new ethers.Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, wallet);
-    const ctf     = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
 
-    let ctfBal = ethers.BigNumber.from(0);
-    let adapterBal = ethers.BigNumber.from(0);
+    let balance = ethers.BigNumber.from(0);
     if (tokenId) {
-      ctfBal     = await ctf.balanceOf(wallet.address, tokenId);
-      adapterBal = await contract.balanceOf(wallet.address, tokenId);
+      balance = await ctf.balanceOf(wallet.address, tokenId);
     }
-    const balance = ctfBal.gt(0) ? ctfBal : adapterBal;
 
     if (balance.eq(0)) {
-      throw new Error('No token balance for NegRiskAdapter redemption (checked CTF + adapter)');
+      throw new Error('No token balance for NegRiskAdapter redemption');
     }
 
-    // ERC-1155 operator approval — adapter pulls tokens via CTF.safeTransferFrom
-    const approved = await ensureNegRiskApproval(wallet, provider);
-    if (!approved) {
-      throw new Error('CTF setApprovalForAll(NegRiskAdapter) failed — cannot redeem');
-    }
-
-    // Build amounts array: try lookupOutcomeIndex first, fall back to [balance, 0] (YES=index 0)
     let outcomeInfo = await lookupOutcomeIndex(conditionId, tokenId);
     let amounts;
     if (outcomeInfo) {
       amounts = new Array(outcomeInfo.total).fill(ethers.BigNumber.from(0));
       amounts[outcomeInfo.index] = balance;
       logger.addActivity('redeemer', {
-        message: `NegRisk: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens at outcome ${outcomeInfo.index}/${outcomeInfo.total} | approval: true`
+        message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens (outcome ${outcomeInfo.index} of ${outcomeInfo.total})`
       });
     } else {
       amounts = [balance, ethers.BigNumber.from(0)];
       logger.addActivity('redeemer', {
-        message: `NegRisk: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens at outcome 0 (default YES) | approval: true`
+        message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens (defaulting to outcome 0)`
       });
     }
 
-    // Pre-flight simulation to catch any revert before wasting gas
-    const sim = await simulateCall(contract, 'redeemPositions', [conditionId, amounts]);
-    if (!sim.ok) {
-      logger.addActivity('redeemer_error', {
-        message: `NegRiskAdapter would revert. Reason: ${sim.reason}`
-      });
-      throw new Error(`NegRiskAdapter revert: ${sim.reason}`);
-    }
-
-    logger.addActivity('redeemer', {
-      message: `NegRiskAdapter simulation OK — submitting...`
-    });
     const tx = await contract.redeemPositions(
       conditionId,
       amounts,
@@ -452,20 +291,8 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
 
     return tx;
   } else {
-    // Non-NegRisk: check on-chain resolution before attempting
-    const ctfCheck = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
-    const denominator = await ctfCheck.payoutDenominator(conditionId);
-    if (denominator.eq(0)) {
-      logger.addActivity('redeemer', {
-        message: `CTF market not yet resolved on-chain (payoutDenominator=0) — will retry`
-      });
-      throw new Error('Market not yet resolved on-chain — retry later');
-    }
-    logger.addActivity('redeemer', {
-      message: `CTF market resolved on-chain (payoutDenominator=${denominator.toString()}) — proceeding`
-    });
-
-    // Try pUSD first (V2 markets), then fall back to USDC.e (V1/legacy positions)
+    // Try pUSD first (V2 markets), then USDC.e (V1/legacy positions).
+    // The correct collateral must match how the position was created on-chain.
     const contract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, wallet);
     const collaterals = [
       { addr: PUSD_ADDRESS, label: 'pUSD' },
@@ -474,18 +301,7 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
     let lastErr;
     for (const col of collaterals) {
       try {
-        logger.addActivity('redeemer', { message: `CTF redeem: trying ${col.label} as collateral...` });
-
-        // Pre-flight simulation on this collateral
-        const sim = await simulateCall(contract, 'redeemPositions', [
-          col.addr, ethers.constants.HashZero, conditionId, [1, 2]
-        ]);
-        if (!sim.ok) {
-          logger.addActivity('redeemer', { message: `CTF ${col.label} would revert: ${sim.reason} — trying next` });
-          lastErr = new Error(`CTF ${col.label} revert: ${sim.reason}`);
-          continue;
-        }
-
+        logger.addActivity('redeemer', { message: `CTF redeem: trying ${col.label}...` });
         const tx = await contract.redeemPositions(
           col.addr,
           ethers.constants.HashZero,
@@ -496,7 +312,7 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
         return tx;
       } catch (err) {
         lastErr = err;
-        logger.addActivity('redeemer', { message: `CTF ${col.label} failed: ${(err.message||'').slice(0,60)} — trying next` });
+        logger.addActivity('redeemer', { message: `CTF ${col.label} failed: ${(err.message||'').slice(0, 60)} — trying next` });
       }
     }
     throw lastErr;
@@ -525,10 +341,11 @@ async function redeemViaSafe(wallet, conditionId, negRisk, safAddr, provider, wr
 
   if (negRisk) {
     const redeemData = encodeRedeemCall(conditionId, true, wrappedCollateral, amounts);
-    return await signAndExecSafe(wallet, safeContract, targetAddress, redeemData, provider);
+    const tx = await signAndExecSafe(wallet, safeContract, targetAddress, redeemData, provider);
+    return tx;
   }
 
-  // Non-negRisk: try pUSD first (V2 markets), then USDC.e (V1/legacy)
+  // Non-NegRisk: try pUSD first (V2), then USDC.e (legacy)
   const collaterals = [
     { addr: PUSD_ADDRESS, label: 'pUSD' },
     { addr: USDC_ADDRESS, label: 'USDC.e' }
@@ -536,7 +353,7 @@ async function redeemViaSafe(wallet, conditionId, negRisk, safAddr, provider, wr
   let lastErr;
   for (const col of collaterals) {
     try {
-      logger.addActivity('redeemer', { message: `Safe CTF redeem: trying ${col.label} as collateral...` });
+      logger.addActivity('redeemer', { message: `Safe CTF redeem: trying ${col.label}...` });
       const redeemData = encodeRedeemCall(conditionId, false, wrappedCollateral, amounts, col.addr);
       const tx = await signAndExecSafe(wallet, safeContract, targetAddress, redeemData, provider);
       return tx;
@@ -561,39 +378,31 @@ async function hasTokenBalance(ctf, walletAddress, tokenId) {
 const EXECUTION_SUCCESS_TOPIC = ethers.utils.id('ExecutionSuccess(bytes32,uint256)');
 const EXECUTION_FAILURE_TOPIC = ethers.utils.id('ExecutionFailure(bytes32,uint256)');
 const TRANSFER_TOPIC = ethers.utils.id('Transfer(address,address,uint256)');
-// Base set: pUSD (V2) and USDC.e (V1 legacy) emit ERC-20 Transfer on redemption.
-// NegRiskAdapter pays out in wrapped collateral (wcol) — passed in dynamically.
-const COLLATERAL_ADDRESSES = new Set([
-  PUSD_ADDRESS.toLowerCase(),
-  USDC_ADDRESS.toLowerCase()
-]);
 
-function verifyRedemptionReceipt(receipt, safAddr, wrappedCollateral) {
-  if (receipt.status !== 1) return false;
+function verifyRedemptionReceipt(receipt, safAddr) {
+  if (!safAddr) {
+    return receipt.status === 1;
+  }
 
-  // Accept the dynamic NegRiskAdapter wcol address as a valid payout token too.
-  const validPayoutTokens = new Set(COLLATERAL_ADDRESSES);
-  if (wrappedCollateral) validPayoutTokens.add(wrappedCollateral.toLowerCase());
+  const safeLower = safAddr.toLowerCase();
 
+  let hasExecutionSuccess = false;
   let hasExecutionFailure = false;
-  let hasCollateralTransfer = false;
 
   for (const log of receipt.logs) {
-    // Safe-specific: inner call failure despite outer tx status=1
-    if (safAddr && log.address.toLowerCase() === safAddr.toLowerCase()) {
-      if (log.topics[0] === EXECUTION_FAILURE_TOPIC) hasExecutionFailure = true;
-    }
-    // Any ERC-20 Transfer from pUSD, USDC.e, OR wcol = payout actually moved
-    if (validPayoutTokens.has(log.address.toLowerCase()) && log.topics[0] === TRANSFER_TOPIC) {
-      hasCollateralTransfer = true;
+    if (log.address.toLowerCase() === safeLower) {
+      if (log.topics[0] === EXECUTION_SUCCESS_TOPIC) {
+        hasExecutionSuccess = true;
+      } else if (log.topics[0] === EXECUTION_FAILURE_TOPIC) {
+        hasExecutionFailure = true;
+      }
     }
   }
 
   if (hasExecutionFailure) return false;
+  if (hasExecutionSuccess) return true;
 
-  // Require a payout transfer — if CTF/NegRisk was called on the wrong contract
-  // or with zero balance, the tx still returns status=1 but no payout happens.
-  return hasCollateralTransfer;
+  return false;
 }
 
 async function batchBalanceCheck(ctf, address, redemptions) {
@@ -683,13 +492,27 @@ async function checkAndRedeem() {
           continue;
         }
 
-        // Skip payoutDenominator pre-check entirely — it returns 0 for ALL NegRisk markets
-        // (most Polymarket soccer markets) even after resolution, causing silent false-negatives.
-        // The on-chain redemption call itself reverts if the market is unresolved; that revert
-        // is caught below and triggers a retry. Let the contract be the gate.
+        // For standard (non-NegRisk) markets verify on-chain resolution via CTF payoutDenominator.
+        // For NegRisk markets skip this check — NegRisk resolution goes through its own adapter
+        // and ctf.payoutDenominator() returns 0 even after the game ends. The redemption call
+        // itself will revert if the market is not yet resolved, caught in the try/catch below.
         const isNegRiskPosition = redemption.negRisk === true;
+        if (!isNegRiskPosition) {
+          let payoutDenom;
+          try {
+            payoutDenom = await ctf.payoutDenominator(conditionId);
+          } catch (rpcErr) {
+            logger.addActivity('redeemer', {
+              message: `RPC error checking payout for "${(redemption.question || 'trade').slice(0, 40)}" — will retry`
+            });
+            continue;
+          }
 
-        // Check token balances on EOA and Safe
+          if (payoutDenom.eq(0)) {
+            continue;
+          }
+        }
+
         const eoaHasBalance = await hasTokenBalance(ctf, wallet.address, redemption.tokenId);
         const safeHasBalance = safAddr ? await hasTokenBalance(ctf, safAddr, redemption.tokenId) : false;
         logger.addActivity('redeemer', {
@@ -745,43 +568,8 @@ async function checkAndRedeem() {
               tx = await redeemViaEOA(wallet, conditionId, attempt.negRisk, provider, wrappedCollateral, redemption.tokenId);
             }
 
-            let receipt;
-            try {
-              receipt = await tx.wait();
-            } catch (waitErr) {
-              // tx mined but reverted (status=0). Re-simulate at mined block to get real reason.
-              lastError = waitErr.message || String(waitErr);
-              let revertReason = '(no revert data)';
-              try {
-                const txData = tx;
-                const txReceipt = await provider.getTransactionReceipt(tx.hash).catch(() => null);
-                if (txReceipt && txReceipt.blockNumber) {
-                  const redeemContract = new ethers.Contract(
-                    attempt.negRisk ? NEG_RISK_ADAPTER : CTF_ADDRESS,
-                    attempt.negRisk ? NEG_RISK_ABI : CTF_ABI,
-                    wallet
-                  );
-                  if (attempt.negRisk) {
-                    // NegRiskAdapter uses 2-arg interface: redeemPositions(bytes32, uint256[])
-                    await redeemContract.callStatic.redeemPositions(
-                      conditionId, [1, 2],
-                      { blockTag: txReceipt.blockNumber }
-                    );
-                  }
-                  revertReason = '(succeeded in replay — transient state issue)';
-                } else {
-                  revertReason = extractRevertReason(waitErr);
-                }
-              } catch (replayErr) {
-                revertReason = extractRevertReason(replayErr);
-              }
-              logger.addActivity('redeemer_error', {
-                message: `${attempt.label} tx reverted on-chain. Reason: ${revertReason}`
-              });
-              throw waitErr;
-            }
-
-            const internalSuccess = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null, wrappedCollateral);
+            const receipt = await tx.wait();
+            const internalSuccess = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null);
 
             if (!internalSuccess) {
               lastError = 'Safe internal call failed';
@@ -811,44 +599,32 @@ async function checkAndRedeem() {
 
         if (!redeemed) {
           const errMsg = lastError || 'All methods failed';
+          redemption.status = 'error';
+          redemption.error = errMsg.substring(0, 100);
           redemption.retryCount = (redemption.retryCount || 0) + 1;
-          const elapsedMs = Date.now() - new Date(redemption.addedAt || 0).getTime();
-          const elapsedMin = Math.floor(elapsedMs / 60000);
-          const elapsedHr  = (elapsedMs / 3600000).toFixed(1);
-          // 48-hour window: Polymarket uses UMA protocol for on-chain resolution which can
-          // take 24–72 hours after game end. Giving up at 2h meant we were quitting before
-          // the oracle had even pushed results to the contract.
-          if (elapsedMs > 48 * 60 * 60 * 1000) {
-            redemption.status = 'error';
-            redemption.error = errMsg.substring(0, 100);
+          if (redemption.retryCount >= 3) {
             redemptionHistory.push({ ...redemption });
             logger.addActivity('redeemer_error', {
-              message: `Redeem failed after 48 hours (${redemption.retryCount} attempts) — giving up: ${errMsg.substring(0, 60)}`
+              message: `Redeem failed after 3 retries: ${errMsg.substring(0, 80)}`
             });
           } else {
             redemption.status = 'waiting';
             logger.addActivity('redeemer_error', {
-              message: `Redeem failed (attempt ${redemption.retryCount}, +${elapsedHr}h, will retry): ${errMsg.substring(0, 60)}`
+              message: `Redeem failed (attempt ${redemption.retryCount}/3, will retry): ${errMsg.substring(0, 60)}`
             });
           }
         }
       } catch (err) {
-        const elapsedMs = Date.now() - new Date(redemption.addedAt || 0).getTime();
-        if (elapsedMs > 48 * 60 * 60 * 1000) {
-          redemption.status = 'error';
-          redemption.error = err.message?.substring(0, 100);
-          redemptionHistory.push({ ...redemption });
-        } else {
-          redemption.status = 'waiting';
-        }
+        redemption.status = 'error';
+        redemption.error = err.message?.substring(0, 100);
         logger.addActivity('redeemer_error', {
-          message: `Redeem check error (will retry): ${err.message?.substring(0, 80)}`
+          message: `Redeem check error: ${err.message?.substring(0, 80)}`
         });
       }
     }
 
     const completed = pendingRedemptions.filter(r =>
-      r.status === 'redeemed' || r.status === 'no_payout' || r.status === 'error'
+      r.status === 'redeemed' || r.status === 'no_payout' || (r.status === 'error' && r.retryCount >= 3)
     );
     for (const done of completed) {
       const idx = pendingRedemptions.indexOf(done);
@@ -887,12 +663,24 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
       return false;
     }
 
-    // Skip payoutDenominator pre-check entirely — it returns 0 for ALL NegRisk markets
-    // (most Polymarket soccer markets) even after resolution, causing silent false-negatives.
-    // The on-chain redemption call itself reverts if the market is unresolved; that revert
-    // is caught below and triggers a retry. Let the contract be the gate.
+    // For standard (non-NegRisk) markets, verify on-chain resolution via CTF payoutDenominator.
+    // For NegRisk markets this check is skipped — NegRisk resolution goes through its own
+    // adapter and ctf.payoutDenominator() returns 0 even after the game ends. The redemption
+    // call itself reverts if the market is unresolved; that revert is caught below and retried.
+    if (!negRisk) {
+      try {
+        const denom = await ctf.payoutDenominator(condId);
+        if (denom.eq(0)) {
+          logger.addActivity('redeemer', { message: `"${label}": not yet resolved on-chain — will retry` });
+          return false;
+        }
+      } catch (rpcErr) {
+        logger.addActivity('redeemer', { message: `RPC error checking resolution for "${label}" — will retry` });
+        return false;
+      }
+    }
 
-    // Check which address holds the tokens (wrapped in try/catch — RPC blips must not kill the loop)
+    // Check which address holds the tokens
     let eoaHas = false;
     let safeHas = false;
     try {
@@ -942,16 +730,9 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
         }
         const receipt = await tx.wait();
 
-        // Verify a collateral transfer actually happened — a tx can return status=1
-        // with zero payout if called on the wrong contract or with no token balance.
-        const ok = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null, wrappedCollateral);
+        const ok = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null);
         if (!ok) {
-          // Tx mined (status=1) but no collateral Transfer event — zero payout.
-          // Either this outcome lost, the collateral token didn't match, or the
-          // market resolved against us. Log with tx hash so it can be checked.
-          logger.addActivity('redeemer_error', {
-            message: `${att.label} tx mined — 0 payout for "${label}". Outcome may have lost or collateral mismatch. TX: ${receipt.transactionHash.slice(0, 20)}…`
-          });
+          logger.addActivity('redeemer', { message: `${att.label} tx mined but internal call failed — trying next` });
           continue;
         }
 
@@ -961,17 +742,11 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
         });
         return true;
       } catch (err) {
-        const msg = (err.message || '');
-        // "not yet resolved" is expected — oracle hasn't pushed results yet
-        if (msg.includes('not yet resolved')) {
-          logger.addActivity('redeemer', { message: `"${label}": oracle not yet pushed on-chain — will keep retrying` });
-          break; // no point trying other methods for same reason
-        }
-        logger.addActivity('redeemer', { message: `${att.label} failed for "${label}": ${msg.substring(0, 80)} — trying next` });
+        logger.addActivity('redeemer', { message: `${att.label} failed for "${label}": ${(err.message || '').substring(0, 80)} — trying next` });
       }
     }
 
-    logger.addActivity('redeemer_error', { message: `All redeem methods exhausted for "${label}" — will retry next tick` });
+    logger.addActivity('redeemer_error', { message: `All redeem methods failed for "${label}" — will retry next tick` });
     return false;
 
   } catch (err) {
