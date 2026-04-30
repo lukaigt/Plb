@@ -437,14 +437,19 @@ async function hasTokenBalance(ctf, walletAddress, tokenId) {
 const EXECUTION_SUCCESS_TOPIC = ethers.utils.id('ExecutionSuccess(bytes32,uint256)');
 const EXECUTION_FAILURE_TOPIC = ethers.utils.id('ExecutionFailure(bytes32,uint256)');
 const TRANSFER_TOPIC = ethers.utils.id('Transfer(address,address,uint256)');
-// Both pUSD (V2) and USDC.e (V1 legacy) emit ERC-20 Transfer on redemption
+// Base set: pUSD (V2) and USDC.e (V1 legacy) emit ERC-20 Transfer on redemption.
+// NegRiskAdapter pays out in wrapped collateral (wcol) — passed in dynamically.
 const COLLATERAL_ADDRESSES = new Set([
   PUSD_ADDRESS.toLowerCase(),
   USDC_ADDRESS.toLowerCase()
 ]);
 
-function verifyRedemptionReceipt(receipt, safAddr) {
+function verifyRedemptionReceipt(receipt, safAddr, wrappedCollateral) {
   if (receipt.status !== 1) return false;
+
+  // Accept the dynamic NegRiskAdapter wcol address as a valid payout token too.
+  const validPayoutTokens = new Set(COLLATERAL_ADDRESSES);
+  if (wrappedCollateral) validPayoutTokens.add(wrappedCollateral.toLowerCase());
 
   let hasExecutionFailure = false;
   let hasCollateralTransfer = false;
@@ -454,15 +459,15 @@ function verifyRedemptionReceipt(receipt, safAddr) {
     if (safAddr && log.address.toLowerCase() === safAddr.toLowerCase()) {
       if (log.topics[0] === EXECUTION_FAILURE_TOPIC) hasExecutionFailure = true;
     }
-    // Any ERC-20 Transfer from pUSD or USDC.e = collateral actually moved
-    if (COLLATERAL_ADDRESSES.has(log.address.toLowerCase()) && log.topics[0] === TRANSFER_TOPIC) {
+    // Any ERC-20 Transfer from pUSD, USDC.e, OR wcol = payout actually moved
+    if (validPayoutTokens.has(log.address.toLowerCase()) && log.topics[0] === TRANSFER_TOPIC) {
       hasCollateralTransfer = true;
     }
   }
 
   if (hasExecutionFailure) return false;
 
-  // Require a collateral transfer — if CTF/NegRisk was called on the wrong contract
+  // Require a payout transfer — if CTF/NegRisk was called on the wrong contract
   // or with zero balance, the tx still returns status=1 but no payout happens.
   return hasCollateralTransfer;
 }
@@ -617,7 +622,7 @@ async function checkAndRedeem() {
             }
 
             const receipt = await tx.wait();
-            const internalSuccess = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null);
+            const internalSuccess = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null, wrappedCollateral);
 
             if (!internalSuccess) {
               lastError = 'Safe internal call failed';
@@ -776,7 +781,7 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
 
         // Verify a collateral transfer actually happened — a tx can return status=1
         // with zero payout if called on the wrong contract or with no token balance.
-        const ok = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null);
+        const ok = verifyRedemptionReceipt(receipt, redeemFromSafe ? safAddr : null, wrappedCollateral);
         if (!ok) {
           logger.addActivity('redeemer', { message: `${att.label} tx mined but no collateral transferred for "${label}" — trying next method` });
           continue;
