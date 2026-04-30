@@ -306,6 +306,75 @@ async function lookupOutcomeIndex(conditionId, tokenId) {
   }
 }
 
+// Extract the on-chain revert reason from an ethers v5 error object.
+// Looks at multiple possible locations because providers nest the revert data differently.
+function extractRevertReason(err) {
+  if (!err) return 'unknown';
+  // Direct reason string (some RPCs)
+  if (err.reason && err.reason !== 'transaction failed' && err.reason.length < 200) {
+    return err.reason;
+  }
+  // Standard Error(string) revert: 0x08c379a0 + abi-encoded string
+  const dataCandidates = [
+    err.data,
+    err.error?.data,
+    err.error?.error?.data,
+    err.error?.error?.error?.data,
+    err.error?.body,
+  ].filter(Boolean);
+  for (const d of dataCandidates) {
+    if (typeof d === 'string') {
+      // Try Error(string) selector
+      if (d.startsWith('0x08c379a0')) {
+        try {
+          const decoded = ethers.utils.defaultAbiCoder.decode(['string'], '0x' + d.slice(10));
+          return `revert: ${decoded[0]}`;
+        } catch {}
+      }
+      // Try Panic(uint256) selector
+      if (d.startsWith('0x4e487b71')) {
+        try {
+          const code = ethers.utils.defaultAbiCoder.decode(['uint256'], '0x' + d.slice(10));
+          return `panic(0x${code[0].toHexString().slice(2).padStart(2, '0')})`;
+        } catch {}
+      }
+      // Try parsing JSON body (some RPCs return {jsonrpc:..., error:{message:"...execution reverted: REASON"}})
+      if (d.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(d);
+          const msg = parsed?.error?.message || parsed?.message;
+          if (msg) {
+            const m = msg.match(/execution reverted:?\s*(.+?)(?:["}]|$)/i);
+            if (m) return `revert: ${m[1].trim()}`;
+            return msg.slice(0, 150);
+          }
+        } catch {}
+      }
+      // Bare hex revert data with no selector match
+      if (d.startsWith('0x') && d.length > 2 && d.length <= 200) {
+        return `revert data: ${d.slice(0, 80)}`;
+      }
+    }
+  }
+  // Fallback: parse "execution reverted" out of the message
+  const msg = err.message || String(err);
+  const m = msg.match(/execution reverted:?\s*([^"]+?)(?:["\\]|$)/i);
+  if (m) return `revert: ${m[1].trim().slice(0, 150)}`;
+  if (err.code) return `${err.code} (no reason returned)`;
+  return msg.slice(0, 150);
+}
+
+// Run a callStatic simulation to capture the revert reason BEFORE wasting gas.
+// Returns { ok: true } on success, or { ok: false, reason: '...' } on revert.
+async function simulateCall(contract, methodName, args) {
+  try {
+    await contract.callStatic[methodName](...args);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: extractRevertReason(err) };
+  }
+}
+
 async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedCollateral, tokenId) {
   const gasPrice = await provider.getGasPrice();
 
@@ -329,6 +398,13 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
       throw new Error('CTF setApprovalForAll(NegRiskAdapter) failed — cannot redeem');
     }
 
+    // Verify approval is actually visible on-chain (catches RPC inconsistency)
+    const ctfRead = new ethers.Contract(CTF_ADDRESS, ERC1155_APPROVAL_ABI, provider);
+    const approvalState = await ctfRead.isApprovedForAll(wallet.address, NEG_RISK_ADAPTER);
+    logger.addActivity('redeemer', {
+      message: `Pre-redeem state | balance: ${ethers.utils.formatUnits(balance, 6)} | approval: ${approvalState} | conditionId: ${String(conditionId).slice(0, 14)}...`
+    });
+
     let outcomeInfo = await lookupOutcomeIndex(conditionId, tokenId);
     let amounts;
     if (outcomeInfo) {
@@ -342,6 +418,15 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
       logger.addActivity('redeemer', {
         message: `NegRiskAdapter: redeeming ${ethers.utils.formatUnits(balance, 6)} tokens (defaulting to outcome 0)`
       });
+    }
+
+    // Pre-flight: simulate the call to capture the actual revert reason without wasting gas.
+    const sim = await simulateCall(contract, 'redeemPositions', [conditionId, amounts]);
+    if (!sim.ok) {
+      logger.addActivity('redeemer_error', {
+        message: `NegRiskAdapter would revert. Reason: ${sim.reason}`
+      });
+      throw new Error(`NegRiskAdapter revert: ${sim.reason}`);
     }
 
     const tx = await contract.redeemPositions(
@@ -362,6 +447,17 @@ async function redeemViaEOA(wallet, conditionId, negRisk, provider, wrappedColla
     for (const col of collaterals) {
       try {
         logger.addActivity('redeemer', { message: `CTF redeem: trying ${col.label} as collateral...` });
+
+        // Pre-flight simulation on this collateral
+        const sim = await simulateCall(contract, 'redeemPositions', [
+          col.addr, ethers.constants.HashZero, conditionId, [1, 2]
+        ]);
+        if (!sim.ok) {
+          logger.addActivity('redeemer', { message: `CTF ${col.label} would revert: ${sim.reason} — trying next` });
+          lastErr = new Error(`CTF ${col.label} revert: ${sim.reason}`);
+          continue;
+        }
+
         const tx = await contract.redeemPositions(
           col.addr,
           ethers.constants.HashZero,
