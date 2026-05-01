@@ -7,6 +7,7 @@ const CTF_ADDRESS          = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
 const PUSD_ADDRESS         = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB';
 const USDC_ADDRESS         = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const SAFE_FACTORY_ADDRESS = '0xaacfeea03eb1561c4e67d661e40682bd20e3541b';
+const WCOL_ADDRESS         = '0x3A3BD7bb9528E159577F7C2e685CC81A765002E2';
 
 const RELAYER_BASE = 'https://relayer-v2.polymarket.com';
 
@@ -19,12 +20,16 @@ const POLYGON_RPCS = [
 
 const COLLATERALS = [
   { addr: PUSD_ADDRESS, label: 'pUSD'   },
-  { addr: USDC_ADDRESS, label: 'USDC.e' }
+  { addr: USDC_ADDRESS, label: 'USDC.e' },
+  { addr: WCOL_ADDRESS, label: 'wcol'   }
 ];
 
 const CTF_ABI = [
   'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
-  'function balanceOf(address owner, uint256 tokenId) view returns (uint256)'
+  'function balanceOf(address owner, uint256 tokenId) view returns (uint256)',
+  'function payoutDenominator(bytes32 conditionId) view returns (uint256)',
+  'function getCollectionId(bytes32 parentCollectionId, bytes32 conditionId, uint256 indexSet) view returns (bytes32)',
+  'function getPositionId(address collateralToken, bytes32 collectionId) view returns (uint256)'
 ];
 
 const SAFE_FACTORY_ABI = [
@@ -41,7 +46,7 @@ const SAFE_ABI = [
 
 const TRANSFER_TOPIC          = ethers.utils.id('Transfer(address,address,uint256)');
 const EXECUTION_FAILURE_TOPIC = ethers.utils.id('ExecutionFailure(bytes32,uint256)');
-const KNOWN_COLLATERALS       = new Set([PUSD_ADDRESS.toLowerCase(), USDC_ADDRESS.toLowerCase()]);
+const KNOWN_COLLATERALS       = new Set([PUSD_ADDRESS.toLowerCase(), USDC_ADDRESS.toLowerCase(), WCOL_ADDRESS.toLowerCase()]);
 
 const pendingRedemptions = [];
 const redemptionHistory  = [];
@@ -158,27 +163,64 @@ async function buildSafeSignature(wallet, safeContract, conditionId, col) {
   return { data, nonce: nonce.toString(), signature: ethers.utils.hexlify(sigBytes) };
 }
 
-// ─── Find which collateral the market uses (callStatic = no gas) ──────────────
+// ─── Find which collateral the market uses + which wallet holds the tokens ─────
 //
-// payoutDenominator() is NOT used because it returns 0 for NegRisk markets
-// (soccer, NBA, NFL, etc.) even after the game ends. callStatic is the correct gate.
+// Strategy:
+//  1. Check payoutDenominator > 0 (market must be resolved on-chain).
+//  2. Compute the indexSet=1 position token ID for each collateral and check
+//     the actual ERC-1155 balance in EOA and Safe.  Whichever collateral has a
+//     real balance wins — this avoids the callStatic false-positive problem where
+//     ALL collaterals pass once the market is resolved, causing us to pick the
+//     wrong one (e.g. pUSD when the tokens are actually USDC.e).
+//  3. If no balance is found but the market IS resolved (den > 0), fall back to
+//     callStatic so manual/force-redeem still surfaces which collateral is valid.
 
-async function findResolvedCollateral(provider, conditionId) {
+async function findResolvedCollateral(provider, conditionId, eoaAddr, safAddr) {
   const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
-  // Must specify a non-zero `from` address — CTF reverts on balance queries for address(0).
-  // Using a well-known non-zero dummy address so the simulation works regardless of who holds tokens.
+
+  // Gate 1: market must be resolved on-chain
+  try {
+    const den = await ctf.payoutDenominator(conditionId);
+    if (den.eq(0)) {
+      logger.addActivity('redeemer', { message: `payoutDenominator=0 — not resolved yet` });
+      return null;
+    }
+  } catch (err) {
+    logger.addActivity('redeemer', { message: `payoutDenominator error: ${(err.message || '').slice(0, 60)}` });
+    return null;
+  }
+
+  // Gate 2: find the collateral with an actual token balance
+  const wallets = [eoaAddr, safAddr].filter(Boolean);
+  try {
+    const col1 = await ctf.getCollectionId(ethers.constants.HashZero, conditionId, 1);
+    for (const col of COLLATERALS) {
+      const posId = await ctf.getPositionId(col.addr, col1);
+      for (const w of wallets) {
+        const bal = await ctf.balanceOf(w, posId);
+        if (bal.gt(0)) {
+          logger.addActivity('redeemer', {
+            message: `Found ${ethers.utils.formatUnits(bal, 6)} ${col.label} position tokens in ${w.slice(0, 10)}...`
+          });
+          return { ...col, holderWallet: w };
+        }
+      }
+    }
+  } catch (err) {
+    logger.addActivity('redeemer', { message: `Balance check error: ${(err.message || '').slice(0, 60)} — falling back to callStatic` });
+  }
+
+  // Gate 3: market resolved but no balance found — try callStatic to confirm collateral
+  // (handles already-redeemed edge case: will find no balance and callStatic will still pass)
   const callOpts = { from: '0x000000000000000000000000000000000000dEaD' };
   for (const col of COLLATERALS) {
     try {
       await ctf.callStatic.redeemPositions(col.addr, ethers.constants.HashZero, conditionId, [1, 2], callOpts);
-      logger.addActivity('redeemer', { message: `callStatic OK: market resolved, collateral is ${col.label}` });
-      return col;
-    } catch (err) {
-      logger.addActivity('redeemer', {
-        message: `callStatic ${col.label}: ${(err.reason || err.message || '').slice(0, 60)}`
-      });
-    }
+      logger.addActivity('redeemer', { message: `No balance in wallets but market resolved — may already be redeemed (${col.label})` });
+      return null; // Don't attempt redemption if tokens aren't in our wallets
+    } catch {}
   }
+
   return null;
 }
 
@@ -307,61 +349,69 @@ async function redeemViaSafe(wallet, conditionId, col, safAddr, provider) {
   return tx;
 }
 
-// ─── Core: Relayer → EOA → Safe ───────────────────────────────────────────────
+// ─── Core redemption: route by token holder ───────────────────────────────────
 //
-// 1. Try Relayer (gasless) — requires RELAYER_API_KEY + proxy wallet
-// 2. Try EOA direct — needs MATIC gas
-// 3. Try Safe direct — needs MATIC gas
+// col.holderWallet tells us where the ERC-1155 tokens actually live.
+//
+// Tokens on EOA  → EOA direct (needs MATIC gas)
+// Tokens on Safe → Relayer (gasless) → Safe direct (needs MATIC gas)
+//
+// This avoids wasting Relayer calls for EOA-held positions and avoids the
+// verifyRedemptionReceipt false-negative caused by using the wrong collateral.
 
 async function attemptRedeem(wallet, conditionId, col, safAddr, provider) {
+  const holderWallet = col.holderWallet || null;
+  const isEOA = holderWallet && holderWallet.toLowerCase() === wallet.address.toLowerCase();
+  const isSafe = holderWallet && safAddr && holderWallet.toLowerCase() === safAddr.toLowerCase();
 
-  // 1. Relayer (gasless, primary)
-  const relayerResult = await redeemViaRelayer(wallet, conditionId, col, safAddr, provider);
-  if (relayerResult !== null) {
-    // null = relayer not configured or couldn't submit → fall through
-    // {success: true}  = collected!
-    // {success: false} = relayer submitted but tx failed/no transfer
-    if (relayerResult.success) return relayerResult;
-    logger.addActivity('redeemer', { message: `Relayer path failed — trying EOA direct...` });
-  } else if (process.env.RELAYER_API_KEY) {
-    logger.addActivity('redeemer', { message: `Relayer submit returned null — trying EOA direct...` });
-  }
-
-  // 2. EOA direct
-  try {
-    const tx      = await redeemViaEOA(wallet, conditionId, col, provider);
-    const receipt = await tx.wait();
-    if (verifyRedemptionReceipt(receipt, null)) {
-      return { success: true, via: 'EOA', txHash: receipt.transactionHash };
+  // ── Tokens on EOA: redeem directly ──────────────────────────────────────────
+  if (isEOA) {
+    logger.addActivity('redeemer', { message: `Tokens on EOA — redeeming via EOA direct (${col.label})...` });
+    try {
+      const tx      = await redeemViaEOA(wallet, conditionId, col, provider);
+      const receipt = await tx.wait();
+      if (verifyRedemptionReceipt(receipt, null)) {
+        return { success: true, via: 'EOA', txHash: receipt.transactionHash };
+      }
+      logger.addActivity('redeemer', { message: `EOA tx mined but no ${col.label} Transfer in receipt` });
+    } catch (err) {
+      logger.addActivity('redeemer', {
+        message: `EOA tx failed: ${(err.reason || err.message || '').slice(0, 80)}`
+      });
     }
-    logger.addActivity('redeemer', {
-      message: `EOA tx mined but no ${col.label} Transfer — tokens may be on Safe. Trying Safe...`
-    });
-  } catch (err) {
-    logger.addActivity('redeemer', {
-      message: `EOA tx failed: ${(err.reason || err.message || '').slice(0, 80)} — trying Safe...`
-    });
-  }
-
-  // 3. Safe direct
-  if (!safAddr) {
-    logger.addActivity('redeemer_error', {
-      message: `EOA had no tokens and PROXY_WALLET_ADDRESS is unknown — set it in .env to redeem from Safe`
-    });
     return { success: false };
   }
 
-  try {
-    const tx      = await redeemViaSafe(wallet, conditionId, col, safAddr, provider);
-    const receipt = await tx.wait();
-    if (verifyRedemptionReceipt(receipt, safAddr)) {
-      return { success: true, via: 'Safe', txHash: receipt.transactionHash };
+  // ── Tokens on Safe: Relayer → Safe direct ───────────────────────────────────
+  if (isSafe || !holderWallet) {
+    // 1. Relayer (gasless, primary)
+    const relayerResult = await redeemViaRelayer(wallet, conditionId, col, safAddr, provider);
+    if (relayerResult !== null) {
+      if (relayerResult.success) return relayerResult;
+      logger.addActivity('redeemer', { message: `Relayer path failed — trying Safe direct...` });
+    } else if (process.env.RELAYER_API_KEY) {
+      logger.addActivity('redeemer', { message: `Relayer submit returned null — trying Safe direct...` });
     }
-    logger.addActivity('redeemer', { message: `Safe also got no ${col.label} Transfer — may already be redeemed` });
-  } catch (err) {
-    logger.addActivity('redeemer', {
-      message: `Safe tx failed: ${(err.reason || err.message || '').slice(0, 80)}`
-    });
+
+    // 2. Safe direct
+    if (!safAddr) {
+      logger.addActivity('redeemer_error', {
+        message: `No proxy wallet — set PROXY_WALLET_ADDRESS in .env`
+      });
+      return { success: false };
+    }
+    try {
+      const tx      = await redeemViaSafe(wallet, conditionId, col, safAddr, provider);
+      const receipt = await tx.wait();
+      if (verifyRedemptionReceipt(receipt, safAddr)) {
+        return { success: true, via: 'Safe', txHash: receipt.transactionHash };
+      }
+      logger.addActivity('redeemer', { message: `Safe tx mined but no ${col.label} Transfer — may already be redeemed` });
+    } catch (err) {
+      logger.addActivity('redeemer', {
+        message: `Safe tx failed: ${(err.reason || err.message || '').slice(0, 80)}`
+      });
+    }
   }
 
   return { success: false };
@@ -414,6 +464,7 @@ async function checkAndRedeem() {
     const provider = await getWorkingProvider();
     const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
     const wallet   = new ethers.Wallet(cleanKey, provider);
+    const eoaAddr  = wallet.address;
     const safAddr  = await getProxyWalletAddress();
 
     const now   = Date.now();
@@ -438,9 +489,9 @@ async function checkAndRedeem() {
 
         const label = (redemption.question || 'trade').slice(0, 40);
 
-        const col = await findResolvedCollateral(provider, conditionId);
+        const col = await findResolvedCollateral(provider, conditionId, eoaAddr, safAddr);
         if (!col) {
-          logger.addActivity('redeemer', { message: `"${label}": not yet resolved on-chain — will retry` });
+          logger.addActivity('redeemer', { message: `"${label}": not yet resolved or no tokens found — will retry` });
           continue;
         }
 
@@ -520,6 +571,7 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
     const provider = await getWorkingProvider();
     const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
     const wallet   = new ethers.Wallet(cleanKey, provider);
+    const eoaAddr  = wallet.address;
     const safAddr  = await getProxyWalletAddress();
 
     const condId = formatConditionId(conditionId);
@@ -528,9 +580,9 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
       return false;
     }
 
-    const col = await findResolvedCollateral(provider, condId);
+    const col = await findResolvedCollateral(provider, condId, eoaAddr, safAddr);
     if (!col) {
-      logger.addActivity('redeemer', { message: `"${label}": not yet resolved — will retry` });
+      logger.addActivity('redeemer', { message: `"${label}": not yet resolved or no tokens found — will retry` });
       return false;
     }
 
@@ -571,6 +623,9 @@ function getRedemptionStatus() {
       side:          r.side,
       size:          r.size,
       status:        r.status,
+      conditionId:   r.conditionId ? r.conditionId.slice(0, 18) + '...' : null,
+      retryCount:    r.retryCount  || 0,
+      error:         r.error       || null,
       marketEndTime: r.marketEndTime,
       addedAt:       r.addedAt
     })),
