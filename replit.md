@@ -89,3 +89,52 @@ Polymarket launched CLOB V2, replacing USDC.e with pUSD and deploying new exchan
 - **Polymarket CLOB SDK**: Order placement, wallet interaction, order status
 - **Polygon Network**: Smart contract interactions and token redemption
 - **FlashProxy (optional)**: Residential proxy setup
+
+## CRITICAL: How Redemption Works (Hard-Won Knowledge — Do Not Forget)
+
+### Why redemptions were broken for 3 days (fixed commit 3316518)
+`findResolvedCollateral()` used to call `CTF.callStatic.redeemPositions()` to detect
+which collateral a market used. This is WRONG. Once `payoutDenominator > 0` (market
+resolved), callStatic passes for ALL collaterals (pUSD, USDC.e, wcol) because it only
+checks resolution, not whether the wallet actually holds tokens. The old code always
+picked pUSD (first in list). But winning position tokens are USDC.e-based CTF ERC-1155
+tokens held on the EOA. Calling CTF with pUSD found 0 balance → no Transfer event →
+`verifyRedemptionReceipt` returned false → "success: false" → stuck "waiting" forever.
+The Relayer also failed because it calls `Safe.execTransaction` but tokens are on the
+EOA not the Safe.
+
+### The correct redemption logic (src/redeemer.js as of May 2026)
+`findResolvedCollateral(provider, conditionId, eoaAddr, safAddr)`:
+1. `payoutDenominator(conditionId) > 0` — gate: market must be resolved on-chain
+2. `getCollectionId(HashZero, conditionId, 1)` → compute position tokenId per collateral
+3. `balanceOf(EOA, posId)` and `balanceOf(Safe, posId)` for pUSD, USDC.e, wcol
+4. Return `{ addr, label, holderWallet }` for the first collateral with actual balance > 0
+5. If no balance found → return null (don't waste gas, may already be redeemed)
+
+`attemptRedeem()` routes by `col.holderWallet`:
+- Tokens on EOA  → **EOA direct only**: `CTF.redeemPositions(USDC.e, HashZero, conditionId, [1,2])`
+- Tokens on Safe → **Relayer first** (gasless), then Safe.execTransaction fallback
+
+### Key facts that must never be forgotten
+- Winning position tokens land on the **EOA**, not the Safe
+- All current positions are **USDC.e-based** (not pUSD) — even trades placed after V2 launch (April 28 2026), because those markets were created under V1
+- USDC.e payout arrives in the EOA wallet — user must wrap to pUSD on polymarket.com to place new bets
+- EOA has ~35 MATIC — plenty for gas (each redemption costs ~0.001 MATIC)
+- **NEVER use callStatic alone to pick the collateral** — it always passes for all collaterals on resolved markets. Always use `balanceOf` to find the real one.
+
+### Redemption debugging commands (run from ~/polymarket-bot)
+```bash
+# See pending queue with conditionId + retryCount
+curl -s http://localhost:4000/api/redemptions | node -e "const d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>{const r=JSON.parse(d.join(''));r.pending.forEach(p=>console.log(p.status,p.retryCount,p.conditionId,p.question?.slice(0,40)));});"
+
+# Trigger immediate redemption attempt
+curl -s -X POST http://localhost:4000/api/force-redeem
+
+# Watch live redeemer logs (do this RIGHT AFTER force-redeem — buffer fills fast)
+curl -s "http://localhost:4000/api/activities?limit=200" | node -e "const d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>{JSON.parse(d.join('')).filter(a=>a.type.includes('redeem')).forEach(a=>console.log(a.type,a.message));});"
+```
+
+### Activity log warning
+Redeemer logs go to `logger.addActivity()` (dashboard), NOT pm2/stdout. The buffer
+holds 500 entries. The fast loop (every 15s) fills it in ~1 hour, pushing out old
+redeemer logs. Always check logs immediately after triggering a redemption.
