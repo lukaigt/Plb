@@ -168,6 +168,11 @@ async function runFast() {
           await session.checkResolutionWhileBuying();
 
         } else if (session.phase === 'holding') {
+          await session.checkStopLoss(client);
+          await session.checkResolution();
+
+        } else if (session.phase === 'stopping') {
+          await session.checkStopFill(client);
           await session.checkResolution();
 
         } else if (session.phase === 'redeeming') {
@@ -226,6 +231,7 @@ function start() {
       `  Max positions: ${config.maxPositions} concurrent open bets`,
       `  Min volume:    $${config.minVolume.toLocaleString()} 24hr volume`,
       `  Min elapsed:   ${minElapsed}min into game before entry`,
+      `  Stop-loss:     ${((parseFloat(process.env.BOND_STOP_LOSS) || 0.20) * 100).toFixed(0)}% drop triggers auto-sell`,
       `  Loss limit:    $${process.env.DAILY_LOSS_LIMIT || 30} daily (bot stops if hit)`,
       `  Scan interval: every 2 min | price poll: every 15s`,
       `  Duplicate guard: once entered, a market is never re-entered`,
