@@ -48,10 +48,11 @@ const TRANSFER_TOPIC          = ethers.utils.id('Transfer(address,address,uint25
 const EXECUTION_FAILURE_TOPIC = ethers.utils.id('ExecutionFailure(bytes32,uint256)');
 const KNOWN_COLLATERALS       = new Set([PUSD_ADDRESS.toLowerCase(), USDC_ADDRESS.toLowerCase(), WCOL_ADDRESS.toLowerCase()]);
 
-const pendingRedemptions = [];
-const redemptionHistory  = [];
-let   safeAddress        = null;
-let   isChecking         = false;
+const pendingRedemptions   = [];
+const redemptionHistory    = [];
+const redeemedConditionIds = new Set();
+let   safeAddress          = null;
+let   isChecking           = false;
 
 // ─── Provider ────────────────────────────────────────────────────────────────
 
@@ -210,18 +211,10 @@ async function findResolvedCollateral(provider, conditionId, eoaAddr, safAddr) {
     logger.addActivity('redeemer', { message: `Balance check error: ${(err.message || '').slice(0, 60)} — falling back to callStatic` });
   }
 
-  // Gate 3: market resolved but no balance found — try callStatic to confirm collateral
-  // (handles already-redeemed edge case: will find no balance and callStatic will still pass)
-  const callOpts = { from: '0x000000000000000000000000000000000000dEaD' };
-  for (const col of COLLATERALS) {
-    try {
-      await ctf.callStatic.redeemPositions(col.addr, ethers.constants.HashZero, conditionId, [1, 2], callOpts);
-      logger.addActivity('redeemer', { message: `No balance in wallets but market resolved — may already be redeemed (${col.label})` });
-      return null; // Don't attempt redemption if tokens aren't in our wallets
-    } catch {}
-  }
-
-  return null;
+  // Gate 3: market resolved but no balance found — tokens already redeemed.
+  // Return a sentinel so callers can clear the queue entry instead of retrying forever.
+  logger.addActivity('redeemer', { message: `Market resolved on-chain but no tokens found — already redeemed` });
+  return { alreadyRedeemed: true };
 }
 
 // ─── Relayer redemption (gasless, primary path) ───────────────────────────────
@@ -425,6 +418,9 @@ function addPendingRedemption(trade) {
     return;
   }
 
+  // Never re-add a position we've already confirmed as redeemed on-chain.
+  if (trade.conditionId && redeemedConditionIds.has(trade.conditionId)) return;
+
   const existing = pendingRedemptions.find(r =>
     (r.tokenId     && trade.tokenId     && r.tokenId     === trade.tokenId) ||
     (r.conditionId && trade.conditionId && r.conditionId === trade.conditionId && r.side === trade.side)
@@ -491,7 +487,16 @@ async function checkAndRedeem() {
 
         const col = await findResolvedCollateral(provider, conditionId, eoaAddr, safAddr);
         if (!col) {
-          logger.addActivity('redeemer', { message: `"${label}": not yet resolved or no tokens found — will retry` });
+          logger.addActivity('redeemer', { message: `"${label}": not yet resolved — will retry` });
+          continue;
+        }
+
+        if (col.alreadyRedeemed) {
+          redemption.status     = 'redeemed';
+          redemption.redeemedAt = new Date().toISOString();
+          redemptionHistory.push({ ...redemption });
+          if (redemption.conditionId) redeemedConditionIds.add(redemption.conditionId);
+          logger.addActivity('redeem_success', { message: `Already redeemed on-chain — cleared from queue: "${label}"` });
           continue;
         }
 
@@ -503,6 +508,7 @@ async function checkAndRedeem() {
           redemption.txHash     = result.txHash;
           redemption.redeemedAt = new Date().toISOString();
           redemptionHistory.push({ ...redemption });
+          if (redemption.conditionId) redeemedConditionIds.add(redemption.conditionId);
 
           const winIds = redemption.tradeIds || (redemption.tradeId ? [redemption.tradeId] : []);
           for (const tid of winIds) logger.updateTrade(tid, { result: 'win', pnl: 0 });
@@ -582,13 +588,21 @@ async function redeemPosition(conditionId, tokenId, negRisk, question) {
 
     const col = await findResolvedCollateral(provider, condId, eoaAddr, safAddr);
     if (!col) {
-      logger.addActivity('redeemer', { message: `"${label}": not yet resolved or no tokens found — will retry` });
+      logger.addActivity('redeemer', { message: `"${label}": not yet resolved — will retry` });
       return false;
+    }
+
+    if (col.alreadyRedeemed) {
+      if (conditionId) redeemedConditionIds.add(conditionId);
+      redemptionHistory.push({ question, conditionId, tokenId, status: 'redeemed', redeemedAt: new Date().toISOString() });
+      logger.addActivity('redeem_success', { message: `Already redeemed on-chain — cleared: "${label}"` });
+      return true;
     }
 
     const result = await attemptRedeem(wallet, condId, col, safAddr, provider);
 
     if (result.success) {
+      if (conditionId) redeemedConditionIds.add(conditionId);
       redemptionHistory.push({
         question, conditionId, tokenId,
         status:     'redeemed',

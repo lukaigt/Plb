@@ -172,11 +172,14 @@ async function runFast() {
             const canTrade = safety.canTrade();
             if (!canTrade.allowed) continue;
             if (activeCount < config.maxPositions) {
-              // Mark as entered BEFORE the async call — prevents any scan from
-              // creating a duplicate session for this market while order is in flight
-              enteredMarkets.add(session.id);
               const entered = await session.enter(client);
-              if (entered) activeCount++;
+              if (entered) {
+                // Only blacklist the market after a confirmed successful entry.
+                // If the order failed (e.g. allowance/balance error), leave the
+                // market unblacklisted so it can be retried on the next scan.
+                enteredMarkets.add(session.id);
+                activeCount++;
+              }
             }
           }
 

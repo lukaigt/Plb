@@ -176,10 +176,24 @@ class BondSession {
       return true;
     }
 
-    logger.addActivity('bond_error', {
-      message: `[Soccer] Order failed "${this.market.question.slice(0, 50)}": ${result.error?.slice(0, 80)}`
-    });
-    this.phase = 'done';
+    const errMsg = (result.error || '').toLowerCase();
+    const isInfraError = errMsg.includes('balance') || errMsg.includes('allowance') ||
+      errMsg.includes('not initialized') || errMsg.includes('client not');
+
+    if (isInfraError) {
+      // Transient infrastructure error (allowance not synced, client not ready).
+      // Reset to watching so the market can be retried on the next price poll.
+      logger.addActivity('bond_error', {
+        message: `[Soccer] Order failed (will retry) "${this.market.question.slice(0, 50)}": ${result.error?.slice(0, 80)}`
+      });
+      this.phase = 'watching';
+    } else {
+      // Market-specific rejection — don't retry this market.
+      logger.addActivity('bond_error', {
+        message: `[Soccer] Order failed "${this.market.question.slice(0, 50)}": ${result.error?.slice(0, 80)}`
+      });
+      this.phase = 'done';
+    }
     return false;
   }
 

@@ -292,6 +292,14 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
     return { success: false, error: 'CLOB client not initialized' };
   }
 
+  // Re-sync balance/allowance with Polymarket backend before every order.
+  // initClient() does this once at startup but the CLOB backend can fall out
+  // of sync after redemptions, restarts, or balance changes.
+  try {
+    await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+    await client.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
+  } catch (_) {}
+
   try {
     const resolvedTickSize = String(tickSize || '0.01');
     const tickNum  = parseFloat(resolvedTickSize) || 0.01;
