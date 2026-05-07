@@ -13,7 +13,8 @@ function getBondConfig() {
     orderSize:    process.env.BOND_ORDER_SIZE   != null ? parseFloat(process.env.BOND_ORDER_SIZE)  : 5,
     maxPositions: process.env.BOND_MAX_POSITIONS != null ? parseInt(process.env.BOND_MAX_POSITIONS) : 5,
     minVolume:    process.env.BOND_MIN_VOLUME   != null ? parseFloat(process.env.BOND_MIN_VOLUME)  : 500,
-    stopLoss:     process.env.BOND_STOP_LOSS    != null ? parseFloat(process.env.BOND_STOP_LOSS)   : 0.20
+    stopLoss:     process.env.BOND_STOP_LOSS     != null ? parseFloat(process.env.BOND_STOP_LOSS)    : 0.20,
+    maxThreshold: process.env.BOND_MAX_THRESHOLD != null ? parseFloat(process.env.BOND_MAX_THRESHOLD) : 0.97
   };
 }
 
@@ -107,14 +108,18 @@ class BondSession {
   }
 
   shouldEnter() {
-    // Must be at or above threshold but below the market's max valid price.
-    // At 1.000 the game is over and the CLOB rejects prices >= 1.0 (no yield left).
+    // Must be at or above threshold but below both the market's hard price limit
+    // (1.0 - tickSize, since CLOB rejects >= 1.0) AND the user-configured ceiling.
     const tickNum  = parseFloat(this.market.tickSize || '0.01') || 0.01;
     const decimals = tickNum <= 0.001 ? 3 : 2;
-    const maxPrice = parseFloat((1.0 - tickNum).toFixed(decimals));
+    const hardMax  = parseFloat((1.0 - tickNum).toFixed(decimals));
+    // Apply maxThreshold ceiling only when it is set and lower than hardMax
+    const ceiling  = (this.config.maxThreshold > 0 && this.config.maxThreshold < hardMax)
+      ? this.config.maxThreshold
+      : hardMax;
     return this.lastMid !== null
       && this.lastMid >= this.config.threshold
-      && this.lastMid <= maxPrice;
+      && this.lastMid <= ceiling;
   }
 
   async enter(client) {

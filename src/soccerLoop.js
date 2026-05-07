@@ -98,6 +98,23 @@ async function runScan() {
       if (enteredMarkets.has(market.id)) continue;
       if (activeHolding >= config.maxPositions) continue;
 
+      // Skip O/U and BTTS markets — price collapses instantly on a goal/event,
+      // stop-loss cannot protect these. Controlled by BOND_SKIP_OU (default: true).
+      if ((process.env.BOND_SKIP_OU || 'true').toLowerCase() !== 'false') {
+        const q = market.question.toLowerCase();
+        if (
+          q.includes('o/u') ||
+          q.includes('over/under') ||
+          q.includes('btts') ||
+          q.includes('both teams to score')
+        ) {
+          logger.addActivity(isAllSportsMode() ? 'sports_scan' : 'soccer_scan', {
+            message: `Skipping O/U market: "${market.question.slice(0, 55)}"`
+          });
+          continue;
+        }
+      }
+
       // Skip markets where the game started less than BOND_MIN_ELAPSED_MINUTES ago
       if (market.startDate) {
         const elapsed = now - new Date(market.startDate).getTime();
@@ -168,10 +185,12 @@ async function runFast() {
           await session.checkResolutionWhileBuying();
 
         } else if (session.phase === 'holding') {
+          await session.pollPrice();
           await session.checkStopLoss(client);
           await session.checkResolution();
 
         } else if (session.phase === 'stopping') {
+          await session.pollPrice();
           await session.checkStopFill(client);
           await session.checkResolution();
 
@@ -232,6 +251,8 @@ function start() {
       `  Min volume:    $${config.minVolume.toLocaleString()} 24hr volume`,
       `  Min elapsed:   ${minElapsed}min into game before entry`,
       `  Stop-loss:     ${((parseFloat(process.env.BOND_STOP_LOSS) || 0.20) * 100).toFixed(0)}% drop triggers auto-sell`,
+      `  Max threshold: ${(config.maxThreshold * 100).toFixed(0)}¢ ceiling (won't enter above this)`,
+      `  O/U filter:    ${(process.env.BOND_SKIP_OU || 'true').toLowerCase() !== 'false' ? 'ON — skipping O/U and BTTS markets' : 'OFF'}`,
       `  Loss limit:    $${process.env.DAILY_LOSS_LIMIT || 30} daily (bot stops if hit)`,
       `  Scan interval: every 2 min | price poll: every 15s`,
       `  Duplicate guard: once entered, a market is never re-entered`,
