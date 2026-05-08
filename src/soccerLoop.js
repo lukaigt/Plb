@@ -98,18 +98,20 @@ async function runScan() {
       if (enteredMarkets.has(market.id)) continue;
       if (activeHolding >= config.maxPositions) continue;
 
-      // Skip O/U and BTTS markets — price collapses instantly on a goal/event,
-      // stop-loss cannot protect these. Controlled by BOND_SKIP_OU (default: true).
+      // Skip O/U, spread, and BTTS markets — price collapses instantly on a
+      // goal/score change, so stop-loss cannot protect these positions.
+      // Controlled by BOND_SKIP_OU env var (default: true).
       if ((process.env.BOND_SKIP_OU || 'true').toLowerCase() !== 'false') {
         const q = market.question.toLowerCase();
         if (
           q.includes('o/u') ||
           q.includes('over/under') ||
           q.includes('btts') ||
-          q.includes('both teams to score')
+          q.includes('both teams to score') ||
+          q.includes('spread')
         ) {
           logger.addActivity(isAllSportsMode() ? 'sports_scan' : 'soccer_scan', {
-            message: `Skipping O/U market: "${market.question.slice(0, 55)}"`
+            message: `Skipping spread/O/U market: "${market.question.slice(0, 55)}"`
           });
           continue;
         }
