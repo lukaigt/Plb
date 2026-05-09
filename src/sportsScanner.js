@@ -13,8 +13,9 @@ const SPORTS_TAG_SLUGS = [
   'tennis', 'golf',
   'ufc', 'mma', 'boxing',
   'cricket', 'rugby',
-  'formula-1', 'f1',
-  'esports'
+  'formula-1', 'f1'
+  // esports removed — CS2/Valorant/Mobile Legends/LoL markets move too fast
+  // for stop-loss to protect (97¢ → 0 in one teamfight/round)
 ];
 
 // Maximum minutes since kickoff/start — generous upper bound to cover long events

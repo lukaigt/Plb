@@ -117,6 +117,38 @@ async function runScan() {
         }
       }
 
+      // Block all esports markets — CS2/Valorant/Mobile Legends/LoL/Dota etc.
+      // can move from 97¢ to 0 in a single round/teamfight (seconds), far faster
+      // than any 15s poll + stop-loss can react. Never tradeable with this strategy.
+      {
+        const q = market.question.toLowerCase();
+        const et = (market.eventTitle || '').toLowerCase();
+        const combined = q + ' ' + et;
+        if (
+          combined.includes('counter-strike') ||
+          combined.includes('cs2') ||
+          combined.includes('csgo') ||
+          combined.includes('valorant') ||
+          combined.includes('mobile legends') ||
+          combined.includes('league of legends') ||
+          combined.includes('dota') ||
+          combined.includes('overwatch') ||
+          combined.includes('rocket league') ||
+          combined.includes('rainbow six') ||
+          combined.includes('starcraft') ||
+          combined.includes('hearthstone') ||
+          combined.includes('king of glory') ||
+          combined.includes('pubg') ||
+          combined.includes('fortnite') ||
+          combined.includes('esport')
+        ) {
+          logger.addActivity(isAllSportsMode() ? 'sports_scan' : 'soccer_scan', {
+            message: `Skipping esports market: "${market.question.slice(0, 55)}"`
+          });
+          continue;
+        }
+      }
+
       // Skip markets where the game started less than BOND_MIN_ELAPSED_MINUTES ago
       if (market.startDate) {
         const elapsed = now - new Date(market.startDate).getTime();
