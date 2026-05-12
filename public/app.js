@@ -46,11 +46,13 @@ function getResultBadge(result) {
 
 function soccerPhaseBadge(phase) {
   const map = {
-    watching: '<span class="badge" style="background:#1f2d3d;color:#79c0ff;border:1px solid #1f6feb55;">WATCHING</span>',
-    buying:   '<span class="badge badge-pending">ENTERED</span>',
-    holding:  '<span class="badge" style="background:#1a2f1a;color:#3fb950;border:1px solid #3fb95044;">HOLDING</span>',
-    done:     '<span class="badge badge-win">DONE</span>',
-    lost:     '<span class="badge badge-loss">LOST</span>'
+    watching:    '<span class="badge" style="background:#1f2d3d;color:#79c0ff;border:1px solid #1f6feb55;">WATCHING</span>',
+    buying:      '<span class="badge badge-pending">ENTERED</span>',
+    holding:     '<span class="badge" style="background:#1a2f1a;color:#3fb950;border:1px solid #3fb95044;">HOLDING</span>',
+    liquidating: '<span class="badge" style="background:#3d2200;color:#f0883e;border:1px solid #f0883e55;">EXITING</span>',
+    redeeming:   '<span class="badge" style="background:#1f2d3d;color:#58a6ff;border:1px solid #58a6ff55;">REDEEMING</span>',
+    done:        '<span class="badge badge-win">DONE</span>',
+    lost:        '<span class="badge badge-loss">LOST</span>'
   };
   return map[phase] || `<span class="badge">${phase}</span>`;
 }
@@ -85,6 +87,15 @@ async function updateStatus() {
       : '<span class="positive">OFF</span>';
 
     document.getElementById('todayRecord').textContent = `${safety.dailyWinCount || 0}W / ${safety.dailyLossCount || 0}L`;
+
+    const lossCount    = safety.dailyLossCount   || 0;
+    const maxLosses    = safety.maxDailyLosses   || 50;
+    const lcEl         = document.getElementById('lossTradeCount');
+    if (lcEl) {
+      lcEl.textContent = `${lossCount} / ${maxLosses}`;
+      lcEl.className   = `s-value ${lossCount >= maxLosses ? 'negative' : lossCount >= maxLosses * 0.7 ? 'warn' : ''}`;
+    }
+
     document.getElementById('dailyLosses').textContent = `$${safety.dailyLoss || '0.00'} / $${safety.dailyLossLimit || '50.00'}`;
 
     const netPnL = parseFloat(safety.dailyNetPnL || 0);
@@ -107,6 +118,17 @@ async function updateStatus() {
 
     document.getElementById('killBtn').textContent = safety.killSwitch ? 'Disable Kill Switch' : 'Kill Switch';
     document.getElementById('killBtn').className   = safety.killSwitch ? 'btn btn-green' : 'btn btn-yellow';
+
+    // Halt banner — shows exactly why trading stopped
+    const banner = document.getElementById('haltBanner');
+    if (banner) {
+      if (!safety.canTradeAllowed) {
+        banner.style.display = 'block';
+        banner.innerHTML = `&#128721; <strong>TRADING HALTED</strong> &mdash; ${safety.canTradeReason || 'Safety limit reached'} &nbsp;&nbsp;<button class="btn btn-blue" style="padding:3px 10px;font-size:11px;" onclick="resetDailyCounters()">Reset Counters</button>`;
+      } else {
+        banner.style.display = 'none';
+      }
+    }
   }
 }
 
@@ -192,7 +214,7 @@ async function updateSoccerPositions() {
   if (!panel) return;
 
   const watching = positions.filter(p => p.phase === 'watching').length;
-  const active   = positions.filter(p => ['buying', 'holding'].includes(p.phase)).length;
+  const active   = positions.filter(p => ['buying', 'holding', 'liquidating', 'redeeming'].includes(p.phase)).length;
   const done     = positions.filter(p => p.phase === 'done').length;
 
   countEl.textContent = positions.length === 0
@@ -200,9 +222,10 @@ async function updateSoccerPositions() {
     : `${watching} watching | ${active} active${done > 0 ? ` | ${done} done` : ''}`;
 
   if (active > 0) {
-    const held = positions.filter(p => p.phase === 'holding');
+    const held = positions.filter(p => ['holding', 'liquidating'].includes(p.phase));
     const totalUnrealized = held.reduce((s, p) => s + (p.unrealizedPnL || 0), 0);
-    statusEl.textContent = `${active} position(s) held | unrealized ${totalUnrealized >= 0 ? '+' : ''}$${totalUnrealized.toFixed(3)}`;
+    const exiting = positions.filter(p => p.phase === 'liquidating').length;
+    statusEl.textContent = `${active} position(s) held${exiting > 0 ? ` | ${exiting} EXITING` : ''} | unrealized ${totalUnrealized >= 0 ? '+' : ''}$${totalUnrealized.toFixed(3)}`;
   } else {
     statusEl.textContent = 'Buy YES at 95¢+, hold to $1.00 resolution';
   }
@@ -372,6 +395,14 @@ async function updateRedemptions() {
 async function toggleKillSwitch() {
   const res = await api('/killswitch', 'POST');
   if (res) alert(res.message);
+  updateStatus();
+}
+
+async function resetDailyCounters() {
+  if (!confirm('Reset all daily counters (loss count, spent, P&L)? Kill switch will NOT be changed.')) return;
+  const res = await api('/safety-reset', 'POST');
+  if (res && res.success) alert('Daily counters reset. Bot will resume trading if all other limits are clear.');
+  else alert(res?.error || 'Reset failed');
   updateStatus();
 }
 

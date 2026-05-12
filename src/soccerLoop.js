@@ -62,6 +62,161 @@ async function getClient() {
   return initClient(key);
 }
 
+// ─── POSITION RECOVERY ON STARTUP ───────────────────────────────────────────
+// On restart, in-memory sessions are wiped. This scans the CLOB for open
+// MATCHED orders and reconstructs BondSessions so the exit engine immediately
+// protects any positions that were entered before the restart.
+async function recoverOpenPositions() {
+  const { buildClobAuthHeaders } = require('./trader');
+  const config = getBondConfig();
+
+  try {
+    const headers = buildClobAuthHeaders('GET', '/orders');
+    if (!headers) {
+      logger.addActivity('bot', { message: '[Recovery] No auth headers — skipping position recovery' });
+      return;
+    }
+
+    // Fetch last 500 matched orders (no status filter — CLOB returns all states)
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    const url = 'https://clob.polymarket.com/orders?status=MATCHED&next_cursor=&limit=500';
+    const res = await fetch(url, { headers, signal: controller.signal });
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      logger.addActivity('bot', { message: `[Recovery] CLOB orders fetch failed: ${res.status}` });
+      return;
+    }
+
+    const data  = await res.json();
+    const orders = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []);
+
+    if (orders.length === 0) {
+      logger.addActivity('bot', { message: '[Recovery] No matched orders found on startup' });
+      return;
+    }
+
+    // Filter to YES-side orders that still have unresolved tokens
+    // Deduplicate by asset_id (YES token) — one session per market
+    const seenTokens = new Set();
+    const candidates = [];
+
+    for (const order of orders) {
+      const tokenId     = order.asset_id || order.assetId || order.token_id;
+      const sizeMatched = parseFloat(order.size_matched || order.sizeMatched || 0);
+      const outcome     = (order.outcome || order.side || '').toUpperCase();
+      const status      = (order.status  || order.orderStatus || '').toUpperCase();
+
+      if (!tokenId)                       continue;
+      if (sizeMatched <= 0)               continue;
+      if (status !== 'MATCHED')           continue;
+      if (outcome !== 'YES' && outcome !== 'BUY') continue;
+      if (seenTokens.has(tokenId))        continue;
+      seenTokens.add(tokenId);
+
+      candidates.push({
+        tokenId,
+        filledTokens: sizeMatched,
+        entryPrice:   parseFloat(order.price || order.average_price || 0.9),
+        filledAmount: parseFloat(order.original_size || order.originalSize || sizeMatched * parseFloat(order.price || 0.9)),
+        orderId:      order.id || order.order_id
+      });
+    }
+
+    if (candidates.length === 0) {
+      logger.addActivity('bot', { message: '[Recovery] No open YES positions to recover' });
+      return;
+    }
+
+    logger.addActivity('bot', {
+      message: `[Recovery] Found ${candidates.length} filled YES order(s) — checking markets...`
+    });
+
+    let recovered = 0;
+
+    for (const cand of candidates) {
+      try {
+        // Look up the Gamma market by YES token ID
+        const mRes = await fetch(
+          `https://gamma-api.polymarket.com/markets?clob_token_ids=${cand.tokenId}`,
+          { signal: AbortSignal.timeout(10000) }
+        );
+        if (!mRes.ok) continue;
+
+        const markets = await mRes.json();
+        const gm = Array.isArray(markets) ? markets[0] : null;
+        if (!gm) continue;
+
+        // Skip already resolved markets — no position to protect
+        if (gm.resolved === true || gm.hasResolved === true) continue;
+
+        const marketId = gm.id || gm.conditionId || cand.tokenId;
+
+        // Skip if we already have a live session for this market
+        if (activeSessions[marketId]) continue;
+        // Skip if already in the entered-markets blacklist (entered this session)
+        if (enteredMarkets.has(marketId)) continue;
+
+        // Parse token IDs — YES is first
+        let yesTokenId = cand.tokenId;
+        try {
+          const tokens = typeof gm.clobTokenIds === 'string'
+            ? JSON.parse(gm.clobTokenIds)
+            : (Array.isArray(gm.clobTokenIds) ? gm.clobTokenIds : []);
+          if (tokens.length >= 1) yesTokenId = tokens[0];
+        } catch {}
+
+        const market = {
+          id:          marketId,
+          question:    gm.question     || gm.title || 'Recovered position',
+          eventTitle:  gm.eventTitle   || gm.groupItemTitle || gm.question?.slice(0, 40) || '',
+          conditionId: gm.conditionId  || gm.id,
+          yesTokenId,
+          negRisk:     gm.negRisk === true || gm.enableNegRisk === true,
+          endDate:     gm.endDate      || gm.expirationDate || new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+          startDate:   gm.startDate    || null,
+          tickSize:    gm.minimumTickSize ? String(gm.minimumTickSize) : '0.01',
+        };
+
+        const session            = new BondSession(market, config);
+        session.phase            = 'holding';
+        session.entryPrice       = cand.entryPrice;
+        session.filledTokens     = cand.filledTokens;
+        session._remainingTokens = cand.filledTokens;
+        session.filledAmount     = cand.filledAmount > 0 ? cand.filledAmount : cand.filledTokens * cand.entryPrice;
+        session.orderId          = cand.orderId;
+        session.createdAt        = new Date();
+
+        activeSessions[marketId] = session;
+        enteredMarkets.add(marketId);
+
+        // Subscribe to live best_bid tracking immediately
+        marketWatcher.subscribe(yesTokenId);
+
+        recovered++;
+        logger.addActivity('bot', {
+          message: `[Recovery] Restored position: "${market.question.slice(0, 55)}" | ${cand.filledTokens.toFixed(4)} tokens @ $${cand.entryPrice.toFixed(3)} | exit engine now active`
+        });
+
+      } catch (err) {
+        logger.addActivity('bot', {
+          message: `[Recovery] Error recovering token ${cand.tokenId.slice(0, 16)}...: ${err.message?.slice(0, 60)}`
+        });
+      }
+    }
+
+    logger.addActivity('bot', {
+      message: `[Recovery] Complete — ${recovered} position(s) recovered and protected by exit engine`
+    });
+
+  } catch (err) {
+    logger.addActivity('bot', {
+      message: `[Recovery] Error: ${err.message?.slice(0, 80)}`
+    });
+  }
+}
+
 async function runScan() {
   if (!isRunning) return;
   if (isScanRunning) return; // skip if previous scan still in progress
@@ -286,6 +441,9 @@ function start() {
 
   // Connect public market WebSocket (direct VPS, no proxy) for real-time best_bid tracking
   marketWatcher.connect();
+
+  // Recover any open positions from previous sessions (10s delay — let CLOB client init)
+  setTimeout(() => recoverOpenPositions().catch(() => {}), 10 * 1000);
 
   const config     = getBondConfig();
   const minElapsed = parseInt(process.env.BOND_MIN_ELAPSED_MINUTES) || 30;

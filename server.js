@@ -63,6 +63,11 @@ app.post('/api/killswitch', (req, res) => {
   res.json({ killSwitch: newState, message: newState ? 'Kill switch ACTIVATED — trading halted' : 'Kill switch OFF — trading resumed' });
 });
 
+app.post('/api/safety-reset', (req, res) => {
+  safety.resetDailyCounters();
+  res.json({ success: true, message: 'Daily counters reset — kill switch unchanged', status: safety.getStatus() });
+});
+
 app.post('/api/scan-positions', async (req, res) => {
   try {
     logger.addActivity('bot', { message: 'Manual position scan triggered...' });

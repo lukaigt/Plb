@@ -4,7 +4,7 @@ class SafetySystem {
   constructor() {
     this.dailyLossLimit  = parseFloat(process.env.DAILY_LOSS_LIMIT)  || 50;
     this.maxTradeSize    = parseFloat(process.env.MAX_TRADE_SIZE)     || 10;
-    this.maxDailyLosses  = parseInt(process.env.MAX_DAILY_LOSSES)     || 10;
+    this.maxDailyLosses  = parseInt(process.env.MAX_DAILY_LOSSES)     || 50;
     this.killSwitch      = false;
     this.dailyLoss       = 0;
     this.dailySpent      = 0;
@@ -18,7 +18,7 @@ class SafetySystem {
   reload() {
     this.dailyLossLimit = parseFloat(process.env.DAILY_LOSS_LIMIT) || 50;
     this.maxTradeSize   = parseFloat(process.env.MAX_TRADE_SIZE)    || 10;
-    this.maxDailyLosses = parseInt(process.env.MAX_DAILY_LOSSES)    || 10;
+    this.maxDailyLosses = parseInt(process.env.MAX_DAILY_LOSSES)    || 50;
   }
 
   resetDailyIfNeeded() {
@@ -33,6 +33,18 @@ class SafetySystem {
       this.lastResetDate   = today;
       logger.addActivity('safety', { message: 'Daily counters reset for new day' });
     }
+  }
+
+  // Manual reset — does NOT reset kill switch
+  resetDailyCounters() {
+    this.dailyLoss       = 0;
+    this.dailySpent      = 0;
+    this.dailyTradeCount = 0;
+    this.dailyWinCount   = 0;
+    this.dailyLossCount  = 0;
+    this.dailyProfit     = 0;
+    this.lastResetDate   = new Date().toDateString();
+    logger.addActivity('safety', { message: 'Daily counters manually reset by user (kill switch unchanged)' });
   }
 
   canTrade() {
@@ -60,7 +72,7 @@ class SafetySystem {
     this.dailyLossCount++;
     const canStill = this.canTrade();
     logger.addActivity('safety', {
-      message: `LOSS: -$${Math.abs(amount).toFixed(2)} | Total losses: $${this.dailyLoss.toFixed(2)}/$${this.dailyLossLimit} | ${canStill.allowed ? 'Still trading' : 'STOPPED: ' + canStill.reason}`
+      message: `LOSS: -$${Math.abs(amount).toFixed(2)} | Total losses: $${this.dailyLoss.toFixed(2)}/$${this.dailyLossLimit} | Losing trades: ${this.dailyLossCount}/${this.maxDailyLosses} | ${canStill.allowed ? 'Still trading' : 'STOPPED: ' + canStill.reason}`
     });
   }
 
@@ -86,7 +98,8 @@ class SafetySystem {
 
   getStatus() {
     this.resetDailyIfNeeded();
-    const netPnL = this.dailyProfit - this.dailyLoss;
+    const netPnL    = this.dailyProfit - this.dailyLoss;
+    const canTrade  = this.canTrade();
     return {
       killSwitch:       this.killSwitch,
       dailyLoss:        this.dailyLoss.toFixed(2),
@@ -96,12 +109,14 @@ class SafetySystem {
       dailyTradeCount:  this.dailyTradeCount,
       dailyWinCount:    this.dailyWinCount,
       dailyLossCount:   this.dailyLossCount,
+      maxDailyLosses:   this.maxDailyLosses,
       dailyProfit:      this.dailyProfit.toFixed(2),
       dailyNetPnL:      netPnL.toFixed(2),
-      maxDailyLosses:   this.maxDailyLosses,
       maxTradeSize:     this.maxTradeSize.toFixed(2),
       remainingBudget:  Math.max(0, this.dailyLossLimit - this.dailyLoss).toFixed(2),
-      canTrade:         this.canTrade()
+      canTrade,
+      canTradeAllowed:  canTrade.allowed,
+      canTradeReason:   canTrade.reason
     };
   }
 }

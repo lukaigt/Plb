@@ -15,6 +15,7 @@
     </div>
     <div class="header-controls">
       <button class="btn btn-yellow" id="killBtn" onclick="toggleKillSwitch()">Kill Switch</button>
+      <button class="btn btn-blue" onclick="resetDailyCounters()">Reset Counters</button>
       <button class="btn btn-purple" onclick="scanWallet()">Scan Wallet</button>
       <button class="btn btn-orange" onclick="forceRedeem()">Force Redeem</button>
     </div>
@@ -35,6 +36,8 @@
       </div>
     </div>
 
+    <div id="haltBanner" class="halt-banner" style="display:none;"></div>
+
     <div id="safetyBar" class="safety-bar">
       <div class="safety-item">
         <span class="s-label">Bot Status</span>
@@ -49,7 +52,11 @@
         <span class="s-value" id="todayRecord">0W / 0L</span>
       </div>
       <div class="safety-item">
-        <span class="s-label">Daily Loss</span>
+        <span class="s-label">Loss Trades</span>
+        <span class="s-value" id="lossTradeCount">0 / 50</span>
+      </div>
+      <div class="safety-item">
+        <span class="s-label">Daily Loss $</span>
         <span class="s-value" id="dailyLosses">$0.00 / $50.00</span>
         <div class="progress-bar"><div class="progress-fill" id="lossProgress" style="width:0%;background:#3fb950;"></div></div>
       </div>
