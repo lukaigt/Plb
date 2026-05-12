@@ -184,14 +184,31 @@ async function recoverOpenPositions() {
         //   const marketKey = market.conditionId || market.id;
         const marketId = gm.conditionId || gm.id || cand.tokenId;
 
-        // Skip if we already have a live session for this market (by canonical key)
-        if (activeSessions[marketId]) continue;
-        // Skip if already in the entered-markets blacklist
-        if (enteredMarkets.has(marketId)) continue;
-        // Secondary guard: skip if any existing session tracks the same YES token
-        const tokenAlreadyTracked = Object.values(activeSessions)
-          .some(s => s.market && s.market.yesTokenId === cand.tokenId);
-        if (tokenAlreadyTracked) continue;
+        // Position phases — session is already actively holding/exiting/redeeming.
+        // If the existing session is in one of these, the position is already protected.
+        const POSITION_PHASES = new Set(['holding', 'liquidating', 'redeeming']);
+
+        // Check existing session for this market (by canonical key)
+        const existing = activeSessions[marketId];
+        if (existing) {
+          if (POSITION_PHASES.has(existing.phase)) {
+            // Already protected — nothing to do
+            continue;
+          }
+          // Existing session is in watching/buying (pre-fill) — it doesn't know about
+          // the actual on-chain fill. Replace it with the recovered holding session.
+          logger.addActivity('bot', {
+            message: `[Recovery] Upgrading "${gm.question?.slice(0, 50)}" from ${existing.phase} → holding (on-chain fill found)`
+          });
+          // Don't delete from enteredMarkets — the upgrade preserves the guard
+        }
+
+        // Secondary guard by yesTokenId: covers the case where the canonical key
+        // differs between the existing session and the recovered candidate
+        // (e.g. session keyed by gm.id but recovered with gm.conditionId or vice-versa).
+        const tokenAlreadyHeld = Object.values(activeSessions)
+          .some(s => s.market && s.market.yesTokenId === cand.tokenId && POSITION_PHASES.has(s.phase));
+        if (tokenAlreadyHeld) continue;
 
         // Parse token IDs — YES is first
         let yesTokenId = cand.tokenId;
