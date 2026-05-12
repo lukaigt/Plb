@@ -366,6 +366,35 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
   }
 }
 
+async function placeFakSellOrder(tokenId, size, price, negRisk = true, tickSize = '0.01') {
+  const client = clobClient;
+  if (!client) return { success: false, error: 'No CLOB client' };
+
+  try {
+    const resolvedTickSize = String(tickSize || '0.01');
+    const tickNum  = parseFloat(resolvedTickSize) || 0.01;
+    const decimals = tickNum <= 0.001 ? 3 : 2;
+    const roundedPrice = parseFloat(Math.max(0.02, Math.min(0.97,
+      Math.round(price * (10 ** decimals)) / (10 ** decimals)
+    )).toFixed(decimals));
+    const roundedSize = parseFloat(size.toFixed(2));
+
+    const response = await client.createAndPostOrder(
+      { tokenID: tokenId, price: roundedPrice, size: roundedSize, side: Side.SELL },
+      { tickSize: resolvedTickSize, negRisk: !!negRisk },
+      OrderType.FAK
+    );
+
+    if (response && response.orderID) {
+      return { success: true, orderId: response.orderID };
+    }
+    const errMsg = response?.errorMsg || response?.error || JSON.stringify(response)?.slice(0, 100);
+    return { success: false, error: errMsg };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
 async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '0.01') {
   const client = clobClient;
   if (!client) return { success: false, error: 'No CLOB client' };
@@ -435,4 +464,4 @@ async function executeTrade(decision, marketData, tradeSize) {
   return trade;
 }
 
-module.exports = { executeTrade, initClient, placeOrder, placeSellOrder, getProxyWallet, getEoaAddress, buildClobAuthHeaders, getUsdcBalance, invalidateBalanceCache };
+module.exports = { executeTrade, initClient, placeOrder, placeSellOrder, placeFakSellOrder, getProxyWallet, getEoaAddress, buildClobAuthHeaders, getUsdcBalance, invalidateBalanceCache };

@@ -2,8 +2,9 @@ const { scanLiveSoccerMarkets } = require('./soccerScanner');
 const { scanLiveSportsMarkets } = require('./sportsScanner');
 const { BondSession, getBondConfig } = require('./bondStrategy');
 const { initClient } = require('./trader');
-const safety = require('./safety');
-const logger = require('./logger');
+const safety        = require('./safety');
+const logger        = require('./logger');
+const marketWatcher = require('./marketWatcher');
 
 function isAllSportsMode() {
   const v = (process.env.ALL_SPORTS_ENABLED || '').toLowerCase();
@@ -87,7 +88,7 @@ async function runScan() {
     }
 
     const activeHolding = Object.values(activeSessions)
-      .filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
+      .filter(s => ['buying', 'holding', 'liquidating', 'redeeming'].includes(s.phase)).length;
 
     const minElapsedMs = (parseInt(process.env.BOND_MIN_ELAPSED_MINUTES) || 30) * 60 * 1000;
     const now = Date.now();
@@ -183,7 +184,7 @@ async function runFast() {
     const config = getBondConfig();
     const client = await getClient();
     let activeCount = Object.values(activeSessions)
-      .filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
+      .filter(s => ['buying', 'holding', 'liquidating', 'redeeming'].includes(s.phase)).length;
 
     for (const session of Object.values(activeSessions)) {
       try {
@@ -223,13 +224,22 @@ async function runFast() {
 
         } else if (session.phase === 'holding') {
           await session.pollPrice();
-          await session.checkStopLoss(client);
+          await session.checkExitTriggers();
           await session.checkResolution();
 
-        } else if (session.phase === 'stopping') {
+        } else if (session.phase === 'liquidating') {
+          // Background liquidation loop is running — just keep best_bid fresh
+          // and add a hard timeout in case the loop stalls
           await session.pollPrice();
-          await session.checkStopFill(client);
-          await session.checkResolution();
+          if (session._liquidationStartedAt &&
+              Date.now() - session._liquidationStartedAt > 10 * 60 * 1000 &&
+              !session._liquidating) {
+            logger.addActivity('bond_error', {
+              message: `[EXIT] liquidation timeout (10min) — forcing done for "${session.market?.question?.slice(0, 40)}"`
+            });
+            marketWatcher.unsubscribe(session.market.yesTokenId);
+            session.phase = 'done';
+          }
 
         } else if (session.phase === 'redeeming') {
           await session.tryRedeem();
@@ -247,7 +257,7 @@ async function runFast() {
       lastWatchSummaryAt = now;
       const sessions = Object.values(activeSessions);
       const watching  = sessions.filter(s => s.phase === 'watching');
-      const active    = sessions.filter(s => ['buying','holding','redeeming'].includes(s.phase));
+      const active    = sessions.filter(s => ['buying','holding','liquidating','redeeming'].includes(s.phase));
 
       // Find top 5 markets by YES price
       const byPrice = watching
@@ -274,26 +284,31 @@ function start() {
   if (isRunning) return;
   isRunning = true;
 
-  const config = getBondConfig();
+  // Connect public market WebSocket (direct VPS, no proxy) for real-time best_bid tracking
+  marketWatcher.connect();
+
+  const config     = getBondConfig();
   const minElapsed = parseInt(process.env.BOND_MIN_ELAPSED_MINUTES) || 30;
-  const allSports = isAllSportsMode();
+  const allSports  = isAllSportsMode();
   logger.addActivity('bot', {
     message: [
       allSports
         ? 'Sports Bond Bot started — monitoring ALL live sports markets (soccer, NFL, NBA, MLB, NHL, tennis, golf, UFC, cricket, rugby, F1 + more)'
         : 'Soccer Bond Bot started — monitoring live soccer markets',
-      `  Threshold:     ${(config.threshold * 100).toFixed(0)}¢ (buy when YES token reaches this)`,
-      `  Order size:    $${config.orderSize} per trade`,
-      `  Max positions: ${config.maxPositions} concurrent open bets`,
-      `  Min volume:    $${config.minVolume.toLocaleString()} 24hr volume`,
-      `  Min elapsed:   ${minElapsed}min into game before entry`,
-      `  Stop-loss:     ${((parseFloat(process.env.BOND_STOP_LOSS) || 0.20) * 100).toFixed(0)}% drop triggers auto-sell`,
-      `  Max threshold: ${(config.maxThreshold * 100).toFixed(0)}¢ ceiling (won't enter above this)`,
-      `  O/U filter:    ${(process.env.BOND_SKIP_OU || 'true').toLowerCase() !== 'false' ? 'ON — skipping O/U and BTTS markets' : 'OFF'}`,
-      `  Loss limit:    $${process.env.DAILY_LOSS_LIMIT || 30} daily (bot stops if hit)`,
-      `  Scan interval: every 2 min | price poll: every 15s`,
-      `  Duplicate guard: once entered, a market is never re-entered`,
-      `  Mode:          ${allSports ? 'ALL_SPORTS' : 'SOCCER_ONLY'}`
+      `  Threshold:      ${(config.threshold * 100).toFixed(0)}¢ (buy when YES token reaches this)`,
+      `  Order size:     $${config.orderSize} per trade`,
+      `  Max positions:  ${config.maxPositions} concurrent open bets`,
+      `  Min volume:     $${config.minVolume.toLocaleString()} 24hr volume`,
+      `  Min elapsed:    ${minElapsed}min into game before entry`,
+      `  Hard stop-loss: ${((parseFloat(process.env.BOND_STOP_LOSS) || 0.20) * 100).toFixed(0)}% drop triggers FAK exit`,
+      `  Trailing stop:  ${((config.trailingStop) * 100).toFixed(0)}¢ drop from peak best_bid triggers FAK exit`,
+      `  Spread exit:    if spread > ${(config.maxSpread * 100).toFixed(0)}¢ (broken book) triggers FAK exit`,
+      `  Exit engine:    FAK orders | ${config.fakRetries} retries | ${config.exitRetrySecs}s between attempts`,
+      `  Max threshold:  ${(config.maxThreshold * 100).toFixed(0)}¢ ceiling (won't enter above this)`,
+      `  O/U filter:     ${(process.env.BOND_SKIP_OU || 'true').toLowerCase() !== 'false' ? 'ON — skipping O/U, BTTS, spread, esports markets' : 'OFF'}`,
+      `  Loss limit:     $${process.env.DAILY_LOSS_LIMIT || 30} daily (bot stops if hit)`,
+      `  Scan interval:  every 2 min | price poll: every 15s | best_bid: real-time WebSocket`,
+      `  Mode:           ${allSports ? 'ALL_SPORTS' : 'SOCCER_ONLY'}`
     ].join('\n')
   });
 
@@ -306,6 +321,7 @@ function stop() {
   isRunning = false;
   if (scanInterval) { clearInterval(scanInterval); scanInterval = null; }
   if (fastInterval) { clearInterval(fastInterval); fastInterval = null; }
+  marketWatcher.disconnect();
   logger.addActivity('bot', { message: 'Soccer Bond Bot stopped' });
 }
 
@@ -319,7 +335,7 @@ function getSoccerStats() {
   resetDailyIfNeeded();
   const config          = getBondConfig();
   const positions       = Object.values(activeSessions);
-  const activePositions = positions.filter(s => ['buying', 'holding', 'redeeming'].includes(s.phase)).length;
+  const activePositions = positions.filter(s => ['buying', 'holding', 'liquidating', 'redeeming'].includes(s.phase)).length;
   const watchingCount   = positions.filter(s => s.phase === 'watching').length;
   const totalResolved   = soccerWinsToday + soccerLossesToday;
   const winRate         = totalResolved > 0

@@ -1,7 +1,8 @@
-const { placeOrder, placeSellOrder, initClient, buildClobAuthHeaders } = require('./trader');
-const logger   = require('./logger');
-const redeemer = require('./redeemer');
-const safety   = require('./safety');
+const { placeOrder, placeFakSellOrder, initClient, buildClobAuthHeaders } = require('./trader');
+const logger        = require('./logger');
+const redeemer      = require('./redeemer');
+const safety        = require('./safety');
+const marketWatcher = require('./marketWatcher');
 
 const CLOB_API           = 'https://clob.polymarket.com';
 const GAMMA_API          = 'https://gamma-api.polymarket.com';
@@ -9,12 +10,16 @@ const ESTIMATED_FEE_RATE = 0.02;
 
 function getBondConfig() {
   return {
-    threshold:    process.env.BOND_THRESHOLD    != null ? parseFloat(process.env.BOND_THRESHOLD)   : 0.95,
-    orderSize:    process.env.BOND_ORDER_SIZE   != null ? parseFloat(process.env.BOND_ORDER_SIZE)  : 5,
-    maxPositions: process.env.BOND_MAX_POSITIONS != null ? parseInt(process.env.BOND_MAX_POSITIONS) : 5,
-    minVolume:    process.env.BOND_MIN_VOLUME   != null ? parseFloat(process.env.BOND_MIN_VOLUME)  : 500,
-    stopLoss:     process.env.BOND_STOP_LOSS     != null ? parseFloat(process.env.BOND_STOP_LOSS)    : 0.20,
-    maxThreshold: process.env.BOND_MAX_THRESHOLD != null ? parseFloat(process.env.BOND_MAX_THRESHOLD) : 0.97
+    threshold:     process.env.BOND_THRESHOLD      != null ? parseFloat(process.env.BOND_THRESHOLD)      : 0.95,
+    orderSize:     process.env.BOND_ORDER_SIZE     != null ? parseFloat(process.env.BOND_ORDER_SIZE)     : 5,
+    maxPositions:  process.env.BOND_MAX_POSITIONS  != null ? parseInt(process.env.BOND_MAX_POSITIONS)    : 5,
+    minVolume:     process.env.BOND_MIN_VOLUME     != null ? parseFloat(process.env.BOND_MIN_VOLUME)     : 500,
+    stopLoss:      process.env.BOND_STOP_LOSS      != null ? parseFloat(process.env.BOND_STOP_LOSS)      : 0.20,
+    maxThreshold:  process.env.BOND_MAX_THRESHOLD  != null ? parseFloat(process.env.BOND_MAX_THRESHOLD)  : 0.97,
+    trailingStop:  process.env.BOND_TRAILING_STOP  != null ? parseFloat(process.env.BOND_TRAILING_STOP)  : 0.05,
+    maxSpread:     process.env.BOND_MAX_SPREAD     != null ? parseFloat(process.env.BOND_MAX_SPREAD)     : 0.10,
+    fakRetries:    process.env.BOND_FAK_RETRIES    != null ? parseInt(process.env.BOND_FAK_RETRIES)      : 5,
+    exitRetrySecs: process.env.BOND_EXIT_RETRY_SECS != null ? parseInt(process.env.BOND_EXIT_RETRY_SECS) : 5,
   };
 }
 
@@ -54,7 +59,6 @@ async function checkMarketResolved(conditionId) {
     const markets = await res.json();
     if (Array.isArray(markets) && markets.length > 0) {
       const m = markets[0];
-
       let yesWon = null;
       try {
         const prices = typeof m.outcomePrices === 'string'
@@ -64,7 +68,6 @@ async function checkMarketResolved(conditionId) {
           yesWon = parseFloat(prices[0]) === 1;
         }
       } catch {}
-
       return {
         resolved: m.resolved === true || m.hasResolved === true,
         closed:   m.closed === true,
@@ -93,27 +96,50 @@ class BondSession {
     this.lastPollAt       = 0;
     this.resolutionCheckAt = 0;
     this._fillCheckFails  = 0;
-    this.stopOrderId        = null;
-    this._stopSellPrice     = null;
-    this._stopLossTriggered = false;
+
+    // Exit engine state
+    this.currentBestBid      = null;
+    this.currentBestAsk      = null;
+    this.currentSpread       = null;
+    this.peakBestBid         = null;
+    this.exitAttemptCount    = 0;
+    this.lastExitReason      = null;
+    this._liquidating        = false;
+    this._remainingTokens    = 0;
+    this._totalProceeds      = 0;
+    this._liquidationStartedAt = null;
   }
 
   get id() { return this.market.id; }
 
   async pollPrice() {
+    // Prefer live best_bid from WebSocket — updated in near real-time, no proxy needed
+    const wsData  = marketWatcher.getBookData(this.market.yesTokenId);
+    const wsFresh = marketWatcher.isFresh(this.market.yesTokenId);
+
+    if (wsFresh && wsData && wsData.best_bid != null) {
+      this.currentBestBid = wsData.best_bid;
+      this.currentBestAsk = wsData.best_ask ?? null;
+      this.currentSpread  = wsData.spread   ?? null;
+      this.lastMid        = wsData.best_bid;
+      this.lastPollAt     = Date.now();
+      return this.lastMid;
+    }
+
+    // Fallback: REST midpoint when WS is disconnected or stale
     const mid = await fetchMidpoint(this.market.yesTokenId);
-    if (mid !== null) this.lastMid = mid;
+    if (mid !== null) {
+      this.lastMid        = mid;
+      this.currentBestBid = mid;
+    }
     this.lastPollAt = Date.now();
     return this.lastMid;
   }
 
   shouldEnter() {
-    // Must be at or above threshold but below both the market's hard price limit
-    // (1.0 - tickSize, since CLOB rejects >= 1.0) AND the user-configured ceiling.
     const tickNum  = parseFloat(this.market.tickSize || '0.01') || 0.01;
     const decimals = tickNum <= 0.001 ? 3 : 2;
     const hardMax  = parseFloat((1.0 - tickNum).toFixed(decimals));
-    // Apply maxThreshold ceiling only when it is set and lower than hardMax
     const ceiling  = (this.config.maxThreshold > 0 && this.config.maxThreshold < hardMax)
       ? this.config.maxThreshold
       : hardMax;
@@ -130,14 +156,13 @@ class BondSession {
     const amount   = this.config.orderSize;
     const negRisk  = this.market.negRisk;
     const tickSize = this.market.tickSize || '0.01';
-    // Cap price strictly below 1.0 using the market's actual tick size
     const tickNum  = parseFloat(tickSize) || 0.01;
     const decimals = tickNum <= 0.001 ? 3 : 2;
     const maxPrice = parseFloat((1.0 - tickNum).toFixed(decimals));
     const price    = Math.min(this.lastMid, maxPrice);
 
     logger.addActivity('bond_entry', {
-      message: `[Soccer] ENTERING "${this.market.question.slice(0, 55)}" | mid=${price.toFixed(3)} >= threshold=${this.config.threshold} | $${amount} buy`
+      message: `[ENTRY] signal: "${this.market.question.slice(0, 50)}" | bid=${price.toFixed(3)} threshold=${this.config.threshold} | $${amount} buy`
     });
 
     const result = await placeOrder(
@@ -156,6 +181,10 @@ class BondSession {
       this.orderId      = result.orderId;
       this.filledAmount = amount;
       safety.recordTrade(amount);
+
+      logger.addActivity('bond_entry', {
+        message: `[BUY] submitted: orderId=${result.orderId.slice(0, 12)}... price=$${price.toFixed(3)} size=$${amount}`
+      });
 
       const estimatedFee = amount * ESTIMATED_FEE_RATE;
       const logged = logger.addTrade({
@@ -181,16 +210,13 @@ class BondSession {
       errMsg.includes('not initialized') || errMsg.includes('client not');
 
     if (isInfraError) {
-      // Transient infrastructure error (allowance not synced, client not ready).
-      // Reset to watching so the market can be retried on the next price poll.
       logger.addActivity('bond_error', {
-        message: `[Soccer] Order failed (will retry) "${this.market.question.slice(0, 50)}": ${result.error?.slice(0, 80)}`
+        message: `[BUY] failed (will retry) "${this.market.question.slice(0, 50)}": ${result.error?.slice(0, 80)}`
       });
       this.phase = 'watching';
     } else {
-      // Market-specific rejection — don't retry this market.
       logger.addActivity('bond_error', {
-        message: `[Soccer] Order failed "${this.market.question.slice(0, 50)}": ${result.error?.slice(0, 80)}`
+        message: `[BUY] rejected "${this.market.question.slice(0, 50)}": ${result.error?.slice(0, 80)}`
       });
       this.phase = 'done';
     }
@@ -201,7 +227,6 @@ class BondSession {
     if (!this.orderId) return;
 
     let order = await fetchOrderStatus(this.orderId);
-
     if (!order && client) {
       try { order = await client.getOrder(this.orderId); } catch {}
     }
@@ -209,7 +234,7 @@ class BondSession {
     if (!order) {
       this._fillCheckFails++;
       if (this._fillCheckFails >= 20) {
-        logger.addActivity('bond_error', { message: `[Soccer] Cannot check fill after 20 attempts — marking done` });
+        logger.addActivity('bond_error', { message: `[BUY] cannot check fill after 20 attempts — marking done` });
         this.phase = 'done';
         if (this.tradeId) logger.updateTrade(this.tradeId, { result: 'failed', exitReason: 'fill_check_timeout' });
       }
@@ -221,129 +246,243 @@ class BondSession {
 
     if (sizeMatched > 0 || status === 'MATCHED') {
       const tokens = sizeMatched > 0 ? sizeMatched : (this.filledAmount / (this.entryPrice || 0.95));
-      this.filledTokens = parseFloat(tokens.toFixed(4));
-      this.phase = 'holding';
+      this.filledTokens     = parseFloat(tokens.toFixed(4));
+      this._remainingTokens = this.filledTokens;
+      this.phase            = 'holding';
+
+      // Subscribe to real-time market WebSocket for this position
+      marketWatcher.subscribe(this.market.yesTokenId);
+
       logger.addActivity('bond_fill', {
-        message: `[Soccer] FILLED "${this.market.question.slice(0, 55)}" | ${this.filledTokens.toFixed(2)} YES tokens @ $${this.entryPrice?.toFixed(3)} | waiting for resolution`
+        message: `[BUY] filled: ${this.filledTokens.toFixed(2)} YES tokens @ $${this.entryPrice?.toFixed(3)} | real-time best_bid tracking active | "${this.market.question.slice(0, 45)}"`
       });
       return;
     }
 
     if (status === 'CANCELLED' || status === 'EXPIRED') {
       logger.addActivity('bond_cancelled', {
-        message: `[Soccer] Order ${status} for "${this.market.question.slice(0, 50)}"`
+        message: `[BUY] order ${status} for "${this.market.question.slice(0, 50)}"`
       });
       this.phase = 'done';
       if (this.tradeId) logger.updateTrade(this.tradeId, { result: 'failed', exitReason: 'order_cancelled' });
     }
   }
 
-  async checkStopLoss(client) {
-    if (this.phase !== 'holding') return;
-    if (this._stopLossTriggered) return;
-    if (!this.config.stopLoss || this.config.stopLoss <= 0) return;
-    if (this.filledTokens <= 0 || this.filledAmount <= 0) return;
-    if (this.lastMid === null) return;
+  // ─── EXIT ENGINE ────────────────────────────────────────────────────────────
 
-    const currentValue = this.lastMid * this.filledTokens;
-    const lossThreshold = this.filledAmount * (1 - this.config.stopLoss);
-    if (currentValue >= lossThreshold) return;
+  _checkExitTrigger() {
+    if (this.phase !== 'holding') return null;
+    if (this._liquidating) return null;
+    if (this.filledTokens <= 0 || this.filledAmount <= 0) return null;
 
-    const lossPct = (((this.filledAmount - currentValue) / this.filledAmount) * 100).toFixed(1);
-    this._stopLossTriggered = true;
+    const bid = this.currentBestBid ?? this.lastMid;
+    if (bid === null) return null;
 
-    logger.addActivity('bond_stoploss', {
-      message: `[Soccer] STOP-LOSS triggered "${this.market.question.slice(0, 50)}" | value=$${currentValue.toFixed(3)} entry=$${this.filledAmount.toFixed(3)} (${lossPct}% loss) | selling ${this.filledTokens} tokens`
+    // Track peak best_bid since fill
+    if (this.peakBestBid === null || bid > this.peakBestBid) {
+      this.peakBestBid = bid;
+    }
+
+    // Log HOLD status every poll so user can see live position health
+    const spreadStr = this.currentSpread != null ? `spread=${(this.currentSpread * 100).toFixed(1)}¢` : 'spread=?';
+    const pnl       = (bid * this.filledTokens) - this.filledAmount;
+    logger.addActivity('bond_hold', {
+      message: `[HOLD] "${this.market.question.slice(0, 40)}" peak_bid=$${(this.peakBestBid || 0).toFixed(3)} bid=$${bid.toFixed(3)} ${spreadStr} pnl=${pnl >= 0 ? '+' : ''}$${pnl.toFixed(3)}`
     });
 
-    const tickNum   = parseFloat(this.market.tickSize || '0.01') || 0.01;
-    const decimals  = tickNum <= 0.001 ? 3 : 2;
-    const sellPrice = parseFloat(Math.max(0.02, this.lastMid - tickNum * 2).toFixed(decimals));
-    this._stopSellPrice = sellPrice;
-
-    const result = await placeSellOrder(
-      this.market.yesTokenId,
-      this.filledTokens,
-      sellPrice,
-      this.market.negRisk,
-      this.market.tickSize || '0.01'
-    );
-
-    if (result.success && result.orderId) {
-      this.stopOrderId = result.orderId;
-      this.phase = 'stopping';
-      logger.addActivity('bond_stoploss', {
-        message: `[Soccer] Stop-loss SELL placed (${result.orderId.slice(0, 12)}...) @ $${sellPrice.toFixed(decimals)} — waiting for fill`
-      });
-    } else {
-      this._stopLossTriggered = false;
-      logger.addActivity('bond_error', {
-        message: `[Soccer] Stop-loss sell FAILED: ${result.error?.slice(0, 80)} — will retry`
-      });
+    // 1. Hard stop — current value fell more than BOND_STOP_LOSS below entry cost
+    if (this.config.stopLoss > 0) {
+      const currentValue  = bid * this.filledTokens;
+      const lossThreshold = this.filledAmount * (1 - this.config.stopLoss);
+      if (currentValue < lossThreshold) {
+        const lossPct = (((this.filledAmount - currentValue) / this.filledAmount) * 100).toFixed(1);
+        return { reason: 'hard', detail: `${lossPct}% loss | bid=$${bid.toFixed(3)} entry=$${this.filledAmount.toFixed(2)}` };
+      }
     }
+
+    // 2. Trailing stop — bid dropped BOND_TRAILING_STOP below peak
+    if (this.config.trailingStop > 0 && this.peakBestBid !== null) {
+      const dropFromPeak = this.peakBestBid - bid;
+      if (dropFromPeak >= this.config.trailingStop) {
+        return {
+          reason: 'trailing',
+          detail: `bid dropped ${(dropFromPeak * 100).toFixed(1)}¢ from peak $${this.peakBestBid.toFixed(3)}`
+        };
+      }
+    }
+
+    // 3. Spread exit — book is broken/illiquid
+    if (this.config.maxSpread > 0 && this.currentBestAsk !== null && this.currentBestBid !== null) {
+      const spread = this.currentBestAsk - this.currentBestBid;
+      if (spread > this.config.maxSpread) {
+        return {
+          reason: 'spread',
+          detail: `spread=${(spread * 100).toFixed(1)}¢ > max=${(this.config.maxSpread * 100).toFixed(0)}¢`
+        };
+      }
+    }
+
+    return null;
   }
 
-  async checkStopFill(client) {
-    if (this.phase !== 'stopping') return;
-    if (!this.stopOrderId) { this.phase = 'done'; return; }
+  async checkExitTriggers() {
+    const trigger = this._checkExitTrigger();
+    if (!trigger) return;
 
-    let order = await fetchOrderStatus(this.stopOrderId);
-    if (!order && client) {
-      try { order = await client.getOrder(this.stopOrderId); } catch {}
-    }
-    if (!order) return;
+    this.lastExitReason        = trigger.reason;
+    this.phase                 = 'liquidating';
+    this._remainingTokens      = this.filledTokens;
+    this._totalProceeds        = 0;
+    this._liquidationStartedAt = Date.now();
 
-    const sizeMatched = parseFloat(order.size_matched || order.sizeMatched || 0);
-    const status      = (order.status || order.orderStatus || '').toUpperCase();
+    logger.addActivity('bond_stoploss', {
+      message: `[STOP] triggered: reason=${trigger.reason} | ${trigger.detail} | ${this.filledTokens.toFixed(4)} tokens → liquidating now | "${this.market.question.slice(0, 40)}"`
+    });
 
-    if (sizeMatched > 0 || status === 'MATCHED') {
-      const proceeds = sizeMatched > 0
-        ? sizeMatched * (this._stopSellPrice || this.lastMid || 0)
-        : this.filledAmount * (1 - this.config.stopLoss);
-      const grossPnl = proceeds - this.filledAmount;
-      const fee      = this.filledAmount * ESTIMATED_FEE_RATE;
-      const netPnl   = grossPnl - fee;
+    // Start background liquidation loop — does not block the fast loop
+    this.runLiquidationLoop().catch(err => {
+      logger.addActivity('bond_error', {
+        message: `[EXIT] liquidation loop crash: ${err.message?.slice(0, 80)}`
+      });
+      marketWatcher.unsubscribe(this.market.yesTokenId);
+      this._liquidating = false;
+      this.phase = 'done';
+    });
+  }
 
-      this.pnl        = grossPnl;
-      this.resolvedAt = new Date().toISOString();
-      safety.recordLoss(Math.abs(grossPnl));
+  async runLiquidationLoop() {
+    if (this._liquidating) return;
+    this._liquidating = true;
 
-      if (this.tradeId) {
-        logger.updateTrade(this.tradeId, {
-          result:     'loss',
-          pnl:        grossPnl,
-          exitReason: 'stop_loss'
+    const maxRetries  = Math.max(1, this.config.fakRetries    || 5);
+    const retrySecs   = Math.max(2, this.config.exitRetrySecs || 5) * 1000;
+    const tickNum     = parseFloat(this.market.tickSize || '0.01') || 0.01;
+    const decimals    = tickNum <= 0.001 ? 3 : 2;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      if (this._remainingTokens <= 0.01) break;
+      if (this.phase === 'done') break;
+
+      const bid       = this.currentBestBid ?? this.lastMid ?? 0.05;
+      const sellPrice = parseFloat(Math.max(0.02, bid - tickNum * 2).toFixed(decimals));
+
+      logger.addActivity('bond_exit', {
+        message: `[EXIT] FAK attempt ${attempt}/${maxRetries}: ${this._remainingTokens.toFixed(4)} tokens @ $${sellPrice.toFixed(decimals)} | bid=$${bid.toFixed(3)} | "${this.market.question.slice(0, 38)}"`
+      });
+      this.exitAttemptCount++;
+
+      let orderId = null;
+      try {
+        const result = await placeFakSellOrder(
+          this.market.yesTokenId,
+          this._remainingTokens,
+          sellPrice,
+          this.market.negRisk,
+          this.market.tickSize || '0.01'
+        );
+        if (result.success && result.orderId) {
+          orderId = result.orderId;
+        } else {
+          logger.addActivity('bond_exit', {
+            message: `[EXIT] FAK attempt ${attempt} rejected: ${result.error?.slice(0, 80)}`
+          });
+        }
+      } catch (err) {
+        logger.addActivity('bond_exit', {
+          message: `[EXIT] FAK attempt ${attempt} error: ${err.message?.slice(0, 80)}`
         });
       }
 
-      logger.addActivity('bond_stoploss', {
-        message: `[Soccer] Stop-loss FILLED "${this.market.question.slice(0, 50)}" | proceeds=$${proceeds.toFixed(3)} gross=${grossPnl >= 0 ? '+' : ''}$${grossPnl.toFixed(3)} net=${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(3)}`
-      });
-      this.phase = 'done';
-      return;
+      // Wait for FAK to execute
+      await new Promise(r => setTimeout(r, retrySecs));
+
+      if (orderId) {
+        const order       = await fetchOrderStatus(orderId);
+        const sizeMatched = parseFloat(order?.size_matched || order?.sizeMatched || 0);
+        const status      = (order?.status || order?.orderStatus || '').toUpperCase();
+
+        if (sizeMatched > 0 || status === 'MATCHED') {
+          const filled   = sizeMatched > 0 ? sizeMatched : this._remainingTokens;
+          const proceeds = filled * sellPrice;
+          this._totalProceeds   += proceeds;
+          this._remainingTokens  = Math.max(0, parseFloat((this._remainingTokens - filled).toFixed(4)));
+
+          logger.addActivity('bond_exit', {
+            message: `[EXIT] partial fill: filled=${filled.toFixed(4)} remaining=${this._remainingTokens.toFixed(4)} proceeds=$${proceeds.toFixed(3)}`
+          });
+        } else {
+          logger.addActivity('bond_exit', {
+            message: `[EXIT] FAK attempt ${attempt} — no fill (status=${status || 'unknown'}) — retrying`
+          });
+        }
+      }
     }
 
-    if (status === 'CANCELLED' || status === 'EXPIRED') {
-      logger.addActivity('bond_stoploss', {
-        message: `[Soccer] Stop-loss sell ${status} for "${this.market.question.slice(0, 50)}" — position closed`
+    // Final emergency attempt at deep fallback price if still holding
+    if (this._remainingTokens > 0.01) {
+      logger.addActivity('bond_exit', {
+        message: `[EXIT] unrecoverable — ${this._remainingTokens.toFixed(4)} tokens remain | bid=$${(this.currentBestBid || 0).toFixed(3)} | final attempt @ $0.02`
       });
-      this.phase = 'done';
+      try {
+        const r = await placeFakSellOrder(
+          this.market.yesTokenId, this._remainingTokens, 0.02,
+          this.market.negRisk, this.market.tickSize || '0.01'
+        );
+        if (r.success) {
+          this._totalProceeds  += this._remainingTokens * 0.02;
+          this._remainingTokens = 0;
+        }
+      } catch {}
+
+      if (this._remainingTokens > 0.01) {
+        logger.addActivity('bond_exit', {
+          message: `[EXIT] UNRECOVERABLE: ${this._remainingTokens.toFixed(4)} tokens could not be sold | market may have no buyers | "${this.market.question.slice(0, 45)}"`
+        });
+      }
+    } else {
+      logger.addActivity('bond_exit', {
+        message: `[EXIT] fully flat — all tokens sold | "${this.market.question.slice(0, 50)}"`
+      });
     }
+
+    // Record final PnL
+    const grossPnl = this._totalProceeds - this.filledAmount;
+    const fee      = this.filledAmount * ESTIMATED_FEE_RATE;
+    const netPnl   = grossPnl - fee;
+
+    this.pnl        = grossPnl;
+    this.resolvedAt = new Date().toISOString();
+    if (grossPnl < 0) safety.recordLoss(Math.abs(grossPnl));
+    else safety.recordWin(grossPnl);
+
+    if (this.tradeId) {
+      logger.updateTrade(this.tradeId, {
+        result:     grossPnl >= 0 ? 'win' : 'loss',
+        pnl:        grossPnl,
+        exitReason: this.lastExitReason || 'stop_loss'
+      });
+    }
+
+    logger.addActivity(grossPnl >= 0 ? 'bond_done' : 'bond_loss', {
+      message: `[EXIT] result: gross=${grossPnl >= 0 ? '+' : ''}$${grossPnl.toFixed(3)} net=${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(3)} | reason=${this.lastExitReason} attempts=${this.exitAttemptCount} | "${this.market.question.slice(0, 40)}"`
+    });
+
+    marketWatcher.unsubscribe(this.market.yesTokenId);
+    this._liquidating = false;
+    this.phase = 'done';
   }
 
+  // ─── RESOLUTION ─────────────────────────────────────────────────────────────
+
   async checkResolutionWhileBuying() {
-    if (this.phase !== 'buying') return; // checkFill() may have already moved phase
+    if (this.phase !== 'buying') return;
     if (!this.market.conditionId) return;
 
     const res = await checkMarketResolved(this.market.conditionId);
     if (!res || (!res.resolved && !res.closed)) return;
 
-    // Market resolved while fill was not confirmed via API. The order may have
-    // actually filled on-chain even though the fill-check API returned null.
-    // Transition to 'redeeming' and let tryRedeem() check the actual on-chain
-    // balance — if tokens are there we collect them, if not it exits cleanly.
     logger.addActivity('bond_cancelled', {
-      message: `[Soccer] Market resolved before fill confirmed — checking on-chain balance for "${this.market.question.slice(0, 50)}"`
+      message: `[BUY] market resolved before fill confirmed — checking on-chain balance for "${this.market.question.slice(0, 50)}"`
     });
     if (this.tradeId) {
       logger.updateTrade(this.tradeId, { result: 'no_fill', exitReason: 'resolved_before_fill' });
@@ -361,14 +500,10 @@ class BondSession {
     await this.pollPrice();
 
     if (!this.market.conditionId) {
-      logger.addActivity('bond_error', { message: `[Soccer] No conditionId for resolution check: ${this.market.question.slice(0, 50)}` });
+      logger.addActivity('bond_error', { message: `No conditionId for resolution check: ${this.market.question.slice(0, 50)}` });
       return;
     }
 
-    // Check resolution every 30s regardless of endDate.
-    // Polymarket closes markets as soon as the game ends — often 15-30+ min
-    // before the scheduled endDate buffer — so waiting for pastEnd causes
-    // filled positions to sit unredeemed for a long time.
     const res = await checkMarketResolved(this.market.conditionId);
     if (!res) return;
 
@@ -378,10 +513,11 @@ class BondSession {
   }
 
   async _finalise(res) {
-    if (this.phase !== 'holding' && this.phase !== 'stopping') { this.phase = 'done'; return; }
+    if (this.phase !== 'holding' && this.phase !== 'liquidating') { this.phase = 'done'; return; }
 
-    // Derive winner from Gamma outcomePrices (authoritative).
-    // Fall back to lastMid >= 0.5 only when Gamma data is unavailable.
+    // If we're mid-liquidation, let it finish first
+    if (this._liquidating) return;
+
     let yesWon;
     if (res.yesWon !== null && res.yesWon !== undefined) {
       yesWon = res.yesWon;
@@ -389,7 +525,7 @@ class BondSession {
       yesWon = this.lastMid >= 0.5;
     } else {
       logger.addActivity('bond_error', {
-        message: `[Soccer] Cannot determine outcome for "${this.market.question.slice(0, 50)}" — logged as no_fill`
+        message: `Cannot determine outcome for "${this.market.question.slice(0, 50)}" — logged as no_fill`
       });
       this.phase = 'done';
       if (this.tradeId) logger.updateTrade(this.tradeId, { result: 'no_fill', exitReason: 'outcome_unknown' });
@@ -421,10 +557,10 @@ class BondSession {
       message: `[Soccer] RESOLVED ${result.toUpperCase()} "${this.market.question.slice(0, 50)}" | gross=${grossPnl >= 0 ? '+' : ''}$${grossPnl.toFixed(3)} | net=${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(3)}`
     });
 
+    // Unsubscribe from live market data — no longer needed after resolution
+    marketWatcher.unsubscribe(this.market.yesTokenId);
+
     if (result === 'win') {
-      // Attempt on-chain redemption immediately in the same flow — the redeemer
-      // checks actual token balance itself, so no need to gate on filledTokens.
-      // If it fails, phase stays 'redeeming' and the fast loop retries every 15s.
       this.phase           = 'redeeming';
       this._redeemAttempts = 0;
       await this.tryRedeem();
@@ -452,44 +588,51 @@ class BondSession {
     if (succeeded) {
       this.phase = 'done';
     } else if (Date.now() - this._redeemStartedAt > 2 * 60 * 60 * 1000) {
-      // On-chain market resolution (payoutDenominator becoming non-zero) can take
-      // 30–60 min after Gamma marks the market closed. Retry every 15s for up to
-      // 2 hours before giving up, so we don't abandon tokens that are redeemable.
       logger.addActivity('redeemer_error', {
         message: `[Soccer] Giving up on redemption after 2 hours: "${this.market.question.slice(0, 50)}"`
       });
       this.phase = 'done';
     }
-    // else: stay in 'redeeming' — fast loop retries on next 15s tick
   }
 
   getStatus() {
+    const priceForPnl = this.currentBestBid ?? this.lastMid;
     let unrealizedPnL = null;
-    if ((this.phase === 'holding' || this.phase === 'buying') && this.filledAmount > 0 && this.lastMid !== null) {
+    if ((this.phase === 'holding' || this.phase === 'liquidating' || this.phase === 'buying') &&
+        this.filledAmount > 0 && priceForPnl !== null) {
       const tokens = this.filledTokens > 0 ? this.filledTokens : (this.filledAmount / (this.entryPrice || 0.95));
-      unrealizedPnL = parseFloat(((this.lastMid * tokens) - this.filledAmount).toFixed(4));
+      unrealizedPnL = parseFloat(((priceForPnl * tokens) - this.filledAmount).toFixed(4));
     }
-    const now       = new Date();
-    const endDate   = new Date(this.market.endDate);
+
+    const now         = new Date();
+    const endDate     = new Date(this.market.endDate);
     const minutesLeft = Math.max(0, Math.round((endDate - now) / 60000));
 
     return {
-      id:            this.id,
-      question:      this.market.question,
-      eventTitle:    this.market.eventTitle,
-      phase:         this.phase,
-      lastMid:       this.lastMid,
-      entryPrice:    this.entryPrice,
-      filledTokens:  this.filledTokens,
-      filledAmount:  this.filledAmount,
+      id:               this.id,
+      question:         this.market.question,
+      eventTitle:       this.market.eventTitle,
+      phase:            this.phase,
+      lastMid:          this.lastMid,
+      currentBestBid:   this.currentBestBid,
+      currentBestAsk:   this.currentBestAsk,
+      currentSpread:    this.currentSpread,
+      peakBestBid:      this.peakBestBid,
+      entryPrice:       this.entryPrice,
+      filledTokens:     this.filledTokens,
+      filledAmount:     this.filledAmount,
+      remainingTokens:  this._remainingTokens,
       unrealizedPnL,
-      pnl:           this.pnl,
-      endDate:       this.market.endDate,
+      pnl:              this.pnl,
+      endDate:          this.market.endDate,
       minutesLeft,
-      threshold:     this.config.threshold,
-      stopLoss:      this.config.stopLoss,
-      stopLossTriggered: this._stopLossTriggered,
-      createdAt:     this.createdAt.toISOString()
+      threshold:        this.config.threshold,
+      stopLoss:         this.config.stopLoss,
+      trailingStop:     this.config.trailingStop,
+      exitAttemptCount: this.exitAttemptCount,
+      lastExitReason:   this.lastExitReason,
+      wsConnected:      marketWatcher.isConnected(),
+      createdAt:        this.createdAt.toISOString()
     };
   }
 }
