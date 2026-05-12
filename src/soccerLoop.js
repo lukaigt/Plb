@@ -180,12 +180,18 @@ async function recoverOpenPositions() {
         // Skip already resolved markets — no position to protect
         if (gm.resolved === true || gm.hasResolved === true) continue;
 
-        const marketId = gm.id || gm.conditionId || cand.tokenId;
+        // Canonical key: conditionId first, then id — matches soccerScanner.js line 73:
+        //   const marketKey = market.conditionId || market.id;
+        const marketId = gm.conditionId || gm.id || cand.tokenId;
 
-        // Skip if we already have a live session for this market
+        // Skip if we already have a live session for this market (by canonical key)
         if (activeSessions[marketId]) continue;
-        // Skip if already in the entered-markets blacklist (entered this session)
+        // Skip if already in the entered-markets blacklist
         if (enteredMarkets.has(marketId)) continue;
+        // Secondary guard: skip if any existing session tracks the same YES token
+        const tokenAlreadyTracked = Object.values(activeSessions)
+          .some(s => s.market && s.market.yesTokenId === cand.tokenId);
+        if (tokenAlreadyTracked) continue;
 
         // Parse token IDs — YES is first
         let yesTokenId = cand.tokenId;
