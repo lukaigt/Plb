@@ -312,6 +312,15 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
     );
     const size = parseFloat((amount / roundedPrice).toFixed(2));
 
+    // Pre-seed the SDK's internal tick-size cache so it never makes a live
+    // /tick-size API call for this token.  The SDK's getTickSize() returns
+    // immediately when the token is already in the cache, bypassing the call
+    // to GET /tick-size whose response may lack `minimum_tick_size` (causing
+    // "Cannot read properties of undefined (reading 'toString')").
+    if (client.tickSizes && !(tokenId in client.tickSizes)) {
+      client.tickSizes[tokenId] = resolvedTickSize;
+    }
+
     let response;
     let lastError = null;
     const maxRetries = 3;
@@ -379,6 +388,10 @@ async function placeFakSellOrder(tokenId, size, price, negRisk = true, tickSize 
     )).toFixed(decimals));
     const roundedSize = parseFloat(size.toFixed(2));
 
+    if (client.tickSizes && !(tokenId in client.tickSizes)) {
+      client.tickSizes[tokenId] = resolvedTickSize;
+    }
+
     const response = await client.createAndPostOrder(
       { tokenID: tokenId, price: roundedPrice, size: roundedSize, side: Side.SELL },
       { tickSize: resolvedTickSize, negRisk: !!negRisk },
@@ -404,6 +417,10 @@ async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '
     const roundedSize  = parseFloat(size.toFixed(2));
 
     const resolvedTickSize = String(tickSize || '0.01');
+
+    if (client.tickSizes && !(tokenId in client.tickSizes)) {
+      client.tickSizes[tokenId] = resolvedTickSize;
+    }
 
     // V2: expiration and taker removed
     const response = await client.createAndPostOrder(
