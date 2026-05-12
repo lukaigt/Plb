@@ -77,7 +77,7 @@ async function recoverOpenPositions() {
       return;
     }
 
-    // Fetch last 500 matched orders (no status filter — CLOB returns all states)
+    // Fetch last 500 matched orders to compute net per-token position
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     const url = 'https://clob.polymarket.com/orders?status=MATCHED&next_cursor=&limit=500';
@@ -97,40 +97,69 @@ async function recoverOpenPositions() {
       return;
     }
 
-    // Filter to YES-side orders that still have unresolved tokens
-    // Deduplicate by asset_id (YES token) — one session per market
-    const seenTokens = new Set();
-    const candidates = [];
+    // Compute NET token balance per YES token: buys - sells.
+    // A token that was bought then fully sold via FAK will net to ~0 and is skipped.
+    // This prevents recovering "already liquidated" positions as if they were still open.
+    const netByToken = {};  // tokenId → { netTokens, totalBought, totalSold, firstBuyPrice, firstBuySize, firstOrderId }
 
     for (const order of orders) {
       const tokenId     = order.asset_id || order.assetId || order.token_id;
       const sizeMatched = parseFloat(order.size_matched || order.sizeMatched || 0);
-      const outcome     = (order.outcome || order.side || '').toUpperCase();
       const status      = (order.status  || order.orderStatus || '').toUpperCase();
+      // side: BUY means we bought YES tokens; SELL means we sold them
+      const side        = (order.side || order.outcome || '').toUpperCase();
 
-      if (!tokenId)                       continue;
-      if (sizeMatched <= 0)               continue;
-      if (status !== 'MATCHED')           continue;
-      if (outcome !== 'YES' && outcome !== 'BUY') continue;
-      if (seenTokens.has(tokenId))        continue;
-      seenTokens.add(tokenId);
+      if (!tokenId || sizeMatched <= 0 || status !== 'MATCHED') continue;
 
-      candidates.push({
-        tokenId,
-        filledTokens: sizeMatched,
-        entryPrice:   parseFloat(order.price || order.average_price || 0.9),
-        filledAmount: parseFloat(order.original_size || order.originalSize || sizeMatched * parseFloat(order.price || 0.9)),
-        orderId:      order.id || order.order_id
-      });
+      if (!netByToken[tokenId]) {
+        netByToken[tokenId] = {
+          netTokens:    0,
+          totalBought:  0,
+          totalSold:    0,
+          firstBuyPrice: 0,
+          firstBuyAmount: 0,
+          firstOrderId: null
+        };
+      }
+
+      const t = netByToken[tokenId];
+      const isBuy  = side === 'BUY'  || side === 'YES';
+      const isSell = side === 'SELL' || side === 'NO';
+
+      if (isBuy) {
+        t.netTokens   += sizeMatched;
+        t.totalBought += sizeMatched;
+        // Capture first buy's entry price for session reconstruction
+        if (t.firstBuyPrice === 0) {
+          t.firstBuyPrice  = parseFloat(order.price || order.average_price || 0.9);
+          t.firstBuyAmount = parseFloat(order.original_size || order.originalSize || sizeMatched * t.firstBuyPrice);
+          t.firstOrderId   = order.id || order.order_id;
+        }
+      } else if (isSell) {
+        t.netTokens  -= sizeMatched;
+        t.totalSold  += sizeMatched;
+      }
+      // If side is unrecognised, skip (neither adds nor subtracts)
     }
 
+    // Only recover tokens where we still have a net positive balance (> 0.01 to handle rounding)
+    const candidates = Object.entries(netByToken)
+      .filter(([, t]) => t.netTokens > 0.01)
+      .map(([tokenId, t]) => ({
+        tokenId,
+        filledTokens: parseFloat(t.netTokens.toFixed(4)),
+        entryPrice:   t.firstBuyPrice,
+        filledAmount: t.firstBuyAmount > 0 ? t.firstBuyAmount : t.netTokens * t.firstBuyPrice,
+        orderId:      t.firstOrderId
+      }));
+
     if (candidates.length === 0) {
-      logger.addActivity('bot', { message: '[Recovery] No open YES positions to recover' });
+      logger.addActivity('bot', { message: '[Recovery] Net position check: no open YES holdings found — nothing to recover' });
       return;
     }
 
     logger.addActivity('bot', {
-      message: `[Recovery] Found ${candidates.length} filled YES order(s) — checking markets...`
+      message: `[Recovery] Net positions: ${candidates.length} token(s) with open balance after netting buys vs sells — checking markets...`
     });
 
     let recovered = 0;
@@ -223,7 +252,13 @@ async function runScan() {
 
   const config   = getBondConfig();
   const canTrade = safety.canTrade();
-  if (!canTrade.allowed) return; // bail before locking — no async work started
+  if (!canTrade.allowed) {
+    const s = safety.getStatus();
+    logger.addActivity('safety_block', {
+      message: `[SCAN] New entries blocked — ${canTrade.reason} | losses: ${s.dailyLossCount}/${s.maxDailyLosses} | $${s.dailyLoss}/$${s.dailyLossLimit} | Use "Reset Counters" on dashboard to resume`
+    });
+    return;
+  }
 
   isScanRunning = true;
   try {
@@ -360,7 +395,13 @@ async function runFast() {
           }
           if (session.shouldEnter()) {
             const canTrade = safety.canTrade();
-            if (!canTrade.allowed) continue;
+            if (!canTrade.allowed) {
+              const s = safety.getStatus();
+              logger.addActivity('safety_block', {
+                message: `[BLOCKED] "${session.market.question.slice(0, 50)}" YES=${session.lastMid?.toFixed(3)} — ${canTrade.reason} | losing trades: ${s.dailyLossCount}/${s.maxDailyLosses} | $${s.dailyLoss} lost today`
+              });
+              continue;
+            }
             if (activeCount < config.maxPositions) {
               const entered = await session.enter(client);
               if (entered) {
@@ -464,7 +505,7 @@ function start() {
       `  Exit engine:    FAK orders | ${config.fakRetries} retries | ${config.exitRetrySecs}s between attempts`,
       `  Max threshold:  ${(config.maxThreshold * 100).toFixed(0)}¢ ceiling (won't enter above this)`,
       `  O/U filter:     ${(process.env.BOND_SKIP_OU || 'true').toLowerCase() !== 'false' ? 'ON — skipping O/U, BTTS, spread, esports markets' : 'OFF'}`,
-      `  Loss limit:     $${process.env.DAILY_LOSS_LIMIT || 30} daily (bot stops if hit)`,
+      `  Loss limit:     $${process.env.DAILY_LOSS_LIMIT || 50} daily OR ${process.env.MAX_DAILY_LOSSES || 50} losing trades (whichever hits first)`,
       `  Scan interval:  every 2 min | price poll: every 15s | best_bid: real-time WebSocket`,
       `  Mode:           ${allSports ? 'ALL_SPORTS' : 'SOCCER_ONLY'}`
     ].join('\n')
