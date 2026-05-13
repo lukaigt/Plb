@@ -63,208 +63,176 @@ async function getClient() {
 }
 
 // ─── POSITION RECOVERY ON STARTUP ───────────────────────────────────────────
-// On restart, in-memory sessions are wiped. This scans the CLOB for open
-// MATCHED orders and reconstructs BondSessions so the exit engine immediately
-// protects any positions that were entered before the restart.
+// Uses the Polymarket Data API (NOT CLOB order history) to find actual token
+// holdings in the wallet. This is the authoritative source — it reflects the
+// real on-chain ERC-1155 balance, not an approximation from order history.
+//
+// Wallet used: EOA (0xe82dEec5...) — the address that actually holds the
+// ERC-1155 conditional tokens after fills. The Data API returns positions
+// keyed by proxyWallet which maps to the EOA for this bot setup.
 async function recoverOpenPositions() {
-  const { buildClobAuthHeaders } = require('./trader');
+  const { getEoaAddress } = require('./trader');
   const config = getBondConfig();
 
   try {
-    const headers = buildClobAuthHeaders('GET', '/orders');
-    if (!headers) {
-      logger.addActivity('bot', { message: '[Recovery] No auth headers — skipping position recovery' });
-      return;
-    }
-
-    // Fetch last 500 matched orders to compute net per-token position
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    const url = 'https://clob.polymarket.com/orders?status=MATCHED&next_cursor=&limit=500';
-    const res = await fetch(url, { headers, signal: controller.signal });
-    clearTimeout(timer);
-
-    if (!res.ok) {
-      logger.addActivity('bot', { message: `[Recovery] CLOB orders fetch failed: ${res.status}` });
-      return;
-    }
-
-    const data  = await res.json();
-    const orders = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []);
-
-    if (orders.length === 0) {
-      logger.addActivity('bot', { message: '[Recovery] No matched orders found on startup' });
-      return;
-    }
-
-    // Compute NET token balance per YES token: buys - sells.
-    // A token that was bought then fully sold via FAK will net to ~0 and is skipped.
-    // This prevents recovering "already liquidated" positions as if they were still open.
-    const netByToken = {};  // tokenId → { netTokens, totalBought, totalSold, firstBuyPrice, firstBuySize, firstOrderId }
-
-    for (const order of orders) {
-      const tokenId     = order.asset_id || order.assetId || order.token_id;
-      const sizeMatched = parseFloat(order.size_matched || order.sizeMatched || 0);
-      const status      = (order.status  || order.orderStatus || '').toUpperCase();
-      // side: BUY means we bought YES tokens; SELL means we sold them
-      const side        = (order.side || order.outcome || '').toUpperCase();
-
-      if (!tokenId || sizeMatched <= 0 || status !== 'MATCHED') continue;
-
-      if (!netByToken[tokenId]) {
-        netByToken[tokenId] = {
-          netTokens:    0,
-          totalBought:  0,
-          totalSold:    0,
-          firstBuyPrice: 0,
-          firstBuyAmount: 0,
-          firstOrderId: null
-        };
-      }
-
-      const t = netByToken[tokenId];
-      const isBuy  = side === 'BUY'  || side === 'YES';
-      const isSell = side === 'SELL' || side === 'NO';
-
-      if (isBuy) {
-        t.netTokens   += sizeMatched;
-        t.totalBought += sizeMatched;
-        // Capture first buy's entry price for session reconstruction
-        if (t.firstBuyPrice === 0) {
-          t.firstBuyPrice  = parseFloat(order.price || order.average_price || 0.9);
-          t.firstBuyAmount = parseFloat(order.original_size || order.originalSize || sizeMatched * t.firstBuyPrice);
-          t.firstOrderId   = order.id || order.order_id;
-        }
-      } else if (isSell) {
-        t.netTokens  -= sizeMatched;
-        t.totalSold  += sizeMatched;
-      }
-      // If side is unrecognised, skip (neither adds nor subtracts)
-    }
-
-    // Only recover tokens where we still have a net positive balance (> 0.01 to handle rounding)
-    const candidates = Object.entries(netByToken)
-      .filter(([, t]) => t.netTokens > 0.01)
-      .map(([tokenId, t]) => ({
-        tokenId,
-        filledTokens: parseFloat(t.netTokens.toFixed(4)),
-        entryPrice:   t.firstBuyPrice,
-        filledAmount: t.firstBuyAmount > 0 ? t.firstBuyAmount : t.netTokens * t.firstBuyPrice,
-        orderId:      t.firstOrderId
-      }));
-
-    if (candidates.length === 0) {
-      logger.addActivity('bot', { message: '[Recovery] Net position check: no open YES holdings found — nothing to recover' });
+    const eoaAddress = getEoaAddress();
+    if (!eoaAddress) {
+      logger.addActivity('bot', { message: '[Recovery] EOA not yet initialised — skipping (will retry on next manual trigger)' });
       return;
     }
 
     logger.addActivity('bot', {
-      message: `[Recovery] Net positions: ${candidates.length} token(s) with open balance after netting buys vs sells — checking markets...`
+      message: `[Recovery] Querying Data API for wallet holdings: ${eoaAddress.slice(0, 10)}...`
     });
 
+    // Data API returns ACTUAL wallet token balances — the source of truth.
+    // sizeThreshold=0.1 filters dust. outcomeIndex=0 = YES side.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    const url = `https://data-api.polymarket.com/positions?user=${eoaAddress}&sizeThreshold=0.1`;
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      logger.addActivity('bot', { message: `[Recovery] Data API error ${res.status} — cannot recover positions` });
+      return;
+    }
+
+    const positions = await res.json();
+    if (!Array.isArray(positions) || positions.length === 0) {
+      logger.addActivity('bot', { message: '[Recovery] No open positions in wallet — nothing to recover' });
+      return;
+    }
+
+    // YES side = outcomeIndex 0. Skip already-redeemable (resolved) positions.
+    const candidates = positions.filter(p =>
+      parseFloat(p.size) > 0.01 &&
+      p.redeemable !== true &&
+      (p.outcomeIndex === 0 || p.outcomeIndex === '0')
+    );
+
+    logger.addActivity('bot', {
+      message: `[Recovery] Data API: ${positions.length} total position(s), ${candidates.length} YES-side unresolved — rebuilding sessions...`
+    });
+
+    if (candidates.length === 0) return;
+
+    const POSITION_PHASES = new Set(['holding', 'liquidating', 'redeeming']);
     let recovered = 0;
 
-    for (const cand of candidates) {
+    for (const pos of candidates) {
       try {
-        // Look up the Gamma market by YES token ID
-        const mRes = await fetch(
-          `https://gamma-api.polymarket.com/markets?clob_token_ids=${cand.tokenId}`,
-          { signal: AbortSignal.timeout(10000) }
-        );
-        if (!mRes.ok) continue;
+        const tokenId    = String(pos.asset);
+        const condId     = pos.conditionId  || null;
+        const size       = parseFloat(pos.size);
+        // avgPrice is the true average cost basis — no more guessing
+        const entryPrice = parseFloat(pos.avgPrice) || 0.95;
+        const curPrice   = parseFloat(pos.curPrice)  || null;
 
-        const markets = await mRes.json();
-        const gm = Array.isArray(markets) ? markets[0] : null;
-        if (!gm) continue;
+        if (!tokenId || size <= 0.01) continue;
 
-        // Skip already resolved markets — no position to protect
-        if (gm.resolved === true || gm.hasResolved === true) continue;
+        // Canonical session key: conditionId preferred (matches scanner keying)
+        const marketId = condId || tokenId;
 
-        // Canonical key: conditionId first, then id — matches soccerScanner.js line 73:
-        //   const marketKey = market.conditionId || market.id;
-        const marketId = gm.conditionId || gm.id || cand.tokenId;
-
-        // Position phases — session is already actively holding/exiting/redeeming.
-        // If the existing session is in one of these, the position is already protected.
-        const POSITION_PHASES = new Set(['holding', 'liquidating', 'redeeming']);
-
-        // Check existing session for this market (by canonical key)
+        // Skip if already tracked in a position phase by canonical key
         const existing = activeSessions[marketId];
-        if (existing) {
-          if (POSITION_PHASES.has(existing.phase)) {
-            // Already protected — nothing to do
-            continue;
-          }
-          // Existing session is in watching/buying (pre-fill) — it doesn't know about
-          // the actual on-chain fill. Replace it with the recovered holding session.
+        if (existing && POSITION_PHASES.has(existing.phase)) {
           logger.addActivity('bot', {
-            message: `[Recovery] Upgrading "${gm.question?.slice(0, 50)}" from ${existing.phase} → holding (on-chain fill found)`
+            message: `[Recovery] Already tracked: "${(pos.title || '').slice(0, 50)}" (${existing.phase})`
           });
-          // Don't delete from enteredMarkets — the upgrade preserves the guard
+          continue;
         }
 
-        // Secondary guard by yesTokenId: covers the case where the canonical key
-        // differs between the existing session and the recovered candidate
-        // (e.g. session keyed by gm.id but recovered with gm.conditionId or vice-versa).
+        // Secondary guard: same token tracked under a different key
         const tokenAlreadyHeld = Object.values(activeSessions)
-          .some(s => s.market && s.market.yesTokenId === cand.tokenId && POSITION_PHASES.has(s.phase));
+          .some(s => s.market?.yesTokenId === tokenId && POSITION_PHASES.has(s.phase));
         if (tokenAlreadyHeld) continue;
 
-        // Parse token IDs — YES is first
-        let yesTokenId = cand.tokenId;
-        try {
-          const tokens = typeof gm.clobTokenIds === 'string'
-            ? JSON.parse(gm.clobTokenIds)
-            : (Array.isArray(gm.clobTokenIds) ? gm.clobTokenIds : []);
-          if (tokens.length >= 1) yesTokenId = tokens[0];
-        } catch {}
+        // Fetch Gamma market for tick size + verify not resolved
+        let tickSize  = '0.01';
+        let negRisk   = pos.negativeRisk === true;
+        let question  = pos.title || 'Recovered position';
+        let endDate   = pos.endDate || new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+        let startDate = null;
+
+        if (condId) {
+          try {
+            const gmRes = await fetch(
+              `https://gamma-api.polymarket.com/markets?conditionId=${condId}`,
+              { signal: AbortSignal.timeout(10000) }
+            );
+            if (gmRes.ok) {
+              const gm = (await gmRes.json())[0];
+              if (gm) {
+                // Skip if Gamma says resolved — redemption queue handles it
+                if (gm.resolved === true || gm.hasResolved === true) {
+                  logger.addActivity('bot', {
+                    message: `[Recovery] Skipping resolved market: "${question.slice(0, 50)}"`
+                  });
+                  continue;
+                }
+                tickSize  = gm.minimumTickSize  ? String(gm.minimumTickSize) : '0.01';
+                negRisk   = negRisk || gm.negRisk === true || gm.enableNegRisk === true;
+                question  = gm.question  || question;
+                endDate   = gm.endDate   || endDate;
+                startDate = gm.startDate || null;
+              }
+            }
+          } catch {}
+        }
 
         const market = {
           id:          marketId,
-          question:    gm.question     || gm.title || 'Recovered position',
-          eventTitle:  gm.eventTitle   || gm.groupItemTitle || gm.question?.slice(0, 40) || '',
-          conditionId: gm.conditionId  || gm.id,
-          yesTokenId,
-          negRisk:     gm.negRisk === true || gm.enableNegRisk === true,
-          endDate:     gm.endDate      || gm.expirationDate || new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
-          startDate:   gm.startDate    || null,
-          tickSize:    gm.minimumTickSize ? String(gm.minimumTickSize) : '0.01',
+          question,
+          eventTitle:  question.slice(0, 40),
+          conditionId: condId,
+          yesTokenId:  tokenId,
+          negRisk,
+          endDate,
+          startDate,
+          tickSize,
         };
 
         const session            = new BondSession(market, config);
         session.phase            = 'holding';
-        session.entryPrice       = cand.entryPrice;
-        session.filledTokens     = cand.filledTokens;
-        session._remainingTokens = cand.filledTokens;
-        session.filledAmount     = cand.filledAmount > 0 ? cand.filledAmount : cand.filledTokens * cand.entryPrice;
-        session.orderId          = cand.orderId;
+        session.entryPrice       = entryPrice;
+        session.filledTokens     = size;
+        session._remainingTokens = size;
+        session.filledAmount     = parseFloat((size * entryPrice).toFixed(4));
+        session.orderId          = null;
         session.createdAt        = new Date();
+        if (curPrice !== null) session.lastMid = curPrice;
+
+        // Upgrade a stale watching/buying session that doesn't know about the fill
+        if (existing) {
+          logger.addActivity('bot', {
+            message: `[Recovery] Upgrading "${question.slice(0, 50)}" from ${existing.phase} → holding`
+          });
+        }
 
         activeSessions[marketId] = session;
         enteredMarkets.add(marketId);
-
-        // Subscribe to live best_bid tracking immediately
-        marketWatcher.subscribe(yesTokenId);
+        marketWatcher.subscribe(tokenId);
 
         recovered++;
         logger.addActivity('bot', {
-          message: `[Recovery] Restored position: "${market.question.slice(0, 55)}" | ${cand.filledTokens.toFixed(4)} tokens @ $${cand.entryPrice.toFixed(3)} | exit engine now active`
+          message: `[Recovery] ✓ "${question.slice(0, 52)}" | ${size.toFixed(4)} tokens @ avg $${entryPrice.toFixed(3)} | cur $${curPrice?.toFixed(3) ?? '--'} | exit engine ON`
         });
 
       } catch (err) {
         logger.addActivity('bot', {
-          message: `[Recovery] Error recovering token ${cand.tokenId.slice(0, 16)}...: ${err.message?.slice(0, 60)}`
+          message: `[Recovery] Error on ${pos.title?.slice(0, 30) || pos.asset?.slice(0, 16)}: ${err.message?.slice(0, 60)}`
         });
       }
     }
 
     logger.addActivity('bot', {
-      message: `[Recovery] Complete — ${recovered} position(s) recovered and protected by exit engine`
+      message: `[Recovery] Complete — ${recovered}/${candidates.length} recovered | exit engine protecting all positions`
     });
 
   } catch (err) {
     logger.addActivity('bot', {
-      message: `[Recovery] Error: ${err.message?.slice(0, 80)}`
+      message: `[Recovery] Fatal error: ${err.message?.slice(0, 80)}`
     });
   }
 }
@@ -575,4 +543,4 @@ function getSoccerStats() {
   };
 }
 
-module.exports = { start, stop, getPositions, getSoccerRunning, getSoccerStats };
+module.exports = { start, stop, getPositions, getSoccerRunning, getSoccerStats, recoverOpenPositions };

@@ -96,6 +96,65 @@ app.post('/api/force-redeem', async (req, res) => {
   }
 });
 
+app.post('/api/force-sell', async (req, res) => {
+  try {
+    const { placeFakSellOrder } = require('./src/trader');
+    const { tokenId, size, price, negRisk, tickSize } = req.body;
+
+    if (!tokenId || !size || !price) {
+      return res.json({ success: false, error: 'tokenId, size, price required' });
+    }
+
+    const sizeNum  = parseFloat(size);
+    const priceNum = parseFloat(price);
+
+    if (isNaN(sizeNum) || sizeNum <= 0)  return res.json({ success: false, error: 'size must be > 0' });
+    if (isNaN(priceNum) || priceNum <= 0) return res.json({ success: false, error: 'price must be > 0' });
+
+    logger.addActivity('bot', {
+      message: `[ForceSell] Manual FAK sell: ${sizeNum.toFixed(4)} tokens @ $${priceNum.toFixed(3)} | negRisk=${negRisk ?? false} | tick=${tickSize || '0.01'}`
+    });
+
+    const result = await placeFakSellOrder(
+      tokenId,
+      sizeNum,
+      priceNum,
+      negRisk === true || negRisk === 'true',
+      tickSize || '0.01'
+    );
+
+    const filled    = parseFloat(result?.sizeFilled   ?? result?.size_filled   ?? 0);
+    const remaining = parseFloat(result?.sizeRemaining ?? result?.size_remaining ?? (sizeNum - filled));
+
+    logger.addActivity('bot', {
+      message: `[ForceSell] Result: filled=${filled.toFixed(4)} remaining=${remaining.toFixed(4)} orderId=${result?.id ?? result?.order_id ?? 'n/a'}`
+    });
+
+    res.json({
+      success:   true,
+      filled,
+      remaining,
+      orderId:   result?.id ?? result?.order_id ?? null,
+      rawResult: result
+    });
+  } catch (err) {
+    logger.addActivity('bot', { message: `[ForceSell] Error: ${err.message?.slice(0, 100)}` });
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/recover-positions', async (req, res) => {
+  try {
+    logger.addActivity('bot', { message: '[Recovery] Manual position recovery triggered from dashboard...' });
+    await soccerLoop.recoverOpenPositions();
+    const positions = soccerLoop.getPositions();
+    const held = positions.filter(p => ['holding', 'liquidating', 'redeeming'].includes(p.phase)).length;
+    res.json({ success: true, message: `Recovery complete — ${held} position(s) now tracked`, positions: held });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 

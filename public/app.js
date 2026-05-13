@@ -253,14 +253,24 @@ async function updateSoccerPositions() {
 
     const endStr = p.minutesLeft > 0 ? `${p.minutesLeft}m left` : 'ended';
 
+    const canForceSell = ['holding', 'liquidating', 'buying'].includes(p.phase) &&
+                         p.yesTokenId && p.filledTokens > 0;
+
+    const sellPrice = p.lastMid || p.currentBestBid || p.entryPrice || 0.95;
+
+    const forceSellBtn = canForceSell
+      ? `<button class="btn-force-sell" onclick="forceSell('${p.yesTokenId}',${p.remainingTokens || p.filledTokens},${sellPrice.toFixed(4)},${!!p.negRisk},'${p.tickSize || '0.01'}',this)" title="FAK sell at current mid — fills what it can">Force Sell</button>`
+      : '';
+
     return `<div class="activity-item" style="flex-direction:column;align-items:flex-start;gap:4px;padding:8px 10px;">
       <div style="display:flex;align-items:center;gap:6px;width:100%;">
         ${soccerPhaseBadge(p.phase)}
         <span style="flex:1;font-size:12px;color:#e6edf3;line-height:1.3;">${question}</span>
         ${pnlStr ? `<span class="${pnlCls}" style="font-weight:700;font-size:13px;white-space:nowrap;">${pnlStr}</span>` : ''}
+        ${forceSellBtn}
       </div>
       <div style="font-size:11px;color:#8b949e;padding-left:2px;">
-        mid ${midStr}${p.phase !== 'watching' ? ` | entry ${entryStr}` : ` | threshold $${(p.threshold || 0.95).toFixed(2)}`} | ${endStr}
+        mid ${midStr}${p.phase !== 'watching' ? ` | entry ${entryStr} | ${p.filledTokens > 0 ? p.filledTokens.toFixed(4)+' tokens' : ''}` : ` | threshold $${(p.threshold || 0.95).toFixed(2)}`} | ${endStr}
       </div>
     </div>`;
   }).join('');
@@ -432,6 +442,41 @@ async function forceRedeem() {
     else alert(res.error ? `Redeem failed: ${res.error}` : 'No positions to redeem.');
   }
   btn.textContent = 'Force Redeem';
+  btn.disabled    = false;
+  refreshAll();
+}
+
+async function recoverPositions() {
+  const btn = document.getElementById('recoverBtn');
+  btn.textContent = 'Recovering...';
+  btn.disabled    = true;
+  const res = await api('/recover-positions', 'POST');
+  if (res) {
+    if (res.success) alert(`Recovery complete — ${res.positions} position(s) now tracked by exit engine.`);
+    else alert(`Recovery failed: ${res.error || 'unknown error'}`);
+  }
+  btn.textContent = 'Recover Positions';
+  btn.disabled    = false;
+  refreshAll();
+}
+
+async function forceSell(tokenId, size, price, negRisk, tickSize, btn) {
+  if (!confirm(`FAK sell ${parseFloat(size).toFixed(4)} tokens @ $${parseFloat(price).toFixed(3)}?\n\nThis is a Fill-or-Kill order — it will fill what it can at the current bid and leave any remainder in your wallet.`)) return;
+  const origText = btn.textContent;
+  btn.textContent = 'Selling...';
+  btn.disabled    = true;
+  try {
+    const res = await api('/force-sell', 'POST', { tokenId, size, price, negRisk, tickSize });
+    if (res && res.success) {
+      const msg = `Filled: ${res.filled.toFixed(4)} tokens\nRemaining: ${res.remaining.toFixed(4)} tokens${res.orderId ? '\nOrder: ' + res.orderId : ''}`;
+      alert(msg);
+    } else {
+      alert(`Force sell failed: ${res?.error || 'unknown error'}`);
+    }
+  } catch (e) {
+    alert(`Force sell error: ${e.message}`);
+  }
+  btn.textContent = origText;
   btn.disabled    = false;
   refreshAll();
 }

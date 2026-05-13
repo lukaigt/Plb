@@ -634,7 +634,10 @@ class BondSession {
       exitAttemptCount: this.exitAttemptCount,
       lastExitReason:   this.lastExitReason,
       wsConnected:      marketWatcher.isConnected(),
-      createdAt:        this.createdAt.toISOString()
+      createdAt:        this.createdAt.toISOString(),
+      yesTokenId:       this.market.yesTokenId,
+      negRisk:          this.market.negRisk,
+      tickSize:         this.market.tickSize || '0.01'
     };
   }
 }

@@ -56,6 +56,24 @@ body {
 .btn-purple:hover { background: #a371f7; }
 .btn-orange { background: #bd5800; border-color: #e3740e; color: #fff; }
 .btn-orange:hover { background: #e3740e; }
+.btn-teal { background: #0d7377; border-color: #14a085; color: #fff; }
+.btn-teal:hover { background: #14a085; }
+
+.btn-force-sell {
+  background: #6e1a1a;
+  border: 1px solid #c0392b;
+  color: #ff8080;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.03em;
+  transition: background 0.15s;
+}
+.btn-force-sell:hover { background: #922b21; color: #ffb3b3; }
+.btn-force-sell:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .container {
   max-width: 1400px;
