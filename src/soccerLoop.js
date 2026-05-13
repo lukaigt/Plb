@@ -1,5 +1,5 @@
 const { scanLiveSoccerMarkets } = require('./soccerScanner');
-const { scanLiveSportsMarkets } = require('./sportsScanner');
+const { scanLiveSportsMarkets, SPORTS_TAG_SLUGS } = require('./sportsScanner');
 const { BondSession, getBondConfig } = require('./bondStrategy');
 const { initClient } = require('./trader');
 const safety        = require('./safety');
@@ -153,38 +153,74 @@ async function recoverOpenPositions() {
           .some(s => s.market?.yesTokenId === tokenId && POSITION_PHASES.has(s.phase));
         if (tokenAlreadyHeld) continue;
 
-        // Fetch Gamma market for tick size + verify not resolved
+        // STRICT FILTER: only attach if Gamma confirms this is a live, active sports market.
+        // Holdings != bot positions. We cross-check every recovered token against Gamma metadata
+        // and reject anything that isn't on the supported sports list (SPORTS_TAG_SLUGS).
         let tickSize  = '0.01';
         let negRisk   = pos.negativeRisk === true;
         let question  = pos.title || 'Recovered position';
-        let endDate   = pos.endDate || new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+        let endDate   = pos.endDate || null;
         let startDate = null;
 
-        if (condId) {
-          try {
-            const gmRes = await fetch(
-              `https://gamma-api.polymarket.com/markets?conditionId=${condId}`,
-              { signal: AbortSignal.timeout(10000) }
-            );
-            if (gmRes.ok) {
-              const gm = (await gmRes.json())[0];
-              if (gm) {
-                // Skip if Gamma says resolved — redemption queue handles it
-                if (gm.resolved === true || gm.hasResolved === true) {
-                  logger.addActivity('bot', {
-                    message: `[Recovery] Skipping resolved market: "${question.slice(0, 50)}"`
-                  });
-                  continue;
-                }
-                tickSize  = gm.minimumTickSize  ? String(gm.minimumTickSize) : '0.01';
-                negRisk   = negRisk || gm.negRisk === true || gm.enableNegRisk === true;
-                question  = gm.question  || question;
-                endDate   = gm.endDate   || endDate;
-                startDate = gm.startDate || null;
-              }
-            }
-          } catch {}
+        if (!condId) {
+          logger.addActivity('bot', {
+            message: `[RECOVERY] skipped tokenId=${tokenId.slice(0, 14)}… reason=unsupported_market (no conditionId)`
+          });
+          continue;
         }
+
+        let gm = null;
+        try {
+          const gmRes = await fetch(
+            `https://gamma-api.polymarket.com/markets?conditionId=${condId}`,
+            { signal: AbortSignal.timeout(10000) }
+          );
+          if (gmRes.ok) gm = (await gmRes.json())[0] || null;
+        } catch {}
+
+        if (!gm) {
+          logger.addActivity('bot', {
+            message: `[RECOVERY] skipped tokenId=${tokenId.slice(0, 14)}… reason=unsupported_market (gamma lookup failed)`
+          });
+          continue;
+        }
+
+        if (gm.closed === true || gm.resolved === true || gm.hasResolved === true || gm.active === false) {
+          logger.addActivity('bot', {
+            message: `[RECOVERY] skipped tokenId=${tokenId.slice(0, 14)}… reason=resolved ("${(gm.question || question).slice(0, 40)}")`
+          });
+          continue;
+        }
+
+        // Sports validation: collect every tag slug attached to this market or its parent event(s)
+        const tagSlugs = new Set();
+        const collect = (arr) => {
+          if (!Array.isArray(arr)) return;
+          for (const t of arr) {
+            const slug = (t?.slug || t?.label || '').toLowerCase();
+            if (slug) tagSlugs.add(slug);
+          }
+        };
+        collect(gm.tags);
+        if (Array.isArray(gm.events)) {
+          for (const ev of gm.events) collect(ev.tags);
+        }
+
+        const sportsSet = new Set(SPORTS_TAG_SLUGS);
+        const matchedSport = [...tagSlugs].find(s => sportsSet.has(s));
+
+        if (!matchedSport) {
+          logger.addActivity('bot', {
+            message: `[RECOVERY] skipped tokenId=${tokenId.slice(0, 14)}… reason=not_sports ("${(gm.question || question).slice(0, 40)}" tags=[${[...tagSlugs].slice(0, 4).join(',') || 'none'}])`
+          });
+          continue;
+        }
+
+        tickSize  = gm.minimumTickSize  ? String(gm.minimumTickSize) : (gm.orderPriceMinTickSize ? String(gm.orderPriceMinTickSize) : '0.01');
+        negRisk   = negRisk || gm.negRisk === true || gm.enableNegRisk === true;
+        question  = gm.question  || question;
+        endDate   = gm.endDate   || endDate || new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+        startDate = gm.startDate || null;
 
         const market = {
           id:          marketId,
@@ -221,7 +257,7 @@ async function recoverOpenPositions() {
 
         recovered++;
         logger.addActivity('bot', {
-          message: `[Recovery] ✓ "${question.slice(0, 52)}" | ${size.toFixed(4)} tokens @ avg $${entryPrice.toFixed(3)} | cur $${curPrice?.toFixed(3) ?? '--'} | exit engine ON`
+          message: `[RECOVERY] attached tokenId=${tokenId.slice(0, 14)}… reason=live_sports_position sport=${matchedSport} "${question.slice(0, 48)}" size=${size.toFixed(4)} avg=$${entryPrice.toFixed(3)} cur=$${curPrice?.toFixed(3) ?? '--'}`
         });
 
       } catch (err) {

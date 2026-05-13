@@ -99,42 +99,101 @@ app.post('/api/force-redeem', async (req, res) => {
 app.post('/api/force-sell', async (req, res) => {
   try {
     const { placeFakSellOrder } = require('./src/trader');
-    const { tokenId, size, price, negRisk, tickSize } = req.body;
+    const { tokenId, size, negRisk, tickSize } = req.body;
 
-    if (!tokenId || !size || !price) {
-      return res.json({ success: false, error: 'tokenId, size, price required' });
+    if (!tokenId || !size) {
+      return res.json({ success: false, error: 'tokenId and size required' });
     }
 
-    const sizeNum  = parseFloat(size);
-    const priceNum = parseFloat(price);
+    const sizeNum = parseFloat(size);
+    if (isNaN(sizeNum) || sizeNum <= 0) {
+      return res.json({ success: false, error: 'size must be > 0' });
+    }
 
-    if (isNaN(sizeNum) || sizeNum <= 0)  return res.json({ success: false, error: 'size must be > 0' });
-    if (isNaN(priceNum) || priceNum <= 0) return res.json({ success: false, error: 'price must be > 0' });
+    // STEP 1: fetch a fresh live orderbook directly from CLOB at click time.
+    // We do NOT trust websocket cache, midpoint, or stale held-session state.
+    let book = null;
+    let bookErr = null;
+    try {
+      const bookRes = await fetch(
+        `https://clob.polymarket.com/book?token_id=${tokenId}`,
+        { signal: AbortSignal.timeout(8000) }
+      );
+      const json = await bookRes.json();
+      if (json && Array.isArray(json.bids)) book = json;
+      else bookErr = json?.error || `HTTP ${bookRes.status}`;
+    } catch (err) {
+      bookErr = err.message;
+    }
+
+    if (!book) {
+      logger.addActivity('bot', {
+        message: `[ForceSell] No live book for token=${String(tokenId).slice(0, 14)}… err=${bookErr || 'unknown'}`
+      });
+      return res.json({ success: false, reason: 'NO_BID_LIQUIDITY', detail: `orderbook unavailable: ${bookErr}` });
+    }
+
+    // CLOB returns bids sorted ascending — top bid is the LAST element. Pick the highest-price bid
+    // with non-zero size to be safe.
+    const liveBids = (book.bids || [])
+      .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
+      .filter(b => b.price > 0 && b.size > 0)
+      .sort((a, b) => b.price - a.price);
+
+    if (liveBids.length === 0) {
+      logger.addActivity('bot', {
+        message: `[ForceSell] No live bids for token=${String(tokenId).slice(0, 14)}… (book empty) — returning NO_BID_LIQUIDITY`
+      });
+      return res.json({ success: false, reason: 'NO_BID_LIQUIDITY', detail: 'orderbook has no bids' });
+    }
+
+    const topBid     = liveBids[0];
+    const sellPrice  = topBid.price;
+    const tickStr    = String(tickSize || '0.01');
+    const isNegRisk  = negRisk === true || negRisk === 'true';
 
     logger.addActivity('bot', {
-      message: `[ForceSell] Manual FAK sell: ${sizeNum.toFixed(4)} tokens @ $${priceNum.toFixed(3)} | negRisk=${negRisk ?? false} | tick=${tickSize || '0.01'}`
+      message: `[ForceSell] Live book hit: top bid $${sellPrice.toFixed(3)} x ${topBid.size.toFixed(2)} | placing FAK ${sizeNum.toFixed(4)} @ $${sellPrice.toFixed(3)} | negRisk=${isNegRisk} tick=${tickStr}`
     });
 
-    const result = await placeFakSellOrder(
-      tokenId,
-      sizeNum,
-      priceNum,
-      negRisk === true || negRisk === 'true',
-      tickSize || '0.01'
-    );
+    // STEP 2: place FAK at the actual top bid price
+    const result = await placeFakSellOrder(tokenId, sizeNum, sellPrice, isNegRisk, tickStr);
 
-    const filled    = parseFloat(result?.sizeFilled   ?? result?.size_filled   ?? 0);
-    const remaining = parseFloat(result?.sizeRemaining ?? result?.size_remaining ?? (sizeNum - filled));
+    if (!result?.success) {
+      // Differentiate: NO_FILL = order accepted but zero matched (no buyer at that price);
+      // anything else = exchange rejected the order outright.
+      const isNoFill = result?.error === 'NO_FILL';
+      const reason   = isNoFill ? 'NO_FILL' : 'FAK_REJECTED';
+      logger.addActivity('bot', {
+        message: `[ForceSell] ${reason} @ $${sellPrice.toFixed(3)}: ${(result?.error || 'unknown').toString().slice(0, 100)} | orderId=${result?.orderId ?? 'n/a'}`
+      });
+      return res.json({
+        success: false,
+        reason,
+        detail:  result?.error,
+        sellPrice,
+        topBid,
+        orderId: result?.orderId ?? null,
+        filled:  0,
+        remaining: sizeNum
+      });
+    }
+
+    const filled    = parseFloat(result?.sizeFilled   ?? 0);
+    const remaining = parseFloat(result?.sizeRemaining ?? (sizeNum - filled));
 
     logger.addActivity('bot', {
-      message: `[ForceSell] Result: filled=${filled.toFixed(4)} remaining=${remaining.toFixed(4)} orderId=${result?.id ?? result?.order_id ?? 'n/a'}`
+      message: `[ForceSell] FAK FILLED @ $${sellPrice.toFixed(3)}: sold=${filled.toFixed(4)} usd=$${(result?.usdReceived ?? filled * sellPrice).toFixed(2)} remaining=${remaining.toFixed(4)} orderId=${result?.orderId ?? 'n/a'}${remaining > 0.01 ? ' — partial, click Force Sell again to retry remainder' : ''}`
     });
 
     res.json({
       success:   true,
       filled,
       remaining,
-      orderId:   result?.id ?? result?.order_id ?? null,
+      sellPrice,
+      topBid,
+      orderId:   result?.orderId ?? null,
+      usdReceived: result?.usdReceived ?? null,
       rawResult: result
     });
   } catch (err) {

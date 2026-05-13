@@ -398,11 +398,39 @@ async function placeFakSellOrder(tokenId, size, price, negRisk = true, tickSize 
       OrderType.FAK
     );
 
-    if (response && response.orderID) {
-      return { success: true, orderId: response.orderID };
+    // CLOB v2 response shape: { success, errorMsg, orderID, status, takingAmount, makingAmount }
+    // For a SELL FAK: makingAmount = tokens actually sold, takingAmount = USDC actually received.
+    // We MUST treat zero-fill as failure — the order was accepted but no buyer matched it.
+    const apiSuccess = response?.success !== false && !!response?.orderID;
+    if (!apiSuccess) {
+      const errMsg = response?.errorMsg || response?.error || JSON.stringify(response)?.slice(0, 120);
+      return { success: false, error: errMsg, raw: response };
     }
-    const errMsg = response?.errorMsg || response?.error || JSON.stringify(response)?.slice(0, 100);
-    return { success: false, error: errMsg };
+
+    const sizeFilled = parseFloat(response?.makingAmount ?? 0) || 0;
+    const usdReceived = parseFloat(response?.takingAmount ?? 0) || 0;
+
+    if (sizeFilled <= 0) {
+      return {
+        success: false,
+        error: 'NO_FILL',
+        orderId: response.orderID,
+        status: response.status,
+        sizeFilled: 0,
+        sizeRemaining: roundedSize,
+        raw: response
+      };
+    }
+
+    return {
+      success: true,
+      orderId: response.orderID,
+      status: response.status,
+      sizeFilled,
+      sizeRemaining: parseFloat((roundedSize - sizeFilled).toFixed(6)),
+      usdReceived,
+      raw: response
+    };
   } catch (err) {
     return { success: false, error: err.message };
   }

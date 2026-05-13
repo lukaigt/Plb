@@ -226,19 +226,10 @@ function buildPositionCard(p) {
   const canForceSell = ['holding', 'liquidating', 'buying'].includes(p.phase) &&
                        p.yesTokenId && p.filledTokens > 0;
 
-  // Use best bid as sell price — that's what FAK actually hits.
-  // Fall back: mid - 2%, then entry - 5%. Never use raw mid (won't fill).
-  const rawBid = p.currentBestBid || 0;
-  const rawMid = p.lastMid || 0;
-  const rawEntry = p.entryPrice || 0.95;
-  const sellPrice = rawBid > 0.01
-    ? rawBid
-    : rawMid > 0.01
-      ? Math.max(rawMid - 0.02, 0.01)
-      : Math.max(rawEntry - 0.05, 0.01);
-
+  // Server fetches a fresh CLOB orderbook at click time and uses the actual top bid.
+  // Client sends NO price — anything we'd send here is stale.
   const forceSellBtn = canForceSell
-    ? `<button class="btn-force-sell" onclick="forceSell('${p.yesTokenId}',${p.remainingTokens || p.filledTokens},${sellPrice.toFixed(4)},${!!p.negRisk},'${p.tickSize || '0.01'}',this)" title="FAK sell at best bid ($${sellPrice.toFixed(3)})">Force Sell</button>`
+    ? `<button class="btn-force-sell" onclick="forceSell('${p.yesTokenId}',${p.remainingTokens || p.filledTokens},${!!p.negRisk},'${p.tickSize || '0.01'}',this)" title="FAK sell at live top bid (fetched server-side)">Force Sell</button>`
     : '';
 
   const detailLine = isHeld
@@ -484,18 +475,24 @@ async function recoverPositions() {
   refreshAll();
 }
 
-async function forceSell(tokenId, size, price, negRisk, tickSize, btn) {
-  if (!confirm(`FAK sell ${parseFloat(size).toFixed(4)} tokens @ $${parseFloat(price).toFixed(3)}?\n\nThis is a Fill-or-Kill order — it will fill what it can at the current bid and leave any remainder in your wallet.`)) return;
+async function forceSell(tokenId, size, negRisk, tickSize, btn) {
+  if (!confirm(`Force-sell ${parseFloat(size).toFixed(4)} tokens?\n\nServer will fetch the live CLOB orderbook NOW and place a Fill-or-Kill at the actual top bid. If there is no bid liquidity, nothing will be sold.`)) return;
   const origText = btn.textContent;
   btn.textContent = 'Selling...';
   btn.disabled    = true;
   try {
-    const res = await api('/force-sell', 'POST', { tokenId, size, price, negRisk, tickSize });
+    const res = await api('/force-sell', 'POST', { tokenId, size, negRisk, tickSize });
     if (res && res.success) {
-      const msg = `Filled: ${res.filled.toFixed(4)} tokens\nRemaining: ${res.remaining.toFixed(4)} tokens${res.orderId ? '\nOrder: ' + res.orderId : ''}`;
+      const msg = `Sold @ $${(res.sellPrice || 0).toFixed(3)} (live top bid)\nFilled: ${res.filled.toFixed(4)} tokens\nRemaining: ${res.remaining.toFixed(4)} tokens${res.orderId ? '\nOrder: ' + res.orderId : ''}${res.remaining > 0.01 ? '\n\nPartial fill — click Force Sell again to retry on the next available bid.' : ''}`;
       alert(msg);
+    } else if (res?.reason === 'NO_BID_LIQUIDITY') {
+      alert(`No bid liquidity right now — nothing was sold.\n\n${res.detail || ''}\n\nTry again in a few seconds when buyers return to the book.`);
+    } else if (res?.reason === 'NO_FILL') {
+      alert(`Order accepted but ZERO matched at $${(res.sellPrice || 0).toFixed(3)} — no buyer hit it before the FAK expired.\n\nNothing was sold. Click again to retry on the next book snapshot.`);
+    } else if (res?.reason === 'FAK_REJECTED') {
+      alert(`FAK rejected at $${(res.sellPrice || 0).toFixed(3)}: ${res.detail || 'unknown'}\n\nClick again to retry on the next book snapshot.`);
     } else {
-      alert(`Force sell failed: ${res?.error || 'unknown error'}`);
+      alert(`Force sell failed: ${res?.error || res?.reason || 'unknown error'}`);
     }
   } catch (e) {
     alert(`Force sell error: ${e.message}`);
