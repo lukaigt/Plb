@@ -507,7 +507,10 @@ class BondSession {
     const res = await checkMarketResolved(this.market.conditionId);
     if (!res) return;
 
-    if (res.resolved || res.closed) {
+    // Only finalise on actual resolution — outcomePrices are only set once
+    // resolved=true. Triggering on closed-but-not-resolved gives yesWon=null
+    // and falls through to an unreliable lastMid fallback, causing false losses.
+    if (res.resolved) {
       await this._finalise(res);
     }
   }
@@ -521,14 +524,13 @@ class BondSession {
     let yesWon;
     if (res.yesWon !== null && res.yesWon !== undefined) {
       yesWon = res.yesWon;
-    } else if (this.lastMid !== null) {
-      yesWon = this.lastMid >= 0.5;
     } else {
+      // outcomePrices not yet set on Gamma — don't guess with lastMid, that
+      // causes false losses when the market resolves a moment later.
+      // Log and keep holding; next resolution check (30s) will retry.
       logger.addActivity('bond_error', {
-        message: `Cannot determine outcome for "${this.market.question.slice(0, 50)}" — logged as no_fill`
+        message: `[RESOLVE] outcome not yet set on Gamma for "${this.market.question.slice(0, 50)}" — holding, will retry in 30s`
       });
-      this.phase = 'done';
-      if (this.tradeId) logger.updateTrade(this.tradeId, { result: 'no_fill', exitReason: 'outcome_unknown' });
       return;
     }
 

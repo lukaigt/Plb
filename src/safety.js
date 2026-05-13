@@ -2,9 +2,9 @@ const logger = require('./logger');
 
 class SafetySystem {
   constructor() {
-    this.dailyLossLimit  = parseFloat(process.env.DAILY_LOSS_LIMIT)  || 50;
-    this.maxTradeSize    = parseFloat(process.env.MAX_TRADE_SIZE)     || 10;
-    this.maxDailyLosses  = parseInt(process.env.MAX_DAILY_LOSSES)     || 50;
+    this.dailyLossLimit  = parseFloat(process.env.DAILY_LOSS_LIMIT)  ?? 100;
+    this.maxTradeSize    = parseFloat(process.env.MAX_TRADE_SIZE)     ?? 10;
+    this.maxDailyLosses  = parseInt(process.env.MAX_DAILY_LOSSES)     ?? 999;
     this.killSwitch      = false;
     this.dailyLoss       = 0;
     this.dailySpent      = 0;
@@ -16,9 +16,9 @@ class SafetySystem {
   }
 
   reload() {
-    this.dailyLossLimit = parseFloat(process.env.DAILY_LOSS_LIMIT) || 50;
-    this.maxTradeSize   = parseFloat(process.env.MAX_TRADE_SIZE)    || 10;
-    this.maxDailyLosses = parseInt(process.env.MAX_DAILY_LOSSES)    || 50;
+    this.dailyLossLimit = parseFloat(process.env.DAILY_LOSS_LIMIT) ?? 100;
+    this.maxTradeSize   = parseFloat(process.env.MAX_TRADE_SIZE)    ?? 10;
+    this.maxDailyLosses = parseInt(process.env.MAX_DAILY_LOSSES)    ?? 999;
   }
 
   resetDailyIfNeeded() {
