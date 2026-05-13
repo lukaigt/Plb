@@ -204,76 +204,100 @@ function setActivityFilter(filter) {
 }
 
 
+function buildPositionCard(p) {
+  const midStr   = p.lastMid   != null ? `$${p.lastMid.toFixed(3)}`   : '--';
+  const entryStr = p.entryPrice != null ? `$${p.entryPrice.toFixed(3)}` : '--';
+  const bidStr   = p.currentBestBid != null ? `$${p.currentBestBid.toFixed(3)}` : '--';
+
+  let pnlStr = ''; let pnlCls = '';
+  const pnlVal = p.unrealizedPnL ?? p.pnl;
+  if (pnlVal != null) {
+    pnlStr = (pnlVal >= 0 ? '+' : '') + `$${pnlVal.toFixed(3)}`;
+    pnlCls = pnlVal >= 0 ? 'positive' : 'negative';
+  }
+
+  const question = (p.question || p.eventTitle || '').length > 52
+    ? (p.question || p.eventTitle).slice(0, 52) + '…'
+    : (p.question || p.eventTitle || 'Market');
+
+  const endStr = p.minutesLeft > 0 ? `${p.minutesLeft}m left` : 'ended';
+  const isHeld = ['buying', 'holding', 'liquidating', 'redeeming'].includes(p.phase);
+
+  const canForceSell = ['holding', 'liquidating', 'buying'].includes(p.phase) &&
+                       p.yesTokenId && p.filledTokens > 0;
+
+  // Use best bid as sell price — that's what FAK actually hits.
+  // Fall back: mid - 2%, then entry - 5%. Never use raw mid (won't fill).
+  const rawBid = p.currentBestBid || 0;
+  const rawMid = p.lastMid || 0;
+  const rawEntry = p.entryPrice || 0.95;
+  const sellPrice = rawBid > 0.01
+    ? rawBid
+    : rawMid > 0.01
+      ? Math.max(rawMid - 0.02, 0.01)
+      : Math.max(rawEntry - 0.05, 0.01);
+
+  const forceSellBtn = canForceSell
+    ? `<button class="btn-force-sell" onclick="forceSell('${p.yesTokenId}',${p.remainingTokens || p.filledTokens},${sellPrice.toFixed(4)},${!!p.negRisk},'${p.tickSize || '0.01'}',this)" title="FAK sell at best bid ($${sellPrice.toFixed(3)})">Force Sell</button>`
+    : '';
+
+  const detailLine = isHeld
+    ? `bid ${bidStr} | mid ${midStr} | entry ${entryStr} | ${p.filledTokens > 0 ? p.filledTokens.toFixed(4) + ' tokens' : ''} | ${endStr}`
+    : `mid ${midStr} | threshold $${(p.threshold || 0.95).toFixed(2)} | ${endStr}`;
+
+  return `<div class="activity-item" style="flex-direction:column;align-items:flex-start;gap:4px;padding:8px 10px;${isHeld ? 'border-left:2px solid #3fb95066;' : ''}">
+    <div style="display:flex;align-items:center;gap:6px;width:100%;">
+      ${soccerPhaseBadge(p.phase)}
+      <span style="flex:1;font-size:12px;color:#e6edf3;line-height:1.3;">${question}</span>
+      ${pnlStr ? `<span class="${pnlCls}" style="font-weight:700;font-size:13px;white-space:nowrap;">${pnlStr}</span>` : ''}
+      ${forceSellBtn}
+    </div>
+    <div style="font-size:11px;color:#8b949e;padding-left:2px;">${detailLine}</div>
+  </div>`;
+}
+
 async function updateSoccerPositions() {
   const positions = await api('/soccer-positions');
   if (!positions) return;
 
-  const panel    = document.getElementById('soccerPanel');
-  const countEl  = document.getElementById('mc_soccer_count');
-  const statusEl = document.getElementById('mc_soccer_status');
-  if (!panel) return;
+  const watchPanel  = document.getElementById('soccerPanel');
+  const heldPanel   = document.getElementById('heldPanel');
+  const countEl     = document.getElementById('mc_soccer_count');
+  const statusEl    = document.getElementById('mc_soccer_status');
+  const heldCountEl = document.getElementById('heldCount');
+  const heldStatEl  = document.getElementById('heldStatus');
+  if (!watchPanel || !heldPanel) return;
 
-  const watching = positions.filter(p => p.phase === 'watching').length;
-  const active   = positions.filter(p => ['buying', 'holding', 'liquidating', 'redeeming'].includes(p.phase)).length;
-  const done     = positions.filter(p => p.phase === 'done').length;
+  const heldPhases    = ['buying', 'holding', 'liquidating', 'redeeming'];
+  const heldPositions = positions.filter(p => heldPhases.includes(p.phase));
+  const watchPositions= positions.filter(p => p.phase === 'watching');
+  const done          = positions.filter(p => p.phase === 'done').length;
 
+  // ── Watching panel counter ──
   countEl.textContent = positions.length === 0
     ? '0 watching'
-    : `${watching} watching | ${active} active${done > 0 ? ` | ${done} done` : ''}`;
+    : `${watchPositions.length} watching${done > 0 ? ` | ${done} done` : ''}`;
+  statusEl.textContent = 'Buy YES at 95¢+, hold to $1.00 resolution';
 
-  if (active > 0) {
-    const held = positions.filter(p => ['holding', 'liquidating'].includes(p.phase));
-    const totalUnrealized = held.reduce((s, p) => s + (p.unrealizedPnL || 0), 0);
-    const exiting = positions.filter(p => p.phase === 'liquidating').length;
-    statusEl.textContent = `${active} position(s) held${exiting > 0 ? ` | ${exiting} EXITING` : ''} | unrealized ${totalUnrealized >= 0 ? '+' : ''}$${totalUnrealized.toFixed(3)}`;
+  // ── Held positions panel ──
+  if (heldPositions.length === 0) {
+    heldCountEl.textContent = '0 held';
+    heldStatEl.textContent  = 'No open positions — bot will populate this when entries are made';
+    heldPanel.innerHTML     = '';
   } else {
-    statusEl.textContent = 'Buy YES at 95¢+, hold to $1.00 resolution';
+    const totalUnrealized = heldPositions.reduce((s, p) => s + (p.unrealizedPnL || 0), 0);
+    const exiting         = heldPositions.filter(p => p.phase === 'liquidating').length;
+    heldCountEl.textContent = `${heldPositions.length} held`;
+    heldStatEl.textContent  = `unrealized ${totalUnrealized >= 0 ? '+' : ''}$${totalUnrealized.toFixed(3)}${exiting > 0 ? ` | ${exiting} EXITING` : ''}`;
+    heldPanel.innerHTML     = heldPositions.map(buildPositionCard).join('');
   }
 
-  if (positions.length === 0) {
-    panel.innerHTML = '<div class="empty-state" style="padding:24px 12px;">No live soccer markets yet — scanning every 2 min</div>';
-    return;
+  // ── Watching panel ──
+  if (watchPositions.length === 0) {
+    watchPanel.innerHTML = '<div class="empty-state" style="padding:16px 12px;">No live markets being watched right now</div>';
+  } else {
+    watchPanel.innerHTML = watchPositions.map(buildPositionCard).join('');
   }
-
-  panel.innerHTML = positions.map(p => {
-    const midStr   = p.lastMid   !== null && p.lastMid   !== undefined ? `$${p.lastMid.toFixed(3)}`   : '--';
-    const entryStr = p.entryPrice !== null && p.entryPrice !== undefined ? `$${p.entryPrice.toFixed(3)}` : '--';
-    let pnlStr = ''; let pnlCls = '';
-    if (p.unrealizedPnL !== null && p.unrealizedPnL !== undefined) {
-      pnlStr = (p.unrealizedPnL >= 0 ? '+' : '') + `$${p.unrealizedPnL.toFixed(3)}`;
-      pnlCls = p.unrealizedPnL >= 0 ? 'positive' : 'negative';
-    } else if (p.pnl !== null && p.pnl !== undefined) {
-      pnlStr = (p.pnl >= 0 ? '+' : '') + `$${p.pnl.toFixed(3)}`;
-      pnlCls = p.pnl >= 0 ? 'positive' : 'negative';
-    }
-
-    const question = (p.question || p.eventTitle || '').length > 52
-      ? (p.question || p.eventTitle).slice(0, 52) + '…'
-      : (p.question || p.eventTitle || 'Soccer market');
-
-    const endStr = p.minutesLeft > 0 ? `${p.minutesLeft}m left` : 'ended';
-
-    const canForceSell = ['holding', 'liquidating', 'buying'].includes(p.phase) &&
-                         p.yesTokenId && p.filledTokens > 0;
-
-    const sellPrice = p.lastMid || p.currentBestBid || p.entryPrice || 0.95;
-
-    const forceSellBtn = canForceSell
-      ? `<button class="btn-force-sell" onclick="forceSell('${p.yesTokenId}',${p.remainingTokens || p.filledTokens},${sellPrice.toFixed(4)},${!!p.negRisk},'${p.tickSize || '0.01'}',this)" title="FAK sell at current mid — fills what it can">Force Sell</button>`
-      : '';
-
-    return `<div class="activity-item" style="flex-direction:column;align-items:flex-start;gap:4px;padding:8px 10px;">
-      <div style="display:flex;align-items:center;gap:6px;width:100%;">
-        ${soccerPhaseBadge(p.phase)}
-        <span style="flex:1;font-size:12px;color:#e6edf3;line-height:1.3;">${question}</span>
-        ${pnlStr ? `<span class="${pnlCls}" style="font-weight:700;font-size:13px;white-space:nowrap;">${pnlStr}</span>` : ''}
-        ${forceSellBtn}
-      </div>
-      <div style="font-size:11px;color:#8b949e;padding-left:2px;">
-        mid ${midStr}${p.phase !== 'watching' ? ` | entry ${entryStr} | ${p.filledTokens > 0 ? p.filledTokens.toFixed(4)+' tokens' : ''}` : ` | threshold $${(p.threshold || 0.95).toFixed(2)}`} | ${endStr}
-      </div>
-    </div>`;
-  }).join('');
 }
 
 async function updateSoccerLog() {

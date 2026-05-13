@@ -24,14 +24,26 @@
 
   <div class="container">
 
+    <!-- HELD POSITIONS — always pinned at top, never buried by watching list -->
+    <div class="market-card" id="mc_held" style="margin-bottom:12px;border-color:#3fb95044;">
+      <div class="mc-header" style="background:#0d1f0d;">
+        <span class="mc-badge" style="background:#1a3d1a;color:#3fb950;border:1px solid #3fb95055;">&#128176; HELD POSITIONS</span>
+        <span id="heldCount" style="font-size:12px;color:#8b949e;">0 held</span>
+      </div>
+      <div class="mc-question" id="heldStatus" style="color:#8b949e;">No open positions — bot will populate this when entries are made</div>
+      <div id="heldPanel" style="padding:0;">
+        <!-- populated by updateSoccerPositions() -->
+      </div>
+    </div>
+
     <div class="market-grid" id="marketGrid" style="grid-template-columns:1fr;">
       <div class="market-card" id="mc_soccer">
         <div class="mc-header">
-          <span class="mc-badge mc-soccer">&#9917; SOCCER BOND — LIVE POSITIONS</span>
+          <span class="mc-badge mc-soccer">&#9917; WATCHING — LIVE MARKETS</span>
           <span class="mc-phase" id="mc_soccer_count" style="font-size:12px;color:#8b949e;">0 watching</span>
         </div>
         <div class="mc-question" id="mc_soccer_status">Buy YES at 95¢+, hold to $1.00 resolution</div>
-        <div class="mc-body" id="soccerPanel" style="max-height:400px;overflow-y:auto;padding:0;">
+        <div class="mc-body" id="soccerPanel" style="max-height:320px;overflow-y:auto;padding:0;">
           <div class="empty-state" style="padding:24px 12px;">No live soccer markets yet — scanning every 2 min</div>
         </div>
       </div>
