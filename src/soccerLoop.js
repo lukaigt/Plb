@@ -75,9 +75,14 @@ async function recoverOpenPositions() {
   const config = getBondConfig();
 
   try {
-    const eoaAddress = getEoaAddress();
+    // getEoaAddress() is set by initClient() which is async — may not be ready yet
+    // at startup. Fall back to RELAYER_API_KEY_ADDRESS env var (same EOA, always available).
+    const eoaAddress = getEoaAddress()
+      || process.env.RELAYER_API_KEY_ADDRESS
+      || null;
+
     if (!eoaAddress) {
-      logger.addActivity('bot', { message: '[Recovery] EOA not yet initialised — skipping (will retry on next manual trigger)' });
+      logger.addActivity('bot', { message: '[Recovery] No EOA address available (RELAYER_API_KEY_ADDRESS not set?) — skipping. Set it in .env and restart.' });
       return;
     }
 
@@ -474,8 +479,10 @@ function start() {
   // Connect public market WebSocket (direct VPS, no proxy) for real-time best_bid tracking
   marketWatcher.connect();
 
-  // Recover any open positions from previous sessions (10s delay — let CLOB client init)
-  setTimeout(() => recoverOpenPositions().catch(() => {}), 10 * 1000);
+  // Recover any open positions from previous sessions.
+  // 30s delay — gives initClient() time to complete and set eoaAddress.
+  // Falls back to RELAYER_API_KEY_ADDRESS env var so it works even if client is still initialising.
+  setTimeout(() => recoverOpenPositions().catch(() => {}), 30 * 1000);
 
   const config     = getBondConfig();
   const minElapsed = parseInt(process.env.BOND_MIN_ELAPSED_MINUTES) || 30;
