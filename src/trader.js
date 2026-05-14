@@ -4,6 +4,8 @@ const { polygon } = require('viem/chains');
 const { privateKeyToAccount } = require('viem/accounts');
 const { ethers } = require('ethers');
 const crypto = require('crypto');
+const nodeHttps = require('https');
+const nodeHttp  = require('http');
 const logger = require('./logger');
 
 const CLOB_HOST = 'https://clob.polymarket.com';
@@ -41,14 +43,51 @@ const ERC1155_ABI = [
   { name: 'isApprovedForAll', type: 'function', stateMutability: 'view',      inputs: [{ name: 'account', type: 'address' }, { name: 'operator', type: 'address' }], outputs: [{ type: 'bool' }] },
   { name: 'setApprovalForAll', type: 'function', stateMutability: 'nonpayable', inputs: [{ name: 'operator', type: 'address' }, { name: 'approved', type: 'bool' }],    outputs: [] }
 ];
+// ERC-1155 balanceOf — used to verify the EOA actually holds CTF conditional tokens before selling
+const ERC1155_BAL_ABI = [
+  { name: 'balanceOf', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }, { name: 'id', type: 'uint256' }],
+    outputs: [{ type: 'uint256' }] }
+];
 
 let _cachedBalance    = null;
 let _balanceFetchedAt = 0;
 const BALANCE_CACHE_MS = 5 * 60 * 1000;
 
-let clobClient = null;
+let clobClient        = null;
+let _publicClient     = null;  // cached viem publicClient for on-chain reads during sells
 let proxyWalletAddress = null;
 let eoaAddress = null;
+
+// Proxy transport error patterns — when these appear we retry with a direct connection
+const PROXY_ERR_PATTERNS = [
+  'Proxy connection ended before receiving CONNECT response',
+  'tunneling socket could not be established',
+  'ECONNRESET',
+  'socket hang up',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'connect ETIMEDOUT',
+];
+
+function isProxyTransportError(msg) {
+  if (!msg) return false;
+  return PROXY_ERR_PATTERNS.some(p => msg.includes(p));
+}
+
+// Temporarily clear global proxy agents so axios goes direct, then restore
+async function withDirectConnection(fn) {
+  const savedHttpsAgent = nodeHttps.globalAgent;
+  const savedHttpAgent  = nodeHttp.globalAgent;
+  nodeHttps.globalAgent = new nodeHttps.Agent();
+  nodeHttp.globalAgent  = new nodeHttp.Agent();
+  try {
+    return await fn();
+  } finally {
+    nodeHttps.globalAgent = savedHttpsAgent;
+    nodeHttp.globalAgent  = savedHttpAgent;
+  }
+}
 
 function buildClobAuthHeaders(method, path) {
   const apiKey    = process.env.POLY_API_KEY;
@@ -128,7 +167,7 @@ async function initClient(privateKey) {
       transport: rpcTransport
     });
 
-    const publicClient = createPublicClient({
+    _publicClient = createPublicClient({
       chain: polygon,
       transport: rpcTransport
     });
@@ -159,7 +198,7 @@ async function initClient(privateKey) {
     // Check on-chain pUSD balance
     let pusdBalance = 0n;
     try {
-      pusdBalance = await publicClient.readContract({
+      pusdBalance = await _publicClient.readContract({
         address: PUSD_ADDRESS,
         abi: ERC20_FULL_ABI,
         functionName: 'balanceOf',
@@ -178,7 +217,7 @@ async function initClient(privateKey) {
     // Ensure pUSD is approved for both V2 exchange contracts on Polygon (on-chain approve)
     for (const exchange of V2_EXCHANGES) {
       try {
-        const allowance = await publicClient.readContract({
+        const allowance = await _publicClient.readContract({
           address: PUSD_ADDRESS,
           abi: ERC20_FULL_ABI,
           functionName: 'allowance',
@@ -206,7 +245,7 @@ async function initClient(privateKey) {
     // Without this, NegRiskAdapter.redeemPositions() reverts because it cannot
     // pull conditional tokens from the EOA via safeTransferFrom.
     try {
-      const isApproved = await publicClient.readContract({
+      const isApproved = await _publicClient.readContract({
         address: CTF_ADDRESS,
         abi: ERC1155_ABI,
         functionName: 'isApprovedForAll',
@@ -377,63 +416,154 @@ async function placeOrder(tokenId, side, amount, price, privateKey, negRisk = tr
 
 async function placeFakSellOrder(tokenId, size, price, negRisk = true, tickSize = '0.01') {
   const client = clobClient;
-  if (!client) return { success: false, error: 'No CLOB client' };
+  if (!client) return { success: false, error: 'No CLOB client', failReason: 'no_client' };
 
+  const resolvedTickSize = String(tickSize || '0.01');
+  const tickNum  = parseFloat(resolvedTickSize) || 0.01;
+  const decimals = tickNum <= 0.001 ? 3 : 2;
+  const roundedPrice = parseFloat(Math.max(0.02, Math.min(0.97,
+    Math.round(price * (10 ** decimals)) / (10 ** decimals)
+  )).toFixed(decimals));
+  const roundedSize = parseFloat(size.toFixed(2));
+
+  // ── PRE-SELL DIAGNOSTICS ───────────────────────────────────────────────────
+  // Log wallet identities, on-chain CTF token balance, and proxy status before
+  // every FAK sell so failures can be traced to a specific root cause.
+  const proxyActive = nodeHttps.globalAgent?.proxy != null ||
+    (nodeHttps.globalAgent?.constructor?.name ?? '').toLowerCase().includes('proxy');
+  logger.addActivity('trader', {
+    message: `[FAK-SELL] tokenId=${tokenId.slice(0, 18)}… size=${roundedSize} price=${roundedPrice} | eoa=${eoaAddress?.slice(0, 10)}… proxy_wallet=${(proxyWalletAddress || 'none')?.slice(0, 10)}… proxy_active=${proxyActive}`
+  });
+
+  // Check actual CTF ERC-1155 balance on the EOA — the CLOB needs the EOA to hold tokens
+  let ctfBalance = null;
+  if (_publicClient && eoaAddress) {
+    try {
+      const rawBal = await _publicClient.readContract({
+        address: CTF_ADDRESS,
+        abi: ERC1155_BAL_ABI,
+        functionName: 'balanceOf',
+        args: [eoaAddress, BigInt(tokenId)]
+      });
+      // CTF tokens use 1e6 decimals (same as USDC)
+      ctfBalance = Number(rawBal) / 1e6;
+      logger.addActivity('trader', {
+        message: `[FAK-SELL] CTF balance on EOA (${eoaAddress.slice(0, 10)}…): ${ctfBalance.toFixed(4)} tokens | need=${roundedSize}`
+      });
+      if (ctfBalance < roundedSize * 0.99) {
+        logger.addActivity('trader', {
+          message: `[FAK-SELL] wrong_wallet_balance — EOA only holds ${ctfBalance.toFixed(4)} but trying to sell ${roundedSize}`
+        });
+        return { success: false, error: `wrong_wallet_balance: EOA holds ${ctfBalance.toFixed(4)}, need ${roundedSize}`, failReason: 'wrong_wallet_balance' };
+      }
+    } catch (balErr) {
+      logger.addActivity('trader', { message: `[FAK-SELL] CTF balance check failed: ${balErr.message?.slice(0, 60)}` });
+    }
+  }
+
+  // ── CONDITIONAL BALANCE/ALLOWANCE SYNC ────────────────────────────────────
+  // CRITICAL: The CLOB backend caches its view of wallet token balances.
+  // Without this call before a sell, it sees stale/zero conditional balance
+  // and rejects the order with "not enough balance / allowance: 0".
+  // This is the root cause of sell failures after holding positions.
+  let syncOk = false;
   try {
-    const resolvedTickSize = String(tickSize || '0.01');
-    const tickNum  = parseFloat(resolvedTickSize) || 0.01;
-    const decimals = tickNum <= 0.001 ? 3 : 2;
-    const roundedPrice = parseFloat(Math.max(0.02, Math.min(0.97,
-      Math.round(price * (10 ** decimals)) / (10 ** decimals)
-    )).toFixed(decimals));
-    const roundedSize = parseFloat(size.toFixed(2));
+    await client.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
+    syncOk = true;
+  } catch (syncErr) {
+    logger.addActivity('trader', { message: `[FAK-SELL] conditional balance sync failed: ${syncErr.message?.slice(0, 80)}` });
+  }
+  logger.addActivity('trader', {
+    message: `[FAK-SELL] conditional balance sync=${syncOk ? 'ok' : 'FAILED'} | proxy_path=${proxyActive ? 'proxy' : 'direct'}`
+  });
 
-    if (client.tickSizes && !(tokenId in client.tickSizes)) {
-      client.tickSizes[tokenId] = resolvedTickSize;
+  if (client.tickSizes && !(tokenId in client.tickSizes)) {
+    client.tickSizes[tokenId] = resolvedTickSize;
+  }
+
+  // ── PLACE FAK ORDER (with proxy fallback on transport failure) ─────────────
+  const doPlaceOrder = async () => client.createAndPostOrder(
+    { tokenID: tokenId, price: roundedPrice, size: roundedSize, side: Side.SELL },
+    { tickSize: resolvedTickSize, negRisk: !!negRisk },
+    OrderType.FAK
+  );
+
+  let response = null;
+  let usedDirectFallback = false;
+  try {
+    response = await doPlaceOrder();
+  } catch (err) {
+    const errMsg = err.message || String(err);
+    if (isProxyTransportError(errMsg)) {
+      // Proxy CONNECT failed — retry immediately on direct connection
+      logger.addActivity('trader', {
+        message: `[FAK-SELL] proxy_transport_failed: ${errMsg.slice(0, 80)} — retrying direct`
+      });
+      try {
+        response = await withDirectConnection(doPlaceOrder);
+        usedDirectFallback = true;
+        logger.addActivity('trader', { message: `[FAK-SELL] direct fallback succeeded` });
+      } catch (directErr) {
+        const directMsg = directErr.message || String(directErr);
+        logger.addActivity('trader', { message: `[FAK-SELL] direct fallback also failed: ${directMsg.slice(0, 80)}` });
+        return { success: false, error: directMsg, failReason: 'proxy_transport_failed' };
+      }
+    } else {
+      // Classify non-proxy errors
+      const isBalanceErr = errMsg.toLowerCase().includes('balance') ||
+        errMsg.toLowerCase().includes('allowance');
+      const failReason = isBalanceErr ? 'balance_allowance_failed' : 'zero_fill';
+      logger.addActivity('trader', { message: `[FAK-SELL] ${failReason}: ${errMsg.slice(0, 100)}` });
+      return { success: false, error: errMsg, failReason };
     }
+  }
 
-    const response = await client.createAndPostOrder(
-      { tokenID: tokenId, price: roundedPrice, size: roundedSize, side: Side.SELL },
-      { tickSize: resolvedTickSize, negRisk: !!negRisk },
-      OrderType.FAK
-    );
+  // ── PARSE RESPONSE ─────────────────────────────────────────────────────────
+  // CLOB v2: makingAmount = tokens sold, takingAmount = USDC received.
+  // Zero-fill = order accepted but no buyer — NOT a success.
+  const apiSuccess = response?.success !== false && !!response?.orderID;
+  if (!apiSuccess) {
+    const errMsg = response?.errorMsg || response?.error || JSON.stringify(response)?.slice(0, 120) || 'unknown';
+    const isBalanceErr = String(errMsg).toLowerCase().includes('balance') ||
+      String(errMsg).toLowerCase().includes('allowance');
+    const failReason = isBalanceErr ? 'balance_allowance_failed' : 'zero_fill';
+    logger.addActivity('trader', {
+      message: `[FAK-SELL] rejected failReason=${failReason}${usedDirectFallback ? ' (direct path)' : ''}: ${String(errMsg).slice(0, 100)}`
+    });
+    return { success: false, error: errMsg, failReason, raw: response };
+  }
 
-    // CLOB v2 response shape: { success, errorMsg, orderID, status, takingAmount, makingAmount }
-    // For a SELL FAK: makingAmount = tokens actually sold, takingAmount = USDC actually received.
-    // We MUST treat zero-fill as failure — the order was accepted but no buyer matched it.
-    const apiSuccess = response?.success !== false && !!response?.orderID;
-    if (!apiSuccess) {
-      const errMsg = response?.errorMsg || response?.error || JSON.stringify(response)?.slice(0, 120);
-      return { success: false, error: errMsg, raw: response };
-    }
+  const sizeFilled  = parseFloat(response?.makingAmount ?? 0) || 0;
+  const usdReceived = parseFloat(response?.takingAmount ?? 0) || 0;
 
-    const sizeFilled = parseFloat(response?.makingAmount ?? 0) || 0;
-    const usdReceived = parseFloat(response?.takingAmount ?? 0) || 0;
-
-    if (sizeFilled <= 0) {
-      return {
-        success: false,
-        error: 'NO_FILL',
-        orderId: response.orderID,
-        status: response.status,
-        sizeFilled: 0,
-        sizeRemaining: roundedSize,
-        raw: response
-      };
-    }
-
+  if (sizeFilled <= 0) {
+    logger.addActivity('trader', {
+      message: `[FAK-SELL] zero_fill — order accepted orderId=${response.orderID} but makingAmount=0${usedDirectFallback ? ' (direct path)' : ''}`
+    });
     return {
-      success: true,
+      success: false,
+      error: 'NO_FILL',
+      failReason: 'zero_fill',
       orderId: response.orderID,
       status: response.status,
-      sizeFilled,
-      sizeRemaining: parseFloat((roundedSize - sizeFilled).toFixed(6)),
-      usdReceived,
+      sizeFilled: 0,
+      sizeRemaining: roundedSize,
       raw: response
     };
-  } catch (err) {
-    return { success: false, error: err.message };
   }
+
+  logger.addActivity('trader', {
+    message: `[FAK-SELL] filled=${sizeFilled.toFixed(4)} usd=$${usdReceived.toFixed(3)} orderId=${response.orderID}${usedDirectFallback ? ' (direct path)' : ''}`
+  });
+  return {
+    success: true,
+    orderId: response.orderID,
+    status: response.status,
+    sizeFilled,
+    sizeRemaining: parseFloat((roundedSize - sizeFilled).toFixed(6)),
+    usdReceived,
+    raw: response
+  };
 }
 
 async function placeSellOrder(tokenId, size, price, negRisk = true, tickSize = '0.01') {

@@ -447,8 +447,9 @@ class BondSession {
           message: `[EXIT] remaining after fill = ${this._remainingTokens.toFixed(4)}`
         });
       } else {
+        const failReason = result?.failReason ?? 'unknown';
         logger.addActivity('bond_exit', {
-          message: `[EXIT] FAK sent but zero filled attempt ${attempt} — error=${result?.error ?? 'unknown'} | retry in ${this.config.exitRetrySecs}s`
+          message: `[EXIT] FAK failed attempt ${attempt} — failReason=${failReason} error=${result?.error ?? 'unknown'} | retry in ${this.config.exitRetrySecs}s`
         });
       }
 
