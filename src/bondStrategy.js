@@ -354,122 +354,149 @@ class BondSession {
     if (this._liquidating) return;
     this._liquidating = true;
 
-    const maxRetries  = Math.max(1, this.config.fakRetries    || 5);
-    const retrySecs   = Math.max(2, this.config.exitRetrySecs || 5) * 1000;
-    const tickNum     = parseFloat(this.market.tickSize || '0.01') || 0.01;
-    const decimals    = tickNum <= 0.001 ? 3 : 2;
+    const maxRetries = Math.max(1, this.config.fakRetries    || 5);
+    const retrySecs  = Math.max(2, this.config.exitRetrySecs || 5) * 1000;
+    const tokenId    = this.market.yesTokenId;
+    const tickNum    = parseFloat(this.market.tickSize || '0.01') || 0.01;
+    const decimals   = tickNum <= 0.001 ? 3 : 2;
+
+    let allNoBid = true; // tracks whether every attempt had zero live bids
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       if (this._remainingTokens <= 0.01) break;
       if (this.phase === 'done') break;
 
-      const bid       = this.currentBestBid ?? this.lastMid ?? 0.05;
-      const sellPrice = parseFloat(Math.max(0.02, bid - tickNum * 2).toFixed(decimals));
+      logger.addActivity('bond_exit', {
+        message: `[EXIT] liquidation attempt ${attempt}/${maxRetries} tokenId=${tokenId.slice(0, 14)}… remaining=${this._remainingTokens.toFixed(4)} | "${this.market.question.slice(0, 38)}"`
+      });
+
+      // ── STEP 1: fetch live order book — never use websocket cache or midpoint ──
+      let topBid = null;
+      try {
+        const bookRes = await fetch(
+          `https://clob.polymarket.com/book?token_id=${tokenId}`,
+          { signal: AbortSignal.timeout(8000) }
+        );
+        const book = await bookRes.json();
+        if (book && Array.isArray(book.bids)) {
+          const liveBids = book.bids
+            .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }))
+            .filter(b => b.price > 0 && b.size > 0)
+            .sort((a, b) => b.price - a.price);
+          if (liveBids.length > 0) topBid = liveBids[0].price;
+        }
+      } catch (fetchErr) {
+        logger.addActivity('bond_exit', {
+          message: `[EXIT] book fetch error attempt ${attempt}: ${fetchErr.message?.slice(0, 60)}`
+        });
+      }
+
+      if (topBid === null) {
+        logger.addActivity('bond_exit', {
+          message: `[EXIT] no_bid_liquidity attempt ${attempt} — no live bids found, skipping FAK | remaining=${this._remainingTokens.toFixed(4)}`
+        });
+        await new Promise(r => setTimeout(r, retrySecs));
+        continue;
+      }
+
+      allNoBid = false;
+
+      // ── STEP 2: place FAK at live top bid ─────────────────────────────────
+      // Sell at the exact top bid — FAK matches against it directly.
+      // No midpoint, no websocket cache, no fallback fake prices.
+      const sellPrice = parseFloat(Math.max(0.01, topBid).toFixed(decimals));
 
       logger.addActivity('bond_exit', {
-        message: `[EXIT] FAK attempt ${attempt}/${maxRetries}: ${this._remainingTokens.toFixed(4)} tokens @ $${sellPrice.toFixed(decimals)} | bid=$${bid.toFixed(3)} | "${this.market.question.slice(0, 38)}"`
+        message: `[EXIT] book top bid = $${topBid.toFixed(3)} | FAK sent price=${sellPrice.toFixed(decimals)} size=${this._remainingTokens.toFixed(4)} tokenId=${tokenId.slice(0, 14)}…`
       });
-      this.exitAttemptCount++;
 
-      let orderId = null;
+      this.exitAttemptCount++;
+      let result = null;
       try {
-        const result = await placeFakSellOrder(
-          this.market.yesTokenId,
+        result = await placeFakSellOrder(
+          tokenId,
           this._remainingTokens,
           sellPrice,
           this.market.negRisk,
           this.market.tickSize || '0.01'
         );
-        if (result.success && result.orderId) {
-          orderId = result.orderId;
-        } else {
-          logger.addActivity('bond_exit', {
-            message: `[EXIT] FAK attempt ${attempt} rejected: ${result.error?.slice(0, 80)}`
-          });
-        }
       } catch (err) {
         logger.addActivity('bond_exit', {
-          message: `[EXIT] FAK attempt ${attempt} error: ${err.message?.slice(0, 80)}`
+          message: `[EXIT] FAK exception attempt ${attempt}: ${err.message?.slice(0, 80)}`
+        });
+        await new Promise(r => setTimeout(r, retrySecs));
+        continue;
+      }
+
+      // ── STEP 3: read actual fill from SDK response ─────────────────────────
+      // makingAmount = tokens sold, takingAmount = USDC received (CLOB v2 SDK).
+      // sizeFilled is already extracted from makingAmount by placeFakSellOrder().
+      // sizeFilled = 0 means the exchange accepted the order but matched zero — NOT success.
+      const filled  = result?.sizeFilled  ?? 0;
+      const usdGot  = result?.usdReceived ?? (filled * sellPrice);
+      const orderId = result?.orderId     ?? 'n/a';
+
+      logger.addActivity('bond_exit', {
+        message: `[EXIT] result makingAmount=${filled.toFixed(4)} takingAmount=$${usdGot.toFixed(3)} orderId=${orderId}`
+      });
+
+      if (filled > 0) {
+        this._totalProceeds   += usdGot > 0 ? usdGot : filled * sellPrice;
+        this._remainingTokens  = Math.max(0, parseFloat((this._remainingTokens - filled).toFixed(6)));
+        logger.addActivity('bond_exit', {
+          message: `[EXIT] remaining after fill = ${this._remainingTokens.toFixed(4)}`
+        });
+      } else {
+        logger.addActivity('bond_exit', {
+          message: `[EXIT] FAK sent but zero filled attempt ${attempt} — error=${result?.error ?? 'unknown'} | retry in ${this.config.exitRetrySecs}s`
         });
       }
 
-      // Wait for FAK to execute
+      if (this._remainingTokens <= 0.01) break;
       await new Promise(r => setTimeout(r, retrySecs));
-
-      if (orderId) {
-        const order       = await fetchOrderStatus(orderId);
-        const sizeMatched = parseFloat(order?.size_matched || order?.sizeMatched || 0);
-        const status      = (order?.status || order?.orderStatus || '').toUpperCase();
-
-        if (sizeMatched > 0 || status === 'MATCHED') {
-          const filled   = sizeMatched > 0 ? sizeMatched : this._remainingTokens;
-          const proceeds = filled * sellPrice;
-          this._totalProceeds   += proceeds;
-          this._remainingTokens  = Math.max(0, parseFloat((this._remainingTokens - filled).toFixed(4)));
-
-          logger.addActivity('bond_exit', {
-            message: `[EXIT] partial fill: filled=${filled.toFixed(4)} remaining=${this._remainingTokens.toFixed(4)} proceeds=$${proceeds.toFixed(3)}`
-          });
-        } else {
-          logger.addActivity('bond_exit', {
-            message: `[EXIT] FAK attempt ${attempt} — no fill (status=${status || 'unknown'}) — retrying`
-          });
-        }
-      }
     }
 
-    // Final emergency attempt at deep fallback price if still holding
-    if (this._remainingTokens > 0.01) {
-      logger.addActivity('bond_exit', {
-        message: `[EXIT] unrecoverable — ${this._remainingTokens.toFixed(4)} tokens remain | bid=$${(this.currentBestBid || 0).toFixed(3)} | final attempt @ $0.02`
-      });
-      try {
-        const r = await placeFakSellOrder(
-          this.market.yesTokenId, this._remainingTokens, 0.02,
-          this.market.negRisk, this.market.tickSize || '0.01'
-        );
-        if (r.success) {
-          this._totalProceeds  += this._remainingTokens * 0.02;
-          this._remainingTokens = 0;
-        }
-      } catch {}
+    // ── POST LOOP ─────────────────────────────────────────────────────────────
 
-      if (this._remainingTokens > 0.01) {
-        logger.addActivity('bond_exit', {
-          message: `[EXIT] UNRECOVERABLE: ${this._remainingTokens.toFixed(4)} tokens could not be sold | market may have no buyers | "${this.market.question.slice(0, 45)}"`
-        });
-      }
-    } else {
+    if (this._remainingTokens <= 0.01) {
+      // All tokens sold — record PnL and close session normally
       logger.addActivity('bond_exit', {
         message: `[EXIT] fully flat — all tokens sold | "${this.market.question.slice(0, 50)}"`
       });
-    }
 
-    // Record final PnL
-    const grossPnl = this._totalProceeds - this.filledAmount;
-    const fee      = this.filledAmount * ESTIMATED_FEE_RATE;
-    const netPnl   = grossPnl - fee;
+      const grossPnl = this._totalProceeds - this.filledAmount;
+      const fee      = this.filledAmount * ESTIMATED_FEE_RATE;
+      const netPnl   = grossPnl - fee;
+      this.pnl        = grossPnl;
+      this.resolvedAt = new Date().toISOString();
+      if (grossPnl < 0) safety.recordLoss(Math.abs(grossPnl));
+      else safety.recordWin(grossPnl);
 
-    this.pnl        = grossPnl;
-    this.resolvedAt = new Date().toISOString();
-    if (grossPnl < 0) safety.recordLoss(Math.abs(grossPnl));
-    else safety.recordWin(grossPnl);
-
-    if (this.tradeId) {
-      logger.updateTrade(this.tradeId, {
-        result:     grossPnl >= 0 ? 'win' : 'loss',
-        pnl:        grossPnl,
-        exitReason: this.lastExitReason || 'stop_loss'
+      if (this.tradeId) {
+        logger.updateTrade(this.tradeId, {
+          result:     grossPnl >= 0 ? 'win' : 'loss',
+          pnl:        grossPnl,
+          exitReason: this.lastExitReason || 'stop_loss'
+        });
+      }
+      logger.addActivity(grossPnl >= 0 ? 'bond_done' : 'bond_loss', {
+        message: `[EXIT] result: gross=${grossPnl >= 0 ? '+' : ''}$${grossPnl.toFixed(3)} net=${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(3)} | reason=${this.lastExitReason} attempts=${this.exitAttemptCount} | "${this.market.question.slice(0, 40)}"`
       });
+      marketWatcher.unsubscribe(tokenId);
+      this._liquidating = false;
+      this.phase = 'done';
+
+    } else {
+      // Tokens still held — do NOT mark done.
+      // Reset _liquidating=false so the fast loop re-triggers this function
+      // on the next tick. Session stays 'liquidating' and remains visible
+      // on the dashboard until tokens are actually flat.
+      logger.addActivity('bond_exit', {
+        message: `[EXIT] unresolved risk, still holding tokens: ${this._remainingTokens.toFixed(4)} remaining | all_no_bid=${allNoBid} | session stays liquidating — auto-retry on next fast loop tick | "${this.market.question.slice(0, 40)}"`
+      });
+      this._liquidating = false;
+      // phase stays 'liquidating' — NEVER done while tokens > 0
     }
-
-    logger.addActivity(grossPnl >= 0 ? 'bond_done' : 'bond_loss', {
-      message: `[EXIT] result: gross=${grossPnl >= 0 ? '+' : ''}$${grossPnl.toFixed(3)} net=${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(3)} | reason=${this.lastExitReason} attempts=${this.exitAttemptCount} | "${this.market.question.slice(0, 40)}"`
-    });
-
-    marketWatcher.unsubscribe(this.market.yesTokenId);
-    this._liquidating = false;
-    this.phase = 'done';
   }
 
   // ─── RESOLUTION ─────────────────────────────────────────────────────────────

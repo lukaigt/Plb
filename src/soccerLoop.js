@@ -456,18 +456,22 @@ async function runFast() {
           await session.checkResolution();
 
         } else if (session.phase === 'liquidating') {
-          // Background liquidation loop is running — just keep best_bid fresh
-          // and add a hard timeout in case the loop stalls
+          // Keep best_bid fresh (used for HOLD log and spread exit checks).
           await session.pollPrice();
-          if (session._liquidationStartedAt &&
-              Date.now() - session._liquidationStartedAt > 10 * 60 * 1000 &&
-              !session._liquidating) {
-            logger.addActivity('bond_error', {
-              message: `[EXIT] liquidation timeout (10min) — forcing done for "${session.market?.question?.slice(0, 40)}"`
+
+          if (!session._liquidating) {
+            // Loop exited without flattening (no-bid or partial fill exhausted retries).
+            // Re-trigger immediately — tokens are still held, session must not stay idle.
+            // The loop's own _liquidating guard prevents concurrent runs.
+            session.runLiquidationLoop().catch(err => {
+              logger.addActivity('bond_error', {
+                message: `[EXIT] liquidation re-trigger error: ${err.message?.slice(0, 80)}`
+              });
+              session._liquidating = false;
             });
-            marketWatcher.unsubscribe(session.market.yesTokenId);
-            session.phase = 'done';
           }
+          // NOTE: hard timeout removed — session must never be forced 'done'
+          // while tokens remain. It will stay 'liquidating' until flat or resolved.
 
         } else if (session.phase === 'redeeming') {
           await session.tryRedeem();
