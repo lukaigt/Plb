@@ -58,24 +58,25 @@ async function setAllowances() {
 
   const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
 
-  // Build a FallbackProvider across all RPCs — ethers automatically retries
-  // across providers if any single one returns a bad response or 502.
-  // Quorum=1 means we accept the first successful response.
-  const providers = POLYGON_RPCS.map((url, i) =>
-    ({ provider: new ethers.providers.JsonRpcProvider(url), priority: i + 1, stallTimeout: 4000 })
-  );
-  const provider = new ethers.providers.FallbackProvider(providers, 1);
-
-  // Verify at least one RPC is reachable with a real eth_call before proceeding
-  try {
-    const net = await provider.getNetwork();
-    if (net.chainId !== 137) {
-      console.error(`ERROR: Wrong chain (got ${net.chainId}, need 137 Polygon mainnet)`);
-      process.exit(1);
+  // StaticJsonRpcProvider pre-sets chainId=137 so ethers never calls eth_chainId
+  // for network detection — that's what caused FallbackProvider to fail.
+  // We pick the first RPC that can handle a real eth_getBalance call.
+  const POLYGON_NETWORK = { chainId: 137, name: 'matic' };
+  let provider = null;
+  for (const url of POLYGON_RPCS) {
+    try {
+      const p = new ethers.providers.StaticJsonRpcProvider(url, POLYGON_NETWORK);
+      // Test with a real call, not just network detection
+      await p.getBalance('0x0000000000000000000000000000000000000000');
+      provider = p;
+      console.log(`RPC connected: ${url}`);
+      break;
+    } catch (err) {
+      console.log(`RPC failed (${url}): ${err.message?.slice(0, 60)}`);
     }
-    console.log(`Connected to Polygon mainnet (chainId=137) via fallback provider`);
-  } catch (err) {
-    console.error('ERROR: All Polygon RPCs unreachable:', err.message?.slice(0, 120));
+  }
+  if (!provider) {
+    console.error('ERROR: All Polygon RPCs failed. Check VPS internet connectivity.');
     process.exit(1);
   }
 
