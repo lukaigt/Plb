@@ -14,12 +14,19 @@ JSON.stringify = function(value, replacer, space) {
   return _origStringify.call(JSON, value, safeReplacer, space);
 };
 
-const { setupProxy } = require('./src/proxy');
-setupProxy();
+// Do NOT call setupProxy() here — the global proxy agent would intercept
+// ethers.js RPC calls too, and Polygon public RPCs reject proxy CONNECT
+// tunnels, causing "could not detect network". The proxy is only needed
+// for Polymarket's geo-blocked CLOB API, not Polygon RPC endpoints.
 
 const { ethers, Wallet, Contract } = require('ethers');
 
-const POLYGON_RPC = 'https://polygon-rpc.com';
+const POLYGON_RPCS = [
+  'https://polygon-bor-rpc.publicnode.com',
+  'https://rpc.ankr.com/polygon',
+  'https://polygon.llamarpc.com',
+  'https://polygon-rpc.com',
+];
 
 // ── V2 CONTRACTS (April 2026 migration) ───────────────────────────────────────
 const PUSD            = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB'; // pUSD (replaces USDC.e)
@@ -50,8 +57,26 @@ async function setAllowances() {
   }
 
   const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
-  const provider = new ethers.providers.JsonRpcProvider(POLYGON_RPC);
-  const wallet   = new Wallet(cleanKey, provider);
+
+  // Try each RPC in order until one responds
+  let provider = null;
+  for (const rpcUrl of POLYGON_RPCS) {
+    try {
+      const p = new ethers.providers.JsonRpcProvider(rpcUrl);
+      await p.getNetwork(); // throws if unreachable
+      provider = p;
+      console.log(`RPC: ${rpcUrl}`);
+      break;
+    } catch {
+      console.log(`RPC failed, trying next: ${rpcUrl}`);
+    }
+  }
+  if (!provider) {
+    console.error('ERROR: All Polygon RPCs failed. Check internet/VPS connectivity.');
+    process.exit(1);
+  }
+
+  const wallet = new Wallet(cleanKey, provider);
 
   console.log(`Wallet (EOA): ${wallet.address}`);
 
