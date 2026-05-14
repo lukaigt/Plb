@@ -241,37 +241,83 @@ async function initClient(privateKey) {
       }
     }
 
-    // Ensure CTF ERC-1155 tokens are approved for NegRiskAdapter.
-    // Without this, NegRiskAdapter.redeemPositions() reverts because it cannot
-    // pull conditional tokens from the EOA via safeTransferFrom.
-    try {
-      const isApproved = await _publicClient.readContract({
-        address: CTF_ADDRESS,
-        abi: ERC1155_ABI,
-        functionName: 'isApprovedForAll',
-        args: [eoaAddress, NEG_RISK_ADAPTER]
-      });
+    // ── CTF ERC-1155 OPERATOR APPROVALS ────────────────────────────────────────
+    // Selling YES tokens on CLOB V2 requires the exchange contract to be an
+    // approved operator on the CTF contract so it can pull conditional tokens
+    // from the EOA during order settlement.
+    //
+    // Required for SELL orders:
+    //   CTF.setApprovalForAll(EOA, ExchangeV2)        — regular markets
+    //   CTF.setApprovalForAll(EOA, NegRiskExchangeV2) — NegRisk markets (soccer)
+    // Required for REDEMPTION:
+    //   CTF.setApprovalForAll(EOA, NegRiskAdapter)    — unchanged from V1
+    //
+    // Old code only approved NegRiskAdapter, leaving Exchange V2 and NegRisk
+    // Exchange V2 at allowance=0 — this caused every sell to be rejected with
+    // "not enough balance / allowance".
+    const CTF_OPERATORS = [
+      { address: V2_EXCHANGES[0].address, name: 'Exchange V2 (sells)'        },
+      { address: V2_EXCHANGES[1].address, name: 'NegRisk Exchange V2 (sells)' },
+      { address: NEG_RISK_ADAPTER,        name: 'NegRisk Adapter (redemption)' }
+    ];
+
+    // Read all three approval states in parallel for startup diagnostics
+    const ctfApprovals = await Promise.allSettled(
+      CTF_OPERATORS.map(op => _publicClient.readContract({
+        address: CTF_ADDRESS, abi: ERC1155_ABI,
+        functionName: 'isApprovedForAll', args: [eoaAddress, op.address]
+      }))
+    );
+
+    logger.addActivity('trader', {
+      message: `[STARTUP] CTF operator approvals: ` +
+        CTF_OPERATORS.map((op, i) => {
+          const val = ctfApprovals[i].status === 'fulfilled' ? ctfApprovals[i].value : null;
+          return `${op.name}=${val === true ? 'YES' : val === false ? 'NO←WILL_APPROVE' : 'ERR'}`;
+        }).join(' | ')
+    });
+
+    for (let i = 0; i < CTF_OPERATORS.length; i++) {
+      const op  = CTF_OPERATORS[i];
+      const res = ctfApprovals[i];
+      const isApproved = res.status === 'fulfilled' ? res.value : false;
       if (isApproved) {
-        logger.addActivity('trader', { message: 'CTF already approved for NegRiskAdapter' });
+        logger.addActivity('trader', { message: `CTF already approved for ${op.name}` });
       } else {
-        logger.addActivity('trader', { message: 'Approving CTF for NegRiskAdapter (needed for soccer redemptions)...' });
-        const txHash = await walletClient.writeContract({
-          address: CTF_ADDRESS,
-          abi: ERC1155_ABI,
-          functionName: 'setApprovalForAll',
-          args: [NEG_RISK_ADAPTER, true]
-        });
-        logger.addActivity('trader', { message: `CTF approved for NegRiskAdapter — tx: ${txHash.slice(0, 18)}...` });
+        try {
+          logger.addActivity('trader', { message: `Approving CTF for ${op.name}...` });
+          const txHash = await walletClient.writeContract({
+            address: CTF_ADDRESS, abi: ERC1155_ABI,
+            functionName: 'setApprovalForAll', args: [op.address, true]
+          });
+          logger.addActivity('trader', { message: `CTF approved for ${op.name} — tx: ${txHash.slice(0, 18)}...` });
+        } catch (approveErr) {
+          logger.addActivity('trader_error', {
+            message: `CTF setApprovalForAll failed for ${op.name}: ${approveErr.message?.slice(0, 100)}`
+          });
+        }
       }
-    } catch (err) {
-      logger.addActivity('trader_error', { message: `CTF setApprovalForAll failed: ${err.message?.slice(0, 100)}` });
     }
 
-    // Ping Polymarket backend to sync the balance/allowance it sees
+    // Ping Polymarket backend to sync the balance/allowance it sees.
+    // Log the result so we know whether the backend accepted the sync.
+    let collateralSyncOk = false;
+    let conditionalSyncOk = false;
     try {
       await clobClient.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+      collateralSyncOk = true;
+    } catch (e) {
+      logger.addActivity('trader', { message: `[STARTUP] collateral balance sync failed: ${e.message?.slice(0, 60)}` });
+    }
+    try {
       await clobClient.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
-    } catch (_) {}
+      conditionalSyncOk = true;
+    } catch (e) {
+      logger.addActivity('trader', { message: `[STARTUP] conditional balance sync failed: ${e.message?.slice(0, 60)}` });
+    }
+    logger.addActivity('trader', {
+      message: `[STARTUP] backend balance sync: collateral=${collateralSyncOk ? 'ok' : 'FAILED'} conditional=${conditionalSyncOk ? 'ok' : 'FAILED'}`
+    });
 
     proxyWalletAddress = await fetchProxyWallet();
     if (!proxyWalletAddress) {

@@ -20,18 +20,19 @@ setupProxy();
 const { ethers, Wallet, Contract } = require('ethers');
 
 const POLYGON_RPC = 'https://polygon-rpc.com';
-const CHAIN_ID = 137;
 
-const USDC_E = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const CTF_CONTRACT = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
-const EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
-const NEG_RISK_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a';
-const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
+// ── V2 CONTRACTS (April 2026 migration) ───────────────────────────────────────
+const PUSD            = '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB'; // pUSD (replaces USDC.e)
+const CTF_CONTRACT    = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'; // unchanged
+const EXCHANGE_V2     = '0xE111180000d2663C0091e4f400237545B87B996B'; // Exchange V2
+const NEG_RISK_EX_V2  = '0xe2222d279d744050d28e00520010520000310F59'; // NegRisk Exchange V2
+const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296'; // unchanged
 
 const ERC20_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
-  'function balanceOf(address account) view returns (uint256)'
+  'function balanceOf(address account) view returns (uint256)',
+  'function symbol() view returns (string)'
 ];
 
 const CTF_ABI = [
@@ -50,97 +51,133 @@ async function setAllowances() {
 
   const cleanKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
   const provider = new ethers.providers.JsonRpcProvider(POLYGON_RPC);
-  const wallet = new Wallet(cleanKey, provider);
+  const wallet   = new Wallet(cleanKey, provider);
 
-  console.log(`Wallet: ${wallet.address}`);
+  console.log(`Wallet (EOA): ${wallet.address}`);
 
   const maticBalance = await provider.getBalance(wallet.address);
   console.log(`MATIC balance: ${ethers.utils.formatEther(maticBalance)}`);
 
-  const usdc = new Contract(USDC_E, ERC20_ABI, wallet);
-  const usdcBalance = await usdc.balanceOf(wallet.address);
-  console.log(`USDC.e balance: ${ethers.utils.formatUnits(usdcBalance, 6)}`);
-
-  if (parseFloat(ethers.utils.formatEther(maticBalance)) < 0.01) {
+  if (parseFloat(ethers.utils.formatEther(maticBalance)) < 0.005) {
     console.error('\nERROR: You need MATIC for gas fees. Send at least 0.1 MATIC to your wallet.');
     process.exit(1);
   }
 
-  const ctf = new Contract(CTF_CONTRACT, CTF_ABI, wallet);
+  const pusd = new Contract(PUSD, ERC20_ABI, wallet);
+  const ctf  = new Contract(CTF_CONTRACT, CTF_ABI, wallet);
 
-  const currentAllowance = await usdc.allowance(wallet.address, EXCHANGE);
-  const currentNegAllowance = await usdc.allowance(wallet.address, NEG_RISK_EXCHANGE);
-  const ctfApproved = await ctf.isApprovedForAll(wallet.address, EXCHANGE);
-  const ctfNegApproved = await ctf.isApprovedForAll(wallet.address, NEG_RISK_EXCHANGE);
-  const ctfAdapterApproved = await ctf.isApprovedForAll(wallet.address, NEG_RISK_ADAPTER);
+  const pusdBalance = await pusd.balanceOf(wallet.address);
+  console.log(`pUSD balance: ${ethers.utils.formatUnits(pusdBalance, 6)}\n`);
 
-  console.log(`\nCurrent allowances:`);
-  console.log(`  USDC -> Exchange: ${currentAllowance.gt(0) ? 'APPROVED' : 'NOT APPROVED'}`);
-  console.log(`  USDC -> NegRisk Exchange: ${currentNegAllowance.gt(0) ? 'APPROVED' : 'NOT APPROVED'}`);
-  console.log(`  CTF -> Exchange: ${ctfApproved ? 'APPROVED' : 'NOT APPROVED'}`);
-  console.log(`  CTF -> NegRisk Exchange: ${ctfNegApproved ? 'APPROVED' : 'NOT APPROVED'}`);
-  console.log(`  CTF -> NegRisk Adapter: ${ctfAdapterApproved ? 'APPROVED' : 'NOT APPROVED'}`);
+  // ── READ CURRENT STATE ──────────────────────────────────────────────────────
+  const [
+    pusdAllowEx,
+    pusdAllowNeg,
+    ctfEx,
+    ctfNeg,
+    ctfAdapter
+  ] = await Promise.all([
+    pusd.allowance(wallet.address, EXCHANGE_V2),
+    pusd.allowance(wallet.address, NEG_RISK_EX_V2),
+    ctf.isApprovedForAll(wallet.address, EXCHANGE_V2),
+    ctf.isApprovedForAll(wallet.address, NEG_RISK_EX_V2),
+    ctf.isApprovedForAll(wallet.address, NEG_RISK_ADAPTER)
+  ]);
+
+  console.log('Current approval state:');
+  console.log(`  pUSD  -> Exchange V2        (0xE111…): ${pusdAllowEx.gt(0)  ? 'APPROVED' : 'NOT APPROVED'}`);
+  console.log(`  pUSD  -> NegRisk Exchange V2 (0xe222…): ${pusdAllowNeg.gt(0) ? 'APPROVED' : 'NOT APPROVED'}`);
+  console.log(`  CTF   -> Exchange V2        (0xE111…): ${ctfEx      ? 'APPROVED' : 'NOT APPROVED'}  ← required for SELL orders`);
+  console.log(`  CTF   -> NegRisk Exchange V2 (0xe222…): ${ctfNeg     ? 'APPROVED' : 'NOT APPROVED'}  ← required for SELL orders (NegRisk)`);
+  console.log(`  CTF   -> NegRisk Adapter    (0xd91E…): ${ctfAdapter  ? 'APPROVED' : 'NOT APPROVED'}  ← required for redemption`);
 
   const gasPrice = await provider.getGasPrice();
-  const txOpts = { gasLimit: 100000, gasPrice: gasPrice.mul(2) };
+  const txOpts   = { gasLimit: 150000, gasPrice: gasPrice.mul(2) };
 
   console.log('\nSetting approvals...\n');
 
-  if (currentAllowance.lt(ethers.utils.parseUnits('1000000', 6))) {
-    console.log('1/5 Approving USDC.e for Exchange...');
-    const tx1 = await usdc.approve(EXCHANGE, MAX_UINT, txOpts);
-    console.log(`   tx: ${tx1.hash}`);
-    await tx1.wait();
-    console.log('   DONE');
+  // 1. pUSD → Exchange V2 (collateral for BUY orders)
+  if (pusdAllowEx.lt(ethers.utils.parseUnits('1000000', 6))) {
+    console.log('1/5 Approving pUSD for Exchange V2 (0xE111…)...');
+    const tx = await pusd.approve(EXCHANGE_V2, MAX_UINT, txOpts);
+    console.log(`    tx: ${tx.hash}`);
+    await tx.wait();
+    console.log('    DONE');
   } else {
-    console.log('1/5 USDC.e -> Exchange: already approved');
+    console.log('1/5 pUSD -> Exchange V2: already approved');
   }
 
-  if (currentNegAllowance.lt(ethers.utils.parseUnits('1000000', 6))) {
-    console.log('2/5 Approving USDC.e for NegRisk Exchange...');
-    const tx2 = await usdc.approve(NEG_RISK_EXCHANGE, MAX_UINT, txOpts);
-    console.log(`   tx: ${tx2.hash}`);
-    await tx2.wait();
-    console.log('   DONE');
+  // 2. pUSD → NegRisk Exchange V2 (collateral for BUY orders, NegRisk markets)
+  if (pusdAllowNeg.lt(ethers.utils.parseUnits('1000000', 6))) {
+    console.log('2/5 Approving pUSD for NegRisk Exchange V2 (0xe222…)...');
+    const tx = await pusd.approve(NEG_RISK_EX_V2, MAX_UINT, txOpts);
+    console.log(`    tx: ${tx.hash}`);
+    await tx.wait();
+    console.log('    DONE');
   } else {
-    console.log('2/5 USDC.e -> NegRisk Exchange: already approved');
+    console.log('2/5 pUSD -> NegRisk Exchange V2: already approved');
   }
 
-  if (!ctfApproved) {
-    console.log('3/5 Approving CTF for Exchange...');
-    const tx3 = await ctf.setApprovalForAll(EXCHANGE, true, txOpts);
-    console.log(`   tx: ${tx3.hash}`);
-    await tx3.wait();
-    console.log('   DONE');
+  // 3. CTF → Exchange V2  ← THE KEY FIX FOR SELL ORDERS
+  // Without this the exchange cannot pull conditional tokens from the EOA
+  // when the bot places a FAK sell, resulting in "allowance: 0" rejection.
+  if (!ctfEx) {
+    console.log('3/5 Approving CTF for Exchange V2 (0xE111…) [REQUIRED FOR SELLS]...');
+    const tx = await ctf.setApprovalForAll(EXCHANGE_V2, true, txOpts);
+    console.log(`    tx: ${tx.hash}`);
+    await tx.wait();
+    console.log('    DONE');
   } else {
-    console.log('3/5 CTF -> Exchange: already approved');
+    console.log('3/5 CTF -> Exchange V2: already approved');
   }
 
-  if (!ctfNegApproved) {
-    console.log('4/5 Approving CTF for NegRisk Exchange...');
-    const tx4 = await ctf.setApprovalForAll(NEG_RISK_EXCHANGE, true, txOpts);
-    console.log(`   tx: ${tx4.hash}`);
-    await tx4.wait();
-    console.log('   DONE');
+  // 4. CTF → NegRisk Exchange V2  ← REQUIRED FOR SELL ORDERS ON NEGRISK MARKETS
+  if (!ctfNeg) {
+    console.log('4/5 Approving CTF for NegRisk Exchange V2 (0xe222…) [REQUIRED FOR SELLS]...');
+    const tx = await ctf.setApprovalForAll(NEG_RISK_EX_V2, true, txOpts);
+    console.log(`    tx: ${tx.hash}`);
+    await tx.wait();
+    console.log('    DONE');
   } else {
-    console.log('4/5 CTF -> NegRisk Exchange: already approved');
+    console.log('4/5 CTF -> NegRisk Exchange V2: already approved');
   }
 
-  if (!ctfAdapterApproved) {
-    console.log('5/5 Approving CTF for NegRisk Adapter...');
-    const tx5 = await ctf.setApprovalForAll(NEG_RISK_ADAPTER, true, txOpts);
-    console.log(`   tx: ${tx5.hash}`);
-    await tx5.wait();
-    console.log('   DONE');
+  // 5. CTF → NegRisk Adapter (redemption path — unchanged from V1)
+  if (!ctfAdapter) {
+    console.log('5/5 Approving CTF for NegRisk Adapter (0xd91E…) [REQUIRED FOR REDEMPTION]...');
+    const tx = await ctf.setApprovalForAll(NEG_RISK_ADAPTER, true, txOpts);
+    console.log(`    tx: ${tx.hash}`);
+    await tx.wait();
+    console.log('    DONE');
   } else {
     console.log('5/5 CTF -> NegRisk Adapter: already approved');
   }
 
-  console.log('\n=== ALL ALLOWANCES SET ===');
-  console.log('You can now trade on Polymarket via the CLOB API.');
-  console.log('Restart the bot: pm2 restart polymarket-bot');
+  // ── FINAL VERIFICATION ──────────────────────────────────────────────────────
+  console.log('\n=== FINAL APPROVAL STATE ===');
+  const [fa1, fa2, fa3, fa4, fa5] = await Promise.all([
+    pusd.allowance(wallet.address, EXCHANGE_V2),
+    pusd.allowance(wallet.address, NEG_RISK_EX_V2),
+    ctf.isApprovedForAll(wallet.address, EXCHANGE_V2),
+    ctf.isApprovedForAll(wallet.address, NEG_RISK_EX_V2),
+    ctf.isApprovedForAll(wallet.address, NEG_RISK_ADAPTER)
+  ]);
+  console.log(`  pUSD  -> Exchange V2        (0xE111…): ${fa1.gt(0) ? 'APPROVED ✓' : 'FAILED ✗'}`);
+  console.log(`  pUSD  -> NegRisk Exchange V2 (0xe222…): ${fa2.gt(0) ? 'APPROVED ✓' : 'FAILED ✗'}`);
+  console.log(`  CTF   -> Exchange V2        (0xE111…): ${fa3        ? 'APPROVED ✓' : 'FAILED ✗'}`);
+  console.log(`  CTF   -> NegRisk Exchange V2 (0xe222…): ${fa4        ? 'APPROVED ✓' : 'FAILED ✗'}`);
+  console.log(`  CTF   -> NegRisk Adapter    (0xd91E…): ${fa5        ? 'APPROVED ✓' : 'FAILED ✗'}`);
+
+  const allOk = fa1.gt(0) && fa2.gt(0) && fa3 && fa4 && fa5;
+  if (allOk) {
+    console.log('\nAll approvals confirmed. Run: pm2 restart polymarket-bot');
+  } else {
+    console.log('\nWARNING: One or more approvals failed. Check RPC or MATIC balance and retry.');
+    process.exit(1);
+  }
 }
 
 setAllowances().catch(err => {
   console.error('Failed:', err.message);
+  process.exit(1);
 });
