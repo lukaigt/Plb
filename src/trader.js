@@ -481,24 +481,40 @@ async function placeFakSellOrder(tokenId, size, price, negRisk = true, tickSize 
     message: `[FAK-SELL] tokenId=${tokenId.slice(0, 18)}… size=${roundedSize} price=${roundedPrice} | eoa=${eoaAddress?.slice(0, 10)}… proxy_wallet=${(proxyWalletAddress || 'none')?.slice(0, 10)}… proxy_active=${proxyActive}`
   });
 
-  // Check actual CTF ERC-1155 balance on the EOA — the CLOB needs the EOA to hold tokens
-  let ctfBalance = null;
+  // Check actual CTF ERC-1155 balance on both EOA and proxy wallet before every sell.
+  // Logs which wallet holds the tokens and returns wrong_wallet_balance if EOA has none.
+  let ctfBalance    = null;
+  let safeCtfBalance = null;
   if (_publicClient && eoaAddress) {
     try {
-      const rawBal = await _publicClient.readContract({
+      const rawEoa = await _publicClient.readContract({
         address: CTF_ADDRESS,
         abi: ERC1155_BAL_ABI,
         functionName: 'balanceOf',
         args: [eoaAddress, BigInt(tokenId)]
       });
-      // CTF tokens use 1e6 decimals (same as USDC)
-      ctfBalance = Number(rawBal) / 1e6;
+      ctfBalance = Number(rawEoa) / 1e6;
+
+      if (proxyWalletAddress) {
+        try {
+          const rawSafe = await _publicClient.readContract({
+            address: CTF_ADDRESS,
+            abi: ERC1155_BAL_ABI,
+            functionName: 'balanceOf',
+            args: [proxyWalletAddress, BigInt(tokenId)]
+          });
+          safeCtfBalance = Number(rawSafe) / 1e6;
+        } catch { safeCtfBalance = null; }
+      }
+
       logger.addActivity('trader', {
-        message: `[FAK-SELL] CTF balance on EOA (${eoaAddress.slice(0, 10)}…): ${ctfBalance.toFixed(4)} tokens | need=${roundedSize}`
+        message: `[FAK-SELL] pre-sell balances | tokenId=${tokenId.slice(0, 14)}… | EOA(${eoaAddress.slice(0, 10)}…)=${ctfBalance.toFixed(4)} | proxy(${(proxyWalletAddress || 'none').slice(0, 10)}…)=${safeCtfBalance != null ? safeCtfBalance.toFixed(4) : 'n/a'} | need=${roundedSize} | using_wallet=EOA`
       });
+
       if (ctfBalance < roundedSize * 0.99) {
+        const safeStr = safeCtfBalance != null ? ` (proxy holds ${safeCtfBalance.toFixed(4)})` : '';
         logger.addActivity('trader', {
-          message: `[FAK-SELL] wrong_wallet_balance — EOA only holds ${ctfBalance.toFixed(4)} but trying to sell ${roundedSize}`
+          message: `[FAK-SELL] wrong_wallet_balance — EOA only holds ${ctfBalance.toFixed(4)} but trying to sell ${roundedSize}${safeStr} — classify=wrong_wallet_balance`
         });
         return { success: false, error: `wrong_wallet_balance: EOA holds ${ctfBalance.toFixed(4)}, need ${roundedSize}`, failReason: 'wrong_wallet_balance' };
       }
@@ -685,4 +701,6 @@ async function executeTrade(decision, marketData, tradeSize) {
   return trade;
 }
 
-module.exports = { executeTrade, initClient, placeOrder, placeSellOrder, placeFakSellOrder, getProxyWallet, getEoaAddress, buildClobAuthHeaders, getUsdcBalance, invalidateBalanceCache };
+function getPublicClient() { return _publicClient; }
+
+module.exports = { executeTrade, initClient, placeOrder, placeSellOrder, placeFakSellOrder, getProxyWallet, getEoaAddress, getPublicClient, buildClobAuthHeaders, getUsdcBalance, invalidateBalanceCache };

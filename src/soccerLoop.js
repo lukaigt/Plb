@@ -459,6 +459,14 @@ async function runFast() {
           // Keep best_bid fresh (used for HOLD log and spread exit checks).
           await session.pollPrice();
 
+          // Stale session check — if tokens show as zero on-chain, auto-clear
+          await session.checkStaleSession();
+          if (session.phase === 'done') {
+            recordSessionOutcome(session);
+            delete activeSessions[session.id];
+            continue;
+          }
+
           if (!session._liquidating) {
             // Loop exited without flattening (no-bid or partial fill exhausted retries).
             // Re-trigger immediately — tokens are still held, session must not stay idle.
@@ -537,7 +545,7 @@ function start() {
       `  Max positions:  ${config.maxPositions} concurrent open bets`,
       `  Min volume:     $${config.minVolume.toLocaleString()} 24hr volume`,
       `  Min elapsed:    ${minElapsed}min into game before entry`,
-      `  Hard stop-loss: ${((parseFloat(process.env.BOND_STOP_LOSS) || 0.20) * 100).toFixed(0)}% drop triggers FAK exit`,
+      `  Hard stop-loss: ${((parseFloat(process.env.BOND_STOP_LOSS) || 0.07) * 100).toFixed(0)}% drop triggers FAK exit`,
       `  Trailing stop:  ${((config.trailingStop) * 100).toFixed(0)}¢ drop from peak best_bid triggers FAK exit`,
       `  Spread exit:    if spread > ${(config.maxSpread * 100).toFixed(0)}¢ (broken book) triggers FAK exit`,
       `  Exit engine:    FAK orders | ${config.fakRetries} retries | ${config.exitRetrySecs}s between attempts`,

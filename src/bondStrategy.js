@@ -14,9 +14,9 @@ function getBondConfig() {
     orderSize:     process.env.BOND_ORDER_SIZE     != null ? parseFloat(process.env.BOND_ORDER_SIZE)     : 5,
     maxPositions:  process.env.BOND_MAX_POSITIONS  != null ? parseInt(process.env.BOND_MAX_POSITIONS)    : 5,
     minVolume:     process.env.BOND_MIN_VOLUME     != null ? parseFloat(process.env.BOND_MIN_VOLUME)     : 500,
-    stopLoss:      process.env.BOND_STOP_LOSS      != null ? parseFloat(process.env.BOND_STOP_LOSS)      : 0.20,
+    stopLoss:      process.env.BOND_STOP_LOSS      != null ? parseFloat(process.env.BOND_STOP_LOSS)      : 0.07,
     maxThreshold:  process.env.BOND_MAX_THRESHOLD  != null ? parseFloat(process.env.BOND_MAX_THRESHOLD)  : 0.97,
-    trailingStop:  process.env.BOND_TRAILING_STOP  != null ? parseFloat(process.env.BOND_TRAILING_STOP)  : 0.05,
+    trailingStop:  process.env.BOND_TRAILING_STOP  != null ? parseFloat(process.env.BOND_TRAILING_STOP)  : 0.03,
     maxSpread:     process.env.BOND_MAX_SPREAD     != null ? parseFloat(process.env.BOND_MAX_SPREAD)     : 0.10,
     fakRetries:    process.env.BOND_FAK_RETRIES    != null ? parseInt(process.env.BOND_FAK_RETRIES)      : 5,
     exitRetrySecs: process.env.BOND_EXIT_RETRY_SECS != null ? parseInt(process.env.BOND_EXIT_RETRY_SECS) : 5,
@@ -283,43 +283,50 @@ class BondSession {
       this.peakBestBid = bid;
     }
 
-    // Log HOLD status every poll so user can see live position health
-    const spreadStr = this.currentSpread != null ? `spread=${(this.currentSpread * 100).toFixed(1)}¢` : 'spread=?';
-    const pnl       = (bid * this.filledTokens) - this.filledAmount;
+    // ── Per-tick diagnostic log — shows full stop-loss math every poll ─────────
+    const currentValue    = bid * this.filledTokens;
+    const hardThreshold   = this.filledAmount * (1 - (this.config.stopLoss || 0));
+    const lossPctNow      = (((this.filledAmount - currentValue) / this.filledAmount) * 100);
+    const dropFromPeak    = this.peakBestBid !== null ? (this.peakBestBid - bid) : 0;
+    const spreadStr       = this.currentSpread != null ? `spread=${(this.currentSpread * 100).toFixed(1)}¢` : 'spread=?';
+    const pnl             = currentValue - this.filledAmount;
+    const hardWouldTrig   = this.config.stopLoss > 0 && currentValue < hardThreshold;
+    const trailWouldTrig  = this.config.trailingStop > 0 && this.peakBestBid !== null && dropFromPeak >= this.config.trailingStop;
+    const spreadWouldTrig = this.config.maxSpread > 0 && this.currentBestAsk !== null && (this.currentBestAsk - bid) > this.config.maxSpread;
+
     logger.addActivity('bond_hold', {
-      message: `[HOLD] "${this.market.question.slice(0, 40)}" peak_bid=$${(this.peakBestBid || 0).toFixed(3)} bid=$${bid.toFixed(3)} ${spreadStr} pnl=${pnl >= 0 ? '+' : ''}$${pnl.toFixed(3)}`
+      message: [
+        `[HOLD] "${this.market.question.slice(0, 38)}"`,
+        `tokenId=${this.market.yesTokenId.slice(0, 14)}…`,
+        `entry=$${this.entryPrice?.toFixed(3) ?? '?'} filled=${this.filledTokens.toFixed(4)} cost=$${this.filledAmount.toFixed(3)}`,
+        `bid=$${bid.toFixed(3)} value=$${currentValue.toFixed(3)} loss=${lossPctNow.toFixed(2)}%`,
+        `hardThresh=$${hardThreshold.toFixed(3)} (stop=${((this.config.stopLoss || 0) * 100).toFixed(0)}%)`,
+        `peak=$${(this.peakBestBid || 0).toFixed(3)} dropFromPeak=${(dropFromPeak * 100).toFixed(1)}¢ (trailStop=${(this.config.trailingStop * 100).toFixed(0)}¢)`,
+        `${spreadStr} pnl=${pnl >= 0 ? '+' : ''}$${pnl.toFixed(3)}`,
+        `TRIGGER: hard=${hardWouldTrig} trail=${trailWouldTrig} spread=${spreadWouldTrig}`
+      ].join(' | ')
     });
 
     // 1. Hard stop — current value fell more than BOND_STOP_LOSS below entry cost
-    if (this.config.stopLoss > 0) {
-      const currentValue  = bid * this.filledTokens;
-      const lossThreshold = this.filledAmount * (1 - this.config.stopLoss);
-      if (currentValue < lossThreshold) {
-        const lossPct = (((this.filledAmount - currentValue) / this.filledAmount) * 100).toFixed(1);
-        return { reason: 'hard', detail: `${lossPct}% loss | bid=$${bid.toFixed(3)} entry=$${this.filledAmount.toFixed(2)}` };
-      }
+    if (hardWouldTrig) {
+      return { reason: 'hard', detail: `${lossPctNow.toFixed(1)}% loss | bid=$${bid.toFixed(3)} value=$${currentValue.toFixed(3)} threshold=$${hardThreshold.toFixed(3)} entry=$${this.filledAmount.toFixed(3)}` };
     }
 
     // 2. Trailing stop — bid dropped BOND_TRAILING_STOP below peak
-    if (this.config.trailingStop > 0 && this.peakBestBid !== null) {
-      const dropFromPeak = this.peakBestBid - bid;
-      if (dropFromPeak >= this.config.trailingStop) {
-        return {
-          reason: 'trailing',
-          detail: `bid dropped ${(dropFromPeak * 100).toFixed(1)}¢ from peak $${this.peakBestBid.toFixed(3)}`
-        };
-      }
+    if (trailWouldTrig) {
+      return {
+        reason: 'trailing',
+        detail: `bid dropped ${(dropFromPeak * 100).toFixed(1)}¢ from peak $${this.peakBestBid.toFixed(3)} | bid=$${bid.toFixed(3)}`
+      };
     }
 
     // 3. Spread exit — book is broken/illiquid
-    if (this.config.maxSpread > 0 && this.currentBestAsk !== null && this.currentBestBid !== null) {
-      const spread = this.currentBestAsk - this.currentBestBid;
-      if (spread > this.config.maxSpread) {
-        return {
-          reason: 'spread',
-          detail: `spread=${(spread * 100).toFixed(1)}¢ > max=${(this.config.maxSpread * 100).toFixed(0)}¢`
-        };
-      }
+    if (spreadWouldTrig) {
+      const spread = this.currentBestAsk - bid;
+      return {
+        reason: 'spread',
+        detail: `spread=${(spread * 100).toFixed(1)}¢ > max=${(this.config.maxSpread * 100).toFixed(0)}¢`
+      };
     }
 
     return null;
@@ -451,6 +458,17 @@ class BondSession {
         logger.addActivity('bond_exit', {
           message: `[EXIT] FAK failed attempt ${attempt} — failReason=${failReason} error=${result?.error ?? 'unknown'} | retry in ${this.config.exitRetrySecs}s`
         });
+
+        // wrong_wallet_balance means the EOA holds zero tokens for this tokenId.
+        // Retrying is pointless — the tokens were never here or are already gone.
+        // Mark session done immediately to prevent it being stuck on dashboard forever.
+        if (failReason === 'wrong_wallet_balance') {
+          logger.addActivity('bond_exit', {
+            message: `[EXIT] stale_session detected — EOA holds 0 tokens for tokenId=${tokenId.slice(0, 14)}… — marking done (no tokens to sell) | "${this.market.question.slice(0, 50)}"`
+          });
+          this._remainingTokens = 0;
+          break;
+        }
       }
 
       if (this._remainingTokens <= 0.01) break;
@@ -497,6 +515,69 @@ class BondSession {
       });
       this._liquidating = false;
       // phase stays 'liquidating' — NEVER done while tokens > 0
+    }
+  }
+
+  // ─── STALE SESSION GUARD ────────────────────────────────────────────────────
+  // Called from the fast loop for sessions stuck in 'liquidating' or 'holding'
+  // longer than STALE_SESSION_MINUTES. Reads actual on-chain CTF balance and
+  // auto-clears the session if the wallet holds no tokens.
+
+  async checkStaleSession() {
+    // Only check liquidating sessions — holding sessions use checkResolution()
+    // which fires every 30s and handles game-end cleanup cleanly.
+    // Liquidating sessions should complete in seconds to minutes;
+    // anything older than STALE_SESSION_MINUTES with zero on-chain balance is stale.
+    if (this.phase !== 'liquidating') return;
+    if (this._liquidating) return;
+    if (this._staleChecking) return;
+    if (!this._liquidationStartedAt) return;
+
+    const staleMinutes = parseInt(process.env.STALE_SESSION_MINUTES) || 8;
+    const staleMs      = staleMinutes * 60 * 1000;
+    const ageMs        = Date.now() - this._liquidationStartedAt;
+    if (ageMs < staleMs) return;
+
+    this._staleChecking = true;
+    try {
+      const { getPublicClient, getEoaAddress, getProxyWallet } = require('./trader');
+      const publicClient = getPublicClient ? getPublicClient() : null;
+      const eoaAddr      = getEoaAddress();
+      const safeAddr     = getProxyWallet();
+      const tokenId      = this.market.yesTokenId;
+
+      if (!publicClient || !eoaAddr) return;
+
+      const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
+      const ERC1155_BAL = [{ name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }, { name: 'id', type: 'uint256' }], outputs: [{ type: 'uint256' }] }];
+
+      const eoaRaw  = await publicClient.readContract({ address: CTF_ADDRESS, abi: ERC1155_BAL, functionName: 'balanceOf', args: [eoaAddr, BigInt(tokenId)] });
+      const eoaBal  = Number(eoaRaw) / 1e6;
+
+      let safeBal = 0;
+      if (safeAddr) {
+        const safeRaw = await publicClient.readContract({ address: CTF_ADDRESS, abi: ERC1155_BAL, functionName: 'balanceOf', args: [safeAddr, BigInt(tokenId)] });
+        safeBal = Number(safeRaw) / 1e6;
+      }
+
+      const totalBal = eoaBal + safeBal;
+      logger.addActivity('bond_exit', {
+        message: `[STALE-CHECK] phase=${this.phase} age=${Math.floor(ageMs / 60000)}min tokenId=${tokenId.slice(0, 14)}… eoa_bal=${eoaBal.toFixed(4)} safe_bal=${safeBal.toFixed(4)} total=${totalBal.toFixed(4)} remaining_in_session=${this._remainingTokens.toFixed(4)} | "${this.market.question.slice(0, 45)}"`
+      });
+
+      if (totalBal < 0.01) {
+        logger.addActivity('bond_exit', {
+          message: `[STALE-CHECK] auto-clearing — on-chain CTF balance is zero for both wallets. Session was stale (${this.phase}). Marking done. | "${this.market.question.slice(0, 50)}"`
+        });
+        this._remainingTokens = 0;
+        this.phase            = 'done';
+      }
+    } catch (err) {
+      logger.addActivity('bond_error', {
+        message: `[STALE-CHECK] error: ${err.message?.slice(0, 80)}`
+      });
+    } finally {
+      this._staleChecking = false;
     }
   }
 

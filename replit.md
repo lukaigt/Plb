@@ -35,6 +35,9 @@ The bot monitors Polymarket soccer/football markets for in-progress games (Gamma
 - `BOND_MIN_VOLUME=5000` — min 24hr market volume to consider
 - `BOND_DAILY_MAX_SPEND=50` — daily cap in USD
 - `BOND_MIN_ELAPSED_MINUTES=30` — only enter games 30+ minutes old (avoids early lead false signals)
+- `BOND_STOP_LOSS=0.07` — hard stop: exit if position loses >7% of entry cost (default was 0.20 — too loose)
+- `BOND_TRAILING_STOP=0.03` — trailing stop: exit if bid drops 3¢ from peak (default was 0.05)
+- `STALE_SESSION_MINUTES=8` — auto-clear liquidating sessions with zero on-chain balance after N minutes
 - `RELAYER_API_KEY=<key>` — Polymarket Relayer API key (gasless redemption, primary path). Get from polymarket.com → Settings → API Keys → Relayer
 - `RELAYER_API_KEY_ADDRESS=0xe82dEec5...` — EOA address matching the Relayer API key
 - `PROXY_WALLET_ADDRESS=0x94eAb3d7...` — Gnosis Safe proxy wallet address (fallback if Relayer unavailable)
