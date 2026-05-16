@@ -4,6 +4,8 @@ const redeemer      = require('./redeemer');
 const safety        = require('./safety');
 const marketWatcher = require('./marketWatcher');
 
+const V2_LAUNCH_DATE = new Date('2026-04-28T00:00:00Z');
+
 const CLOB_API           = 'https://clob.polymarket.com';
 const GAMMA_API          = 'https://gamma-api.polymarket.com';
 const ESTIMATED_FEE_RATE = 0.02;
@@ -161,6 +163,45 @@ class BondSession {
     const maxPrice = parseFloat((1.0 - tickNum).toFixed(decimals));
     const price    = Math.min(this.lastMid, maxPrice);
 
+    // ── On-chain collateral detection at entry time ──────────────────────────
+    // Runs BEFORE placing any order. Compares the CLOB YES tokenId against
+    // the computed CTF position IDs for pUSD, USDC.e, and wCOL on-chain.
+    // No market resolution required — pure on-chain math.
+    let detectedCollateral = 'UNKNOWN';
+    let marketEra          = 'unknown';
+    const marketCreatedAt  = this.market.marketCreatedAt || null;
+
+    if (this.market.conditionId && this.market.yesTokenId) {
+      try {
+        detectedCollateral = await redeemer.detectMarketCollateral(
+          this.market.conditionId,
+          this.market.yesTokenId
+        );
+      } catch {}
+    }
+
+    if (marketCreatedAt) {
+      marketEra = new Date(marketCreatedAt) > V2_LAUNCH_DATE ? 'post-V2' : 'pre-V2';
+    }
+
+    this.detectedCollateral = detectedCollateral;
+    this.marketEra          = marketEra;
+
+    logger.addActivity('bond_entry', {
+      message: [
+        `[COLLATERAL] "${this.market.question.slice(0, 45)}"`,
+        `conditionId=${this.market.conditionId?.slice(0, 18)}…`,
+        `marketCreatedAt=${marketCreatedAt || 'unknown'}`,
+        `era=${marketEra}`,
+        `collateral=${detectedCollateral}`,
+        detectedCollateral === 'pUSD'
+          ? '→ WIN will redeem to pUSD automatically (no wrap needed)'
+          : detectedCollateral === 'USDC.e'
+          ? '→ WIN will redeem to USDC.e — manual wrap to pUSD needed'
+          : `→ WIN will redeem to ${detectedCollateral}`
+      ].join(' | ')
+    });
+
     logger.addActivity('bond_entry', {
       message: `[ENTRY] signal: "${this.market.question.slice(0, 50)}" | bid=${price.toFixed(3)} threshold=${this.config.threshold} | $${amount} buy`
     });
@@ -188,18 +229,22 @@ class BondSession {
 
       const estimatedFee = amount * ESTIMATED_FEE_RATE;
       const logged = logger.addTrade({
-        strategy:     'soccer_bond',
-        question:     this.market.question,
-        eventTitle:   this.market.eventTitle,
-        tokenId:      this.market.yesTokenId,
-        side:         'YES',
+        strategy:           'soccer_bond',
+        question:           this.market.question,
+        eventTitle:         this.market.eventTitle,
+        tokenId:            this.market.yesTokenId,
+        conditionId:        this.market.conditionId || null,
+        marketCreatedAt:    marketCreatedAt,
+        marketEra:          marketEra,
+        detectedCollateral: detectedCollateral,
+        side:               'YES',
         price,
-        size:         amount,
-        orderId:      result.orderId,
-        result:       'pending',
-        pnl:          0,
+        size:               amount,
+        orderId:            result.orderId,
+        result:             'pending',
+        pnl:                0,
         estimatedFee,
-        exitReason:   null
+        exitReason:         null
       });
       this.tradeId = logged.id;
       return true;
@@ -739,14 +784,18 @@ class BondSession {
       minutesLeft,
       threshold:        this.config.threshold,
       stopLoss:         this.config.stopLoss,
-      trailingStop:     this.config.trailingStop,
-      exitAttemptCount: this.exitAttemptCount,
-      lastExitReason:   this.lastExitReason,
-      wsConnected:      marketWatcher.isConnected(),
-      createdAt:        this.createdAt.toISOString(),
-      yesTokenId:       this.market.yesTokenId,
-      negRisk:          this.market.negRisk,
-      tickSize:         this.market.tickSize || '0.01'
+      trailingStop:       this.config.trailingStop,
+      exitAttemptCount:   this.exitAttemptCount,
+      lastExitReason:     this.lastExitReason,
+      wsConnected:        marketWatcher.isConnected(),
+      createdAt:          this.createdAt.toISOString(),
+      yesTokenId:         this.market.yesTokenId,
+      conditionId:        this.market.conditionId || null,
+      negRisk:            this.market.negRisk,
+      tickSize:           this.market.tickSize || '0.01',
+      marketCreatedAt:    this.market.marketCreatedAt || null,
+      marketEra:          this.marketEra          || 'unknown',
+      detectedCollateral: this.detectedCollateral || 'unknown'
     };
   }
 }

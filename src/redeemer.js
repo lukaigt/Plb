@@ -740,9 +740,43 @@ function getRedemptionStatus() {
   };
 }
 
+// ─── At-entry collateral detection (no resolution required) ──────────────────
+//
+// Call this at the moment the bot ENTERS a market, before any order is placed.
+// Compares the CLOB YES tokenId against the computed CTF position token IDs for
+// each known collateral (pUSD, USDC.e, wcol). No market resolution needed —
+// just on-chain math. Returns 'pUSD' | 'USDC.e' | 'wCOL' | 'UNKNOWN'.
+//
+// This is the definitive source of truth: if the YES tokenId matches the pUSD
+// position token, the market is post-V2 pUSD-backed and will redeem to pUSD
+// automatically. If it matches USDC.e, a manual wrap is needed after redemption.
+
+async function detectMarketCollateral(conditionId, yesTokenId) {
+  if (!conditionId || !yesTokenId) return 'UNKNOWN';
+
+  const condId = formatConditionId(conditionId);
+  if (!condId) return 'UNKNOWN';
+
+  try {
+    const provider = await getWorkingProvider();
+    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const col1 = await ctf.getCollectionId(ethers.constants.HashZero, condId, 1);
+
+    const yes = yesTokenId.toString();
+    for (const col of COLLATERALS) {
+      const posId = await ctf.getPositionId(col.addr, col1);
+      if (posId.toString() === yes) return col.label;
+    }
+    return 'UNKNOWN';
+  } catch (err) {
+    return 'UNKNOWN';
+  }
+}
+
 module.exports = {
   addPendingRedemption,
   checkAndRedeem,
   redeemPosition,
-  getRedemptionStatus
+  getRedemptionStatus,
+  detectMarketCollateral
 };

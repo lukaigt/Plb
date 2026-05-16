@@ -120,18 +120,19 @@ async function scanLiveSoccerMarkets(minVolume = 500) {
 
       seenMarketIds.add(marketKey);
       liveMarkets.push({
-        id:          marketKey,
-        conditionId: market.conditionId || null,
-        question:    market.question || event.title,
-        eventTitle:  event.title || market.question,
-        yesTokenId:  tokenIds[0],
-        noTokenId:   tokenIds[1],
-        yesOutcome:  outcomes[0] || 'Yes',
-        startDate:   kickoff.toISOString(),
-        endDate:     market.endDate || event.endDate,
-        volume24hr:  vol24h,
-        negRisk:     market.negRisk === true || market.negRisk === 'true' || event.negRisk === true,
-        tickSize:    market.orderPriceMinTickSize || market.minimumTickSize || '0.01'
+        id:              marketKey,
+        conditionId:     market.conditionId || null,
+        question:        market.question || event.title,
+        eventTitle:      event.title || market.question,
+        yesTokenId:      tokenIds[0],
+        noTokenId:       tokenIds[1],
+        yesOutcome:      outcomes[0] || 'Yes',
+        startDate:       kickoff.toISOString(),
+        endDate:         market.endDate || event.endDate,
+        volume24hr:      vol24h,
+        negRisk:         market.negRisk === true || market.negRisk === 'true' || event.negRisk === true,
+        tickSize:        market.orderPriceMinTickSize || market.minimumTickSize || '0.01',
+        marketCreatedAt: market.createdAt || null
       });
     }
   }
