@@ -173,8 +173,34 @@ async function buildSafeSignature(wallet, safeContract, conditionId, col) {
 //     real balance wins — this avoids the callStatic false-positive problem where
 //     ALL collaterals pass once the market is resolved, causing us to pick the
 //     wrong one (e.g. pUSD when the tokens are actually USDC.e).
-//  3. If no balance is found but the market IS resolved (den > 0), fall back to
-//     callStatic so manual/force-redeem still surfaces which collateral is valid.
+//  3. If no balance is found but the market IS resolved (den > 0), tokens are
+//     already redeemed — return sentinel to clear the queue entry.
+//
+// Redemption path classification (logged explicitly on every redeem):
+//
+//   pusd_ctf_direct   — post-V2 market backed by pUSD collateral.
+//                       CTF.redeemPositions(pUSD, ...) is called.
+//                       Output: pUSD arrives in holder wallet automatically.
+//                       No manual wrap needed.
+//
+//   legacy_ctf_direct — pre-V2 market backed by USDC.e collateral.
+//                       CTF.redeemPositions(USDC.e, ...) is called.
+//                       Output: USDC.e arrives in holder wallet.
+//                       Manual wrap to pUSD required on polymarket.com.
+//
+//   wcol_ctf_direct   — wrapped-collateral market (rare). Same CTF call,
+//                       wcol arrives in holder wallet.
+//
+// NOTE: There is no separate "pUSD adapter contract" to call. The CTF itself
+// acts as the adapter — CTF.redeemPositions with pUSD as the collateral arg
+// burns the ERC-1155 position tokens and returns pUSD directly to the caller.
+// The pUSD adapter described in Polymarket docs IS this CTF call with pUSD.
+
+function classifyRedemptionPath(colLabel) {
+  if (colLabel === 'pUSD')   return 'pusd_ctf_direct';
+  if (colLabel === 'USDC.e') return 'legacy_ctf_direct';
+  return 'wcol_ctf_direct';
+}
 
 async function findResolvedCollateral(provider, conditionId, eoaAddr, safAddr) {
   const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
@@ -183,37 +209,54 @@ async function findResolvedCollateral(provider, conditionId, eoaAddr, safAddr) {
   try {
     const den = await ctf.payoutDenominator(conditionId);
     if (den.eq(0)) {
-      logger.addActivity('redeemer', { message: `payoutDenominator=0 — not resolved yet` });
+      logger.addActivity('redeemer', { message: `payoutDenominator=0 — not resolved yet | conditionId=${conditionId.slice(0, 18)}…` });
       return null;
     }
+    logger.addActivity('redeemer', { message: `payoutDenominator=${den.toString()} ✓ — market resolved on-chain | conditionId=${conditionId.slice(0, 18)}…` });
   } catch (err) {
     logger.addActivity('redeemer', { message: `payoutDenominator error: ${(err.message || '').slice(0, 60)}` });
     return null;
   }
 
   // Gate 2: find the collateral with an actual token balance
+  // Checks pUSD first — if a post-V2 market, pUSD balance is found here and
+  // the redemption path is automatically pusd_ctf_direct (no manual wrap).
   const wallets = [eoaAddr, safAddr].filter(Boolean);
   try {
     const col1 = await ctf.getCollectionId(ethers.constants.HashZero, conditionId, 1);
+
     for (const col of COLLATERALS) {
       const posId = await ctf.getPositionId(col.addr, col1);
       for (const w of wallets) {
         const bal = await ctf.balanceOf(w, posId);
         if (bal.gt(0)) {
+          const redemptionPath = classifyRedemptionPath(col.label);
+          const tokenOut       = col.label;   // token received after CTF.redeemPositions
+          const holderType     = (eoaAddr && w.toLowerCase() === eoaAddr.toLowerCase()) ? 'EOA' : 'Safe';
           logger.addActivity('redeemer', {
-            message: `Found ${ethers.utils.formatUnits(bal, 6)} ${col.label} position tokens in ${w.slice(0, 10)}...`
+            message: [
+              `[DETECT] conditionId=${conditionId.slice(0, 18)}…`,
+              `positionId=${posId.toString().slice(0, 18)}…`,
+              `collateral=${col.label} (${col.addr.slice(0, 10)}…)`,
+              `balance=${ethers.utils.formatUnits(bal, 6)}`,
+              `holder=${holderType}(${w.slice(0, 10)}…)`,
+              `path=${redemptionPath}`,
+              `token_out=${tokenOut}`,
+              tokenOut === 'pUSD'   ? '→ pUSD returned automatically (no wrap needed)' :
+              tokenOut === 'USDC.e' ? '→ USDC.e returned — manual wrap to pUSD needed on polymarket.com' :
+                                     '→ wcol returned'
+            ].join(' | ')
           });
-          return { ...col, holderWallet: w };
+          return { ...col, holderWallet: w, positionId: posId.toString(), redemptionPath, tokenOut };
         }
       }
     }
   } catch (err) {
-    logger.addActivity('redeemer', { message: `Balance check error: ${(err.message || '').slice(0, 60)} — falling back to callStatic` });
+    logger.addActivity('redeemer', { message: `Balance check error: ${(err.message || '').slice(0, 60)}` });
   }
 
   // Gate 3: market resolved but no balance found — tokens already redeemed.
-  // Return a sentinel so callers can clear the queue entry instead of retrying forever.
-  logger.addActivity('redeemer', { message: `Market resolved on-chain but no tokens found — already redeemed` });
+  logger.addActivity('redeemer', { message: `Market resolved on-chain but no tokens found in any wallet — already redeemed | conditionId=${conditionId.slice(0, 18)}…` });
   return { alreadyRedeemed: true };
 }
 
@@ -345,34 +388,65 @@ async function redeemViaSafe(wallet, conditionId, col, safAddr, provider) {
 // ─── Core redemption: route by token holder ───────────────────────────────────
 //
 // col.holderWallet tells us where the ERC-1155 tokens actually live.
+// col.redemptionPath is set by findResolvedCollateral():
+//   'pusd_ctf_direct'   → post-V2 market, pUSD returned automatically
+//   'legacy_ctf_direct' → pre-V2 market, USDC.e returned (manual wrap needed)
+//   'wcol_ctf_direct'   → wcol market (rare)
 //
-// Tokens on EOA  → EOA direct (needs MATIC gas)
-// Tokens on Safe → Relayer (gasless) → Safe direct (needs MATIC gas)
+// Routing by holder:
+//   Tokens on EOA  → EOA direct (needs MATIC gas)
+//   Tokens on Safe → Relayer (gasless) → Safe direct (needs MATIC gas)
 //
-// This avoids wasting Relayer calls for EOA-held positions and avoids the
-// verifyRedemptionReceipt false-negative caused by using the wrong collateral.
+// The CTF.redeemPositions call is identical for all paths — the collateral
+// address argument (col.addr) determines what token comes back.
 
 async function attemptRedeem(wallet, conditionId, col, safAddr, provider) {
-  const holderWallet = col.holderWallet || null;
-  const isEOA = holderWallet && holderWallet.toLowerCase() === wallet.address.toLowerCase();
+  const holderWallet    = col.holderWallet || null;
+  const redemptionPath  = col.redemptionPath || classifyRedemptionPath(col.label);
+  const tokenOut        = col.tokenOut || col.label;
+  const positionId      = col.positionId || 'unknown';
+  const isEOA  = holderWallet && holderWallet.toLowerCase() === wallet.address.toLowerCase();
   const isSafe = holderWallet && safAddr && holderWallet.toLowerCase() === safAddr.toLowerCase();
+  const holderType = isEOA ? 'EOA' : isSafe ? 'Safe' : 'unknown';
+
+  // ── Entry diagnostic — logged before every redemption attempt ───────────────
+  logger.addActivity('redeemer', {
+    message: [
+      `[REDEEM-START] conditionId=${conditionId.slice(0, 18)}…`,
+      `positionId=${positionId.slice(0, 18)}…`,
+      `collateral=${col.label}`,
+      `holder=${holderType}(${(holderWallet || 'none').slice(0, 10)}…)`,
+      `path=${redemptionPath}`,
+      `contract=CTF(${CTF_ADDRESS.slice(0, 10)}…)`,
+      `function=redeemPositions(${col.label}, HashZero, conditionId, [1,2])`,
+      `token_expected_out=${tokenOut}`,
+      tokenOut === 'pUSD'
+        ? '→ pUSD will arrive in wallet automatically'
+        : tokenOut === 'USDC.e'
+        ? '→ USDC.e will arrive in wallet — manual wrap to pUSD needed'
+        : `→ ${tokenOut} will arrive in wallet`
+    ].join(' | ')
+  });
 
   // ── Tokens on EOA: redeem directly ──────────────────────────────────────────
   if (isEOA) {
-    logger.addActivity('redeemer', { message: `Tokens on EOA — redeeming via EOA direct (${col.label})...` });
+    logger.addActivity('redeemer', { message: `[REDEEM] EOA direct | calling CTF.redeemPositions(${col.label}, ...)` });
     try {
       const tx      = await redeemViaEOA(wallet, conditionId, col, provider);
       const receipt = await tx.wait();
       if (verifyRedemptionReceipt(receipt, null)) {
-        return { success: true, via: 'EOA', txHash: receipt.transactionHash };
+        logger.addActivity('redeemer', {
+          message: `[REDEEM-SUCCESS] via=EOA | path=${redemptionPath} | token_received=${tokenOut} | txHash=${receipt.transactionHash.slice(0, 20)}…`
+        });
+        return { success: true, via: 'EOA', txHash: receipt.transactionHash, redemptionPath, tokenOut };
       }
-      logger.addActivity('redeemer', { message: `EOA tx mined but no ${col.label} Transfer in receipt` });
+      logger.addActivity('redeemer', { message: `[REDEEM] EOA tx mined but no ${col.label} Transfer in receipt` });
     } catch (err) {
       logger.addActivity('redeemer', {
-        message: `EOA tx failed: ${(err.reason || err.message || '').slice(0, 80)}`
+        message: `[REDEEM] EOA tx failed: ${(err.reason || err.message || '').slice(0, 80)}`
       });
     }
-    return { success: false };
+    return { success: false, redemptionPath, tokenOut };
   }
 
   // ── Tokens on Safe: Relayer → Safe direct ───────────────────────────────────
@@ -380,34 +454,42 @@ async function attemptRedeem(wallet, conditionId, col, safAddr, provider) {
     // 1. Relayer (gasless, primary)
     const relayerResult = await redeemViaRelayer(wallet, conditionId, col, safAddr, provider);
     if (relayerResult !== null) {
-      if (relayerResult.success) return relayerResult;
-      logger.addActivity('redeemer', { message: `Relayer path failed — trying Safe direct...` });
+      if (relayerResult.success) {
+        logger.addActivity('redeemer', {
+          message: `[REDEEM-SUCCESS] via=Relayer | path=${redemptionPath} | token_received=${tokenOut} | txHash=${relayerResult.txHash?.slice(0, 20)}…`
+        });
+        return { ...relayerResult, redemptionPath, tokenOut };
+      }
+      logger.addActivity('redeemer', { message: `[REDEEM] Relayer path failed — trying Safe direct...` });
     } else if (process.env.RELAYER_API_KEY) {
-      logger.addActivity('redeemer', { message: `Relayer submit returned null — trying Safe direct...` });
+      logger.addActivity('redeemer', { message: `[REDEEM] Relayer submit returned null — trying Safe direct...` });
     }
 
     // 2. Safe direct
     if (!safAddr) {
       logger.addActivity('redeemer_error', {
-        message: `No proxy wallet — set PROXY_WALLET_ADDRESS in .env`
+        message: `[REDEEM] No proxy wallet — set PROXY_WALLET_ADDRESS in .env`
       });
-      return { success: false };
+      return { success: false, redemptionPath, tokenOut };
     }
     try {
       const tx      = await redeemViaSafe(wallet, conditionId, col, safAddr, provider);
       const receipt = await tx.wait();
       if (verifyRedemptionReceipt(receipt, safAddr)) {
-        return { success: true, via: 'Safe', txHash: receipt.transactionHash };
+        logger.addActivity('redeemer', {
+          message: `[REDEEM-SUCCESS] via=Safe | path=${redemptionPath} | token_received=${tokenOut} | txHash=${receipt.transactionHash.slice(0, 20)}…`
+        });
+        return { success: true, via: 'Safe', txHash: receipt.transactionHash, redemptionPath, tokenOut };
       }
-      logger.addActivity('redeemer', { message: `Safe tx mined but no ${col.label} Transfer — may already be redeemed` });
+      logger.addActivity('redeemer', { message: `[REDEEM] Safe tx mined but no ${col.label} Transfer — may already be redeemed` });
     } catch (err) {
       logger.addActivity('redeemer', {
-        message: `Safe tx failed: ${(err.reason || err.message || '').slice(0, 80)}`
+        message: `[REDEEM] Safe tx failed: ${(err.reason || err.message || '').slice(0, 80)}`
       });
     }
   }
 
-  return { success: false };
+  return { success: false, redemptionPath, tokenOut };
 }
 
 // ─── Pending redemption queue ─────────────────────────────────────────────────
