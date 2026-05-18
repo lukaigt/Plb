@@ -364,13 +364,10 @@ class MomentumSession {
     try {
       const order = await client.createAndPostOrder(
         {
-          tokenID:    tokenId,
-          price:      this.entryPrice,
-          size:       this.entrySizeTokens,
-          side:       Side.BUY,
-          feeRateBps: 1000,
-          expiration: 0,
-          taker:      '0x0000000000000000000000000000000000000000'
+          tokenID: tokenId,
+          price:   this.entryPrice,
+          size:    this.entrySizeTokens,
+          side:    Side.BUY
         },
         { tickSize: this.market.tickSize, negRisk: this.market.negRisk },
         OrderType.GTC
