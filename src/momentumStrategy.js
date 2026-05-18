@@ -435,6 +435,14 @@ class MomentumSession {
       message: `[${mkt}] Preflight OK — tick_size=${preflight.tickSize} | token ${tokenId.slice(0, 14)}… | proceeding to order`
     });
 
+    // Write into the SDK's internal tickSizes cache so createAndPostOrder's
+    // internal getTickSize() call finds it immediately and never hits the API.
+    // Without this, the SDK makes its own separate API call and crashes on
+    // result.minimum_tick_size.toString() when the response is an error object.
+    if (client && client.tickSizes) {
+      client.tickSizes[tokenId] = preflight.tickSize;
+    }
+
     this._resetTradeLeg();
     this.signal     = side;
     this.tokenId    = tokenId;
