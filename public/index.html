@@ -9,8 +9,8 @@
 <body>
   <div class="header">
     <div class="header-left">
-      <h1>&#9917; Soccer Bond Bot</h1>
-      <span class="strategy-badge">BUY YES AT 95¢ &mdash; HOLD TO $1.00</span>
+      <h1 id="pageTitle">&#9917; Soccer Bond Bot</h1>
+      <span class="strategy-badge" id="strategyBadge">BUY YES AT 95¢ &mdash; HOLD TO $1.00</span>
       <span id="envBadge" class="env-badge env-unknown">&#8226; LOADING...</span>
     </div>
     <div class="header-controls">
@@ -33,6 +33,19 @@
       <div class="mc-question" id="heldStatus" style="color:#8b949e;">No open positions — bot will populate this when entries are made</div>
       <div id="heldPanel" style="padding:0;">
         <!-- populated by updateSoccerPositions() -->
+      </div>
+    </div>
+
+    <!-- BTC 15m momentum panel — visible only in BTC mode -->
+    <div class="market-card" id="mc_btc" style="display:none;margin-bottom:12px;border-color:#58a6ff44;">
+      <div class="mc-header" style="background:#0d1420;">
+        <span class="mc-badge" style="background:#0d1a30;color:#58a6ff;border:1px solid #58a6ff55;">&#8383; BTC 15M POSITIONS</span>
+        <span id="btcSessionCount" style="font-size:12px;color:#8b949e;">scanning...</span>
+        <span id="btcPriceBadge" style="font-size:11px;color:#8b949e;margin-left:auto;padding-right:4px;"></span>
+      </div>
+      <div class="mc-question" id="btcStatusLine">Waiting for BTC signal...</div>
+      <div id="btcPanel" style="padding:0;max-height:320px;overflow-y:auto;">
+        <div class="empty-state" style="padding:24px 12px;">Starting BTC bot — scanning for 15m markets</div>
       </div>
     </div>
 

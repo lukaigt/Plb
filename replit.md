@@ -61,8 +61,39 @@ Polymarket launched CLOB V2, replacing USDC.e with pUSD and deploying new exchan
 - `feeRateBps`, `expiration`, `taker`, `nonce` removed from order struct. `timestamp` (ms) added by SDK.
 - User must wrap USDC.e → pUSD on polymarket.com before new bets can be placed.
 
+## Strategy Mode Switch (BTC_MODE)
+
+Set `BTC_MODE=true` in `.env` to disable all sports trading and switch to **BTC 15-minute up/down momentum** mode.
+When `BTC_MODE=false` (or unset), the bot runs the soccer/sports bond strategy as normal.
+
+**BTC Mode config (all overridable via .env):**
+- `MOM_ORDER_SIZE=5` — USD per trade
+- `MOM_TAKE_PROFIT=0.75` — exit when token hits 75¢ (profit)
+- `MOM_STOP_LOSS=0.18` — hard stop: exit if position loses 18¢ from entry
+- `MOM_TRAILING_STOP=0.05` — trailing stop: exit if mid drops 5¢ from peak (activates after 10¢ gain)
+- `MOM_TRAILING_ACTIVATE=0.10` — activate trailing stop when up 10¢
+- `MOM_THRESHOLD=0.05` — BTC 3m change % required for signal (UP or DOWN)
+- `MOM_MID_MIN=0.18` / `MOM_MID_MAX=0.82` — only enter if token mid is in this range
+- `MOM_ENTRY_AFTER_SECONDS=30` — gather 30s of BTC data before allowing entry
+- `MOM_CLOSE_SECONDS=240` — enter final 4 minutes; trigger closing cashout
+- `MOM_ENTRY_WINDOW_SECONDS=240` — only allow new entries in the first 4 minutes of each 15m contract
+- `MOM_MAX_SPREAD=0.03` — skip if orderbook spread > 3¢
+- `MOM_MAX_FLIPS=3` — max re-entries after a profitable exit in the same 15m window
+- `MM_REFRESH_INTERVAL=10` — main loop interval in seconds
+
+**BTC Strategy rules:**
+- Fetches live BTC/USD price from Kraken WebSocket
+- Scans `btc-updown-15m-{timestamp}` Polymarket slugs for active 15m UP/DOWN markets
+- Signal: BTC 3-min change ≥ ±0.05% → enter UP or DOWN token at current mid
+- Entry gate: spread ≤ 3¢, mid in [0.18–0.82], first 4 minutes of window only
+- Vol filter: skip choppy markets where 1m and 3m BTC signals disagree
+- Exits: take profit at $0.75, trailing stop (activates at +10¢), hard stop loss at -18¢, signal-flip exit (BTC reverses while in loss), closing cashout at 4 min before expiry
+- After profitable exit: optionally re-enter on new BTC signal (max 3 flips per window)
+- Redemption: same on-chain redemption pipeline as sports mode
+
 ## Dashboard
-- Live soccer position panel — phase badges (WATCHING / ENTERED / HOLDING / DONE / LOST), mid price, entry price, unrealized P&L, time left
+- **BTC mode**: BTC 15M Positions panel (phase badges WATCHING/ENTERING/HOLDING/EXITING/FLIPPING, direction UP/DOWN, entry price, unrealized P&L, trailing stop level, BTC 3m %, time left). Soccer panels hidden.
+- **Sports mode**: Live soccer position panel — phase badges (WATCHING / ENTERED / HOLDING / DONE / LOST), mid price, entry price, unrealized P&L, time left
 - Soccer Activity log — bond_*/soccer_* events
 - Trade History — match name + green badge for every soccer trade
 - Auto-Redeem panel — pending/collected/lost positions

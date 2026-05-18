@@ -1,4 +1,4 @@
-const { Side, OrderType } = require('@polymarket/clob-client');
+const { Side, OrderType } = require('@polymarket/clob-client-v2');
 const krakenFeed = require('./krakenFeed');
 const logger = require('./logger');
 const { placeSellOrder, buildClobAuthHeaders, getUsdcBalance } = require('./trader');
@@ -10,24 +10,26 @@ const CLOB_API = 'https://clob.polymarket.com';
 function getMomentumConfig() {
   const orderPctRaw = process.env.MOM_ORDER_PCT ? parseFloat(process.env.MOM_ORDER_PCT) : null;
   return {
-    orderSize:         parseFloat(process.env.MOM_ORDER_SIZE)         || 5,
-    orderPct:          orderPctRaw,
-    orderPctMin:       parseFloat(process.env.MOM_ORDER_PCT_MIN)      || 2,
-    orderPctMax:       parseFloat(process.env.MOM_ORDER_PCT_MAX)      || 20,
-    trailingStop:      parseFloat(process.env.MOM_TRAILING_STOP)      || 0.05,
-    trailingActivate:  parseFloat(process.env.MOM_TRAILING_ACTIVATE)  || 0.10,
-    stopLossCents:     parseFloat(process.env.MOM_STOP_LOSS)          || 0.18,
-    takeProfit:        parseFloat(process.env.MOM_TAKE_PROFIT)        || 0.70,
-    momentumThreshold: parseFloat(process.env.MOM_THRESHOLD)          || 0.05,
-    midMin:            parseFloat(process.env.MOM_MID_MIN)            || 0.35,
-    midMax:            parseFloat(process.env.MOM_MID_MAX)            || 0.65,
-    entryAfterSeconds: parseInt(process.env.MOM_ENTRY_AFTER_SECONDS)  || 180,
-    closeSeconds:      parseInt(process.env.MOM_CLOSE_SECONDS)        || 30,
-    refreshInterval:   parseInt(process.env.MM_REFRESH_INTERVAL)      || 10,
-    marketType:        process.env.MOM_MARKET_TYPE                    || '15m',
-    maxFlips:          parseInt(process.env.MOM_MAX_FLIPS)            || 3,
-    flipMinSeconds:    parseInt(process.env.MOM_FLIP_MIN_SECONDS)     || 45,
-    volFilter:         process.env.MOM_VOL_FILTER !== 'false'
+    orderSize:          parseFloat(process.env.MOM_ORDER_SIZE)          || 5,
+    orderPct:           orderPctRaw,
+    orderPctMin:        parseFloat(process.env.MOM_ORDER_PCT_MIN)       || 2,
+    orderPctMax:        parseFloat(process.env.MOM_ORDER_PCT_MAX)       || 20,
+    trailingStop:       parseFloat(process.env.MOM_TRAILING_STOP)       || 0.05,
+    trailingActivate:   parseFloat(process.env.MOM_TRAILING_ACTIVATE)   || 0.10,
+    stopLossCents:      parseFloat(process.env.MOM_STOP_LOSS)           || 0.18,
+    takeProfit:         parseFloat(process.env.MOM_TAKE_PROFIT)         || 0.75,
+    momentumThreshold:  parseFloat(process.env.MOM_THRESHOLD)           || 0.05,
+    midMin:             parseFloat(process.env.MOM_MID_MIN)             || 0.18,
+    midMax:             parseFloat(process.env.MOM_MID_MAX)             || 0.82,
+    entryAfterSeconds:  parseInt(process.env.MOM_ENTRY_AFTER_SECONDS)   || 30,
+    closeSeconds:       parseInt(process.env.MOM_CLOSE_SECONDS)         || 240,
+    entryWindowSeconds: parseInt(process.env.MOM_ENTRY_WINDOW_SECONDS)  || 240,
+    maxSpread:          parseFloat(process.env.MOM_MAX_SPREAD)          || 0.03,
+    refreshInterval:    parseInt(process.env.MM_REFRESH_INTERVAL)       || 10,
+    marketType:         process.env.MOM_MARKET_TYPE                     || '15m',
+    maxFlips:           parseInt(process.env.MOM_MAX_FLIPS)             || 3,
+    flipMinSeconds:     parseInt(process.env.MOM_FLIP_MIN_SECONDS)      || 45,
+    volFilter:          process.env.MOM_VOL_FILTER !== 'false'
   };
 }
 
@@ -40,6 +42,25 @@ async function fetchMidpoint(tokenId) {
     if (!res.ok) return null;
     const data = await res.json();
     return data.mid ? parseFloat(data.mid) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSpread(tokenId) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(`${CLOB_API}/book?token_id=${tokenId}`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const bids = (data.bids || []).map(b => parseFloat(b.price)).filter(p => p > 0);
+    const asks = (data.asks || []).map(a => parseFloat(a.price)).filter(p => p > 0);
+    if (bids.length === 0 || asks.length === 0) return null;
+    const bestBid = Math.max(...bids);
+    const bestAsk = Math.min(...asks);
+    return { bid: bestBid, ask: bestAsk, spread: parseFloat((bestAsk - bestBid).toFixed(4)) };
   } catch {
     return null;
   }
@@ -165,6 +186,11 @@ class MomentumSession {
     const total = this.market.intervalSeconds || 900;
     return this.secondsLeft > (total - this.config.entryAfterSeconds);
   }
+  isTooLateToEnter() {
+    const total = this.market.intervalSeconds || 900;
+    const windowSeconds = this.config.entryWindowSeconds || 240;
+    return this.secondsLeft < (total - windowSeconds);
+  }
 
   getSignal() {
     const ctx = krakenFeed.getPriceContext();
@@ -263,6 +289,26 @@ class MomentumSession {
     if (mid < this.config.midMin || mid > this.config.midMax) {
       logger.addActivity('mom_skip', {
         message: `[${this.market.coin}-${this.market.type}] ${side} mid=$${mid.toFixed(3)} outside [${this.config.midMin}–${this.config.midMax}] — ${reason === 'flip' ? 'skipping flip' : 'skipping entry'}`
+      });
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
+      return;
+    }
+
+    // Spread / liquidity check — skip if orderbook spread is too wide
+    const book = await fetchSpread(tokenId);
+    if (!book) {
+      logger.addActivity('mom_skip', {
+        message: `[${this.market.coin}-${this.market.type}] Cannot fetch orderbook spread — skipping entry | ${Math.round(this.secondsLeft)}s left`
+      });
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
+      return;
+    }
+    logger.addActivity('mom_book', {
+      message: `[${this.market.coin}-${this.market.type}] Book: bid=$${book.bid.toFixed(3)} ask=$${book.ask.toFixed(3)} spread=${(book.spread * 100).toFixed(1)}¢ (max=${(this.config.maxSpread * 100).toFixed(0)}¢) | ${Math.round(this.secondsLeft)}s left`
+    });
+    if (book.spread > this.config.maxSpread) {
+      logger.addActivity('mom_skip', {
+        message: `[${this.market.coin}-${this.market.type}] SPREAD ${(book.spread * 100).toFixed(1)}¢ > max ${(this.config.maxSpread * 100).toFixed(0)}¢ — skipping entry | ${Math.round(this.secondsLeft)}s left`
       });
       this.phase = reason === 'flip' ? 'done' : 'waiting';
       return;
@@ -475,6 +521,18 @@ class MomentumSession {
 
     if (mid <= stopLossPrice) {
       await this._postExitSell(client, mid, 'stop_loss');
+      return;
+    }
+
+    // Signal-flip fast exit: BTC reversed strongly while we're below entry — cut position early
+    if (!this.trailingActive && mid < this.entryPrice) {
+      const liveSignal = this.getSignal();
+      if (liveSignal && liveSignal !== this.signal) {
+        logger.addActivity('mom_flip_exit', {
+          message: `[${this.market.coin}-${this.market.type}] SIGNAL FLIP — entered ${this.signal} but BTC now strongly ${liveSignal} | mid=$${mid.toFixed(3)} < entry=$${this.entryPrice.toFixed(3)} | cutting position`
+        });
+        await this._postExitSell(client, mid, 'signal_flip');
+      }
     }
   }
 
@@ -491,7 +549,9 @@ class MomentumSession {
         trailing_stop:   'TRAILING STOP',
         stop_loss:       'STOP LOSS',
         time_exit:       'TIME EXIT',
-        closing_cashout: 'CLOSING CASHOUT'
+        closing_cashout: 'CLOSING CASHOUT',
+        take_profit:     'TAKE PROFIT',
+        signal_flip:     'SIGNAL FLIP EXIT'
       };
       const label = labels[reason] || reason.toUpperCase();
       const peakStr = this.peakMid ? ` | peak was $${this.peakMid.toFixed(3)}` : '';

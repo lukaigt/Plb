@@ -24,6 +24,8 @@ const logger          = require('./src/logger');
 const redeemer        = require('./src/redeemer');
 const positionScanner = require('./src/positionScanner');
 const soccerLoop      = require('./src/soccerLoop');
+const botLoop         = require('./src/botLoop');
+const krakenFeed      = require('./src/krakenFeed');
 
 const app  = express();
 const PORT = parseInt(process.env.PORT) || 4000;
@@ -35,11 +37,17 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/api/status', (req, res) => res.json({
-  isRunning: soccerLoop.getSoccerRunning(),
-  safety:    safety.getStatus(),
-  port:      PORT
-}));
+app.get('/api/status', (req, res) => {
+  const btcMode = process.env.BTC_MODE === 'true';
+  res.json({
+    isRunning: btcMode ? botLoop.getStatus().isRunning : soccerLoop.getSoccerRunning(),
+    mode:      btcMode ? 'BTC' : 'SPORTS',
+    safety:    safety.getStatus(),
+    port:      PORT
+  });
+});
+
+app.get('/api/btc-status', (req, res) => res.json(botLoop.getStatus()));
 
 app.get('/api/activities',  (req, res) => res.json(logger.getActivities(parseInt(req.query.limit) || 60)));
 app.get('/api/errors',      (req, res) => {
@@ -226,11 +234,17 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`Outgoing IP: ${result.ip} (proxy ${result.proxyActive ? 'ACTIVE' : 'NOT active'})`);
   });
 
+  const btcMode      = process.env.BTC_MODE === 'true';
   const soccerEnabled = process.env.SOCCER_ENABLED !== 'false';
-  if (soccerEnabled && process.env.WALLET_PRIVATE_KEY) {
+
+  if (btcMode && process.env.WALLET_PRIVATE_KEY) {
+    console.log('BTC Mode: ACTIVE — sports trading disabled, starting BTC 15m momentum bot');
+    krakenFeed.connect();
+    botLoop.start();
+  } else if (!btcMode && soccerEnabled && process.env.WALLET_PRIVATE_KEY) {
     soccerLoop.start();
   } else {
-    console.log(`Soccer Bot: ${!soccerEnabled ? 'DISABLED (SOCCER_ENABLED=false)' : 'SKIPPED (no WALLET_PRIVATE_KEY)'}`);
+    console.log(`Bot: ${btcMode ? 'BTC_MODE=true but no WALLET_PRIVATE_KEY' : !soccerEnabled ? 'DISABLED (SOCCER_ENABLED=false)' : 'SKIPPED (no WALLET_PRIVATE_KEY)'}`);
   }
 
   // Auto-scan existing wallet positions on startup (after 60s so CLOB client

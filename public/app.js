@@ -80,6 +80,27 @@ async function updateStatus() {
     }
   }
 
+  // BTC mode: swap header title + show/hide panels
+  const btcMode = status.mode === 'BTC';
+  const titleEl = document.getElementById('pageTitle');
+  const stratEl = document.getElementById('strategyBadge');
+  const btcCard = document.getElementById('mc_btc');
+  const soccerCard = document.getElementById('mc_soccer');
+  const soccerStatsBar = document.getElementById('soccerStatsBar');
+  if (btcMode) {
+    if (titleEl) titleEl.innerHTML = '&#8383; BTC 15m Momentum Bot';
+    if (stratEl) stratEl.textContent = 'BUY UP/DOWN — TAKE PROFIT AT $0.75 — STOP LOSS -18¢';
+    if (btcCard) btcCard.style.display = '';
+    if (soccerCard) soccerCard.closest('.market-grid').style.display = 'none';
+    if (soccerStatsBar) soccerStatsBar.style.display = 'none';
+  } else {
+    if (titleEl) titleEl.innerHTML = '&#9917; Soccer Bond Bot';
+    if (stratEl) stratEl.textContent = 'BUY YES AT 95¢ — HOLD TO $1.00';
+    if (btcCard) btcCard.style.display = 'none';
+    if (soccerCard) soccerCard.closest('.market-grid').style.display = '';
+    if (soccerStatsBar) soccerStatsBar.style.display = '';
+  }
+
   const safety = status.safety;
   if (safety) {
     document.getElementById('killStatus').innerHTML = safety.killSwitch
@@ -315,6 +336,83 @@ async function updateSoccerLog() {
       ${a.message || ''}
     </div>
   `).join('');
+}
+
+async function updateBtcPositions() {
+  const s = await api('/btc-status');
+  if (!s || !s.isRunning) return;
+
+  const countEl  = document.getElementById('btcSessionCount');
+  const statusEl = document.getElementById('btcStatusLine');
+  const bodyEl   = document.getElementById('btcPanel');
+  const priceEl  = document.getElementById('btcPriceBadge');
+  if (!countEl || !bodyEl) return;
+
+  // Live BTC price badge
+  if (s.btcContext && s.btcContext.available) {
+    const ctx = s.btcContext;
+    const dir = ctx.direction === 'RISING' ? '▲' : ctx.direction === 'FALLING' ? '▼' : '—';
+    priceEl.textContent = `BTC $${(ctx.currentPrice || 0).toLocaleString()} ${dir} ${ctx.change3m?.percent || '0.000'}% 3m`;
+  }
+
+  // Only show active sessions (skip done/cancelled)
+  const active = (s.activeSessions || []).filter(sess => sess.phase !== 'done');
+
+  countEl.textContent = active.length === 0 ? 'no active session' : `${active.length} session${active.length > 1 ? 's' : ''}`;
+
+  const cfg = s.config || {};
+  statusEl.textContent = `TP $${(cfg.takeProfit || 0.75).toFixed(2)} | SL -${((cfg.stopLossCents || 0.18) * 100).toFixed(0)}¢ | spread max ${((cfg.maxSpread || 0.03) * 100).toFixed(0)}¢ | entry window ${cfg.entryWindowSeconds || 240}s`;
+
+  if (active.length === 0) {
+    bodyEl.innerHTML = '<div class="empty-state" style="padding:16px 12px;">No active BTC sessions — waiting for next 15m window or entry signal</div>';
+    return;
+  }
+
+  const phaseBadgeMap = {
+    waiting:  '<span class="badge" style="background:#1c2128;color:#8b949e;border:1px solid #30363d;">WATCHING</span>',
+    entering: '<span class="badge" style="background:#2d2000;color:#d29922;border:1px solid #d2992244;">ENTERING</span>',
+    managing: '<span class="badge" style="background:#0d1f0d;color:#3fb950;border:1px solid #3fb95044;">HOLDING</span>',
+    exiting:  '<span class="badge" style="background:#2d1a00;color:#f0883e;border:1px solid #f0883e44;">EXITING</span>',
+    flipping: '<span class="badge" style="background:#1a1a3d;color:#58a6ff;border:1px solid #58a6ff44;">FLIPPING</span>'
+  };
+
+  bodyEl.innerHTML = active.map(sess => {
+    const phaseBadge = phaseBadgeMap[sess.phase] || `<span class="badge">${(sess.phase || '').toUpperCase()}</span>`;
+
+    const dirBadge = sess.signal === 'UP'
+      ? '<span class="badge" style="background:#1a3d1a;color:#3fb950;border:1px solid #3fb95044;">▲ UP</span>'
+      : sess.signal === 'DOWN'
+      ? '<span class="badge" style="background:#3d1a1a;color:#f85149;border:1px solid #f8514944;">▼ DOWN</span>'
+      : '';
+
+    let pnlStr = ''; let pnlCls = '';
+    if (sess.unrealizedPnL != null) {
+      pnlStr = (sess.unrealizedPnL >= 0 ? '+' : '') + `$${sess.unrealizedPnL.toFixed(3)}`;
+      pnlCls = sess.unrealizedPnL >= 0 ? 'positive' : 'negative';
+    }
+
+    const parts = [];
+    if (sess.entryPrice != null)    parts.push(`entry $${sess.entryPrice.toFixed(3)}`);
+    if (sess.lastMid != null)       parts.push(`mid $${sess.lastMid.toFixed(3)}`);
+    if (sess.takeProfitPrice != null) parts.push(`TP $${sess.takeProfitPrice.toFixed(2)}`);
+    if (sess.stopLossPrice != null) parts.push(`SL $${sess.stopLossPrice.toFixed(3)}`);
+    if (sess.trailingActive)        parts.push(`trail $${(sess.trailingStopLevel || 0).toFixed(3)}`);
+    parts.push(`${sess.secondsLeft}s left`);
+    if (sess.btcChange3m != null)   parts.push(`BTC 3m: ${sess.btcChange3m > 0 ? '+' : ''}${sess.btcChange3m.toFixed(3)}%`);
+
+    const question = (sess.question || 'BTC 15m').slice(0, 52);
+    const isHolding = sess.phase === 'managing';
+
+    return `<div class="activity-item" style="flex-direction:column;align-items:flex-start;gap:4px;padding:8px 10px;${isHolding ? 'border-left:2px solid #3fb95066;' : ''}">
+      <div style="display:flex;align-items:center;gap:6px;width:100%;">
+        ${phaseBadge}
+        ${dirBadge}
+        <span style="flex:1;font-size:12px;color:#e6edf3;line-height:1.3;">${question}</span>
+        ${pnlStr ? `<span class="${pnlCls}" style="font-weight:700;font-size:13px;white-space:nowrap;">${pnlStr}</span>` : ''}
+      </div>
+      <div style="font-size:11px;color:#8b949e;padding-left:2px;">${parts.join(' | ')}</div>
+    </div>`;
+  }).join('');
 }
 
 async function updateActivities() {
@@ -581,6 +679,7 @@ async function refreshAll() {
   await Promise.all([
     updateStatus(),
     updateStats(),
+    updateBtcPositions(),
     updateSoccerPositions(),
     updateSoccerStats(),
     updateSoccerLog(),

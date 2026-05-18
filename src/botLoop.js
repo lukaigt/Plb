@@ -46,6 +46,17 @@ async function runOnce() {
   lastScanTime = new Date().toISOString();
 
   try {
+    // Clean up finished sessions after 90s grace period so they leave the dashboard
+    const cleanupNow = Date.now();
+    for (const [marketId, session] of Object.entries(activeSessions)) {
+      if (session.phase === 'done' || session.cancelled) {
+        if (!session._doneAt) session._doneAt = cleanupNow;
+        if (cleanupNow - session._doneAt > 90000) {
+          delete activeSessions[marketId];
+        }
+      }
+    }
+
     const canTrade = safety.canTrade();
     if (!canTrade.allowed) {
       logger.addActivity('safety_block', { message: `Trading paused: ${canTrade.reason}` });
@@ -112,6 +123,16 @@ async function runOnce() {
         continue;
       }
 
+      // Only allow new entries in the first 4 minutes (entryWindowSeconds) of each 15m window
+      if (session.isTooLateToEnter() && session.phase === 'waiting') {
+        logger.addActivity('mom_skip', {
+          message: `[${market.coin}-${market.type}] Past 4-min entry window (${Math.round(session.secondsLeft)}s left) — no new entry this window`
+        });
+        session.phase = 'done';
+        if (!session._doneAt) session._doneAt = Date.now();
+        continue;
+      }
+
       if (session.phase === 'waiting') {
         await session.attemptEntry(client);
         continue;
@@ -166,6 +187,7 @@ async function start() {
   }
 
   isRunning = true;
+  krakenFeed.connect();
   safety.reload();
 
   const config   = getMomentumConfig();
