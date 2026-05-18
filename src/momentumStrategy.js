@@ -7,6 +7,97 @@ const ESTIMATED_FEE_RATE = 0.02;
 
 const CLOB_API = 'https://clob.polymarket.com';
 
+// ---------------------------------------------------------------------------
+// Defensive CLOB preflight — bypasses SDK's getTickSize() which has no null
+// guard and crashes with "Cannot read properties of undefined (reading
+// 'toString')" when the API returns {"error":"market not found"}.
+//
+// Returns { ok, reason, tickSize? } — never throws, never calls .toString()
+// on potentially-undefined values. Uses String() for all conversions.
+// ---------------------------------------------------------------------------
+const _clobPreflightCache = new Map(); // tokenId -> { ts, reason }
+const PREFLIGHT_COOLDOWN_MS = 3 * 60 * 1000; // 3 min — suppress repeat logs
+
+async function safeGetTickSize(tokenId) {
+  // Guard 1: tokenId must be a non-empty string
+  if (!tokenId || typeof tokenId !== 'string' || !tokenId.trim()) {
+    return { ok: false, reason: 'invalid_token_id' };
+  }
+
+  // Guard 2: cooldown — don't retry a failed token every 10s
+  const cached = _clobPreflightCache.get(tokenId);
+  if (cached && (Date.now() - cached.ts) < PREFLIGHT_COOLDOWN_MS) {
+    return { ok: false, reason: cached.reason, cached: true };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let res;
+    try {
+      res = await fetch(
+        `${CLOB_API}/tick-size?token_id=${encodeURIComponent(tokenId)}`,
+        { signal: controller.signal }
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res || !res.ok) {
+      _clobPreflightCache.set(tokenId, { ts: Date.now(), reason: 'clob_lookup_failed' });
+      return { ok: false, reason: 'clob_lookup_failed' };
+    }
+
+    let data;
+    try { data = await res.json(); } catch {
+      _clobPreflightCache.set(tokenId, { ts: Date.now(), reason: 'clob_lookup_failed' });
+      return { ok: false, reason: 'clob_lookup_failed' };
+    }
+
+    // Guard 3: API error body (e.g. {"error":"market not found"})
+    if (!data || data.error) {
+      _clobPreflightCache.set(tokenId, { ts: Date.now(), reason: 'token_not_indexed' });
+      return { ok: false, reason: 'token_not_indexed' };
+    }
+
+    // Guard 4: minimum_tick_size field may be absent or null
+    const raw = data.minimum_tick_size;
+    if (raw === null || raw === undefined) {
+      _clobPreflightCache.set(tokenId, { ts: Date.now(), reason: 'tick_size_missing' });
+      return { ok: false, reason: 'tick_size_missing' };
+    }
+
+    // Guard 5: safe String() conversion — never calls .toString() on unknown value
+    const tickSize = String(raw);
+    if (!tickSize || tickSize === 'undefined' || tickSize === 'null' || tickSize === 'NaN') {
+      _clobPreflightCache.set(tokenId, { ts: Date.now(), reason: 'tick_size_missing' });
+      return { ok: false, reason: 'tick_size_missing' };
+    }
+
+    // Success — clear any stale cache entry so future failures are re-logged
+    _clobPreflightCache.delete(tokenId);
+    return { ok: true, tickSize };
+
+  } catch (err) {
+    const isTimeout = err && err.name === 'AbortError';
+    const reason = isTimeout ? 'clob_lookup_failed' : 'unexpected_exception';
+    _clobPreflightCache.set(tokenId, { ts: Date.now(), reason });
+    // Safe string extraction — err.message may itself be undefined
+    const detail = (err && err.message) ? String(err.message).slice(0, 80) : 'unknown';
+    return { ok: false, reason, detail };
+  }
+}
+
+// Human-readable descriptions for each preflight failure reason
+const PREFLIGHT_REASON_DESC = {
+  invalid_token_id:      'invalid_token_id — tokenId is null/undefined/not a string',
+  token_not_indexed:     'token_not_indexed — fresh BTC 15m token not yet registered on CLOB (normal, retrying in 3 min)',
+  tick_size_missing:     'tick_size_missing — CLOB responded but minimum_tick_size field is absent',
+  clob_lookup_failed:    'clob_lookup_failed — CLOB API HTTP error or request timed out',
+  market_metadata_missing: 'market_metadata_missing — market object missing upTokenId/downTokenId',
+  unexpected_exception:  'unexpected_exception',
+};
+
 function getMomentumConfig() {
   const orderPctRaw = process.env.MOM_ORDER_PCT ? parseFloat(process.env.MOM_ORDER_PCT) : null;
   return {
@@ -273,7 +364,18 @@ class MomentumSession {
   }
 
   async _enterSide(client, side, reason) {
+    const mkt = `${this.market.coin}-${this.market.type}`;
+
+    // Guard: tokenId must be a valid non-empty string before ANY further usage
     const tokenId = side === 'UP' ? this.market.upTokenId : this.market.downTokenId;
+    if (!tokenId || typeof tokenId !== 'string') {
+      logger.addActivity('mom_error', {
+        message: `[${mkt}] market_metadata_missing: ${side}TokenId is ${tokenId === undefined ? 'undefined' : tokenId === null ? 'null' : 'empty'} — skipping`
+      });
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
+      return;
+    }
+
     const mid = await fetchMidpoint(tokenId);
 
     if (mid === null) {
@@ -308,11 +410,30 @@ class MomentumSession {
     });
     if (book.spread > this.config.maxSpread) {
       logger.addActivity('mom_skip', {
-        message: `[${this.market.coin}-${this.market.type}] SPREAD ${(book.spread * 100).toFixed(1)}¢ > max ${(this.config.maxSpread * 100).toFixed(0)}¢ — skipping entry | ${Math.round(this.secondsLeft)}s left`
+        message: `[${mkt}] SPREAD ${(book.spread * 100).toFixed(1)}¢ > max ${(this.config.maxSpread * 100).toFixed(0)}¢ — skipping entry | ${Math.round(this.secondsLeft)}s left`
       });
       this.phase = reason === 'flip' ? 'done' : 'waiting';
       return;
     }
+
+    // CLOB preflight — confirm token is indexed and retrieve tick size safely.
+    // This runs BEFORE any state mutation so a skip leaves the session untouched.
+    const preflight = await safeGetTickSize(tokenId);
+    if (!preflight.ok) {
+      if (!preflight.cached) {
+        const desc = PREFLIGHT_REASON_DESC[preflight.reason]
+          || preflight.reason
+          + (preflight.detail ? ` — ${preflight.detail}` : '');
+        logger.addActivity('mom_skip', {
+          message: `[${mkt}] Preflight skip (${preflight.reason}): ${desc} | token ${tokenId.slice(0, 14)}…`
+        });
+      }
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
+      return;
+    }
+    logger.addActivity('mom_entry', {
+      message: `[${mkt}] Preflight OK — tick_size=${preflight.tickSize} | token ${tokenId.slice(0, 14)}… | proceeding to order`
+    });
 
     this._resetTradeLeg();
     this.signal     = side;
@@ -362,24 +483,6 @@ class MomentumSession {
     this.phase = 'entering';
 
     try {
-      let resolvedTickSize;
-      try {
-        resolvedTickSize = await client.getTickSize(tokenId);
-      } catch (tsErr) {
-        logger.addActivity('mom_error', {
-          message: `[${this.market.coin}-${this.market.type}] CLOB tick-size preflight FAILED for token ${tokenId.slice(0, 14)}… — token not yet indexed on CLOB, skipping | ${tsErr.message?.slice(0, 80)}`
-        });
-        this.phase = reason === 'flip' ? 'done' : 'waiting';
-        return;
-      }
-      if (!resolvedTickSize) {
-        logger.addActivity('mom_error', {
-          message: `[${this.market.coin}-${this.market.type}] CLOB returned no tick size for token ${tokenId.slice(0, 14)}… — skipping entry`
-        });
-        this.phase = reason === 'flip' ? 'done' : 'waiting';
-        return;
-      }
-
       const order = await client.createAndPostOrder(
         {
           tokenID: tokenId,
@@ -387,7 +490,7 @@ class MomentumSession {
           size:    this.entrySizeTokens,
           side:    Side.BUY
         },
-        { tickSize: resolvedTickSize, negRisk: this.market.negRisk },
+        { tickSize: preflight.tickSize, negRisk: this.market.negRisk === true },
         OrderType.GTC
       );
 
