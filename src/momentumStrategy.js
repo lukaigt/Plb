@@ -362,6 +362,24 @@ class MomentumSession {
     this.phase = 'entering';
 
     try {
+      let resolvedTickSize;
+      try {
+        resolvedTickSize = await client.getTickSize(tokenId);
+      } catch (tsErr) {
+        logger.addActivity('mom_error', {
+          message: `[${this.market.coin}-${this.market.type}] CLOB tick-size preflight FAILED for token ${tokenId.slice(0, 14)}… — token not yet indexed on CLOB, skipping | ${tsErr.message?.slice(0, 80)}`
+        });
+        this.phase = reason === 'flip' ? 'done' : 'waiting';
+        return;
+      }
+      if (!resolvedTickSize) {
+        logger.addActivity('mom_error', {
+          message: `[${this.market.coin}-${this.market.type}] CLOB returned no tick size for token ${tokenId.slice(0, 14)}… — skipping entry`
+        });
+        this.phase = reason === 'flip' ? 'done' : 'waiting';
+        return;
+      }
+
       const order = await client.createAndPostOrder(
         {
           tokenID: tokenId,
@@ -369,7 +387,7 @@ class MomentumSession {
           size:    this.entrySizeTokens,
           side:    Side.BUY
         },
-        { tickSize: this.market.tickSize, negRisk: this.market.negRisk },
+        { tickSize: resolvedTickSize, negRisk: this.market.negRisk },
         OrderType.GTC
       );
 
