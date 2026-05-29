@@ -702,11 +702,12 @@ class MomentumSession {
         return false;
       }
 
-      this.exitOrderId     = result.orderId;
-      this.exitPostedPrice = exitPrice;
-      this.exitSize        = exitSize;
-      this.exitFilledSoFar = 0;
-      this.phase           = 'exiting';
+      this.exitOrderId      = result.orderId;
+      this.exitPostedPrice  = exitPrice;
+      this.exitSize         = exitSize;
+      this.exitFilledSoFar  = 0;
+      this._lastExitReason  = reason;
+      this.phase            = 'exiting';
 
       logger.addActivity(activityType, {
         message: `[${this.market.coin}-${this.market.type}] Exit sell posted @ $${exitPrice} | orderId: ${result.orderId?.slice(0, 14)}... | waiting for fill`
@@ -768,6 +769,28 @@ class MomentumSession {
       logger.addActivity('mom_tp_hit', {
         message: `[${this.market.coin}-${this.market.type}] Exit FULLY FILLED — sold ${exitQty} ${this.signal} @ $${fillPrice.toFixed(3)} | gross P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | fees: -$${tradeFeeTotal.toFixed(3)} | net P&L: ${this.tradeNetPnl >= 0 ? '+' : ''}$${this.tradeNetPnl.toFixed(3)} | window net: ${this.cumulativeNetPnl >= 0 ? '+' : ''}$${this.cumulativeNetPnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
       });
+
+      logger.addTrade({
+        strategy:      'btc_momentum',
+        coin:          this.market.coin,
+        marketType:    this.market.type,
+        question:      this.market.question,
+        direction:     this.signal,
+        entryPrice:    this.entryPrice,
+        exitPrice:     fillPrice,
+        sizeTokens:    exitQty,
+        grossPnl:      this.tradePnl,
+        estimatedFee:  tradeFeeTotal,
+        pnl:           this.tradeNetPnl,
+        result:        this.tradePnl >= 0 ? 'win' : 'loss',
+        exitReason:    this._lastExitReason || 'unknown',
+        isFlip:        this.flipCount > 0,
+        flipCount:     this.flipCount,
+        windowStart:   this.market.windowStartTs,
+        windowEnd:     this.market.windowEndTs,
+        entryOrderId:  this.entryOrderId,
+        exitOrderId:   this.exitOrderId
+      });
       return;
     }
 
@@ -789,6 +812,28 @@ class MomentumSession {
 
       logger.addActivity('mom_tp_hit', {
         message: `[${this.market.coin}-${this.market.type}] Exit FILLED (status=MATCHED) — sold ${exitAmt} ${this.signal} @ $${fillPrice.toFixed(3)} | gross P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | fees: -$${tradeFeeTotal.toFixed(3)} | net P&L: ${this.tradeNetPnl >= 0 ? '+' : ''}$${this.tradeNetPnl.toFixed(3)} | window net: ${this.cumulativeNetPnl >= 0 ? '+' : ''}$${this.cumulativeNetPnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
+      });
+
+      logger.addTrade({
+        strategy:      'btc_momentum',
+        coin:          this.market.coin,
+        marketType:    this.market.type,
+        question:      this.market.question,
+        direction:     this.signal,
+        entryPrice:    this.entryPrice,
+        exitPrice:     fillPrice,
+        sizeTokens:    exitAmt,
+        grossPnl:      this.tradePnl,
+        estimatedFee:  tradeFeeTotal,
+        pnl:           this.tradeNetPnl,
+        result:        this.tradePnl >= 0 ? 'win' : 'loss',
+        exitReason:    this._lastExitReason || 'unknown',
+        isFlip:        this.flipCount > 0,
+        flipCount:     this.flipCount,
+        windowStart:   this.market.windowStartTs,
+        windowEnd:     this.market.windowEndTs,
+        entryOrderId:  this.entryOrderId,
+        exitOrderId:   this.exitOrderId
       });
       return;
     }
