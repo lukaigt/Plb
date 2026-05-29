@@ -36,6 +36,98 @@
       </div>
     </div>
 
+    <!-- BTC Analytics section — visible only in BTC mode -->
+    <div id="btcAnalyticsSection" style="display:none;">
+
+      <!-- Expectancy summary bar -->
+      <div class="panel" style="margin-bottom:12px;">
+        <div class="panel-header">
+          &#8383; BTC Momentum Analytics
+          <span id="btcAnalyticsCount" style="font-size:11px;color:#484f58;"></span>
+        </div>
+        <div id="btcExpectancyBar" class="safety-bar" style="flex-wrap:wrap;gap:6px 0;padding:10px 12px;">
+          <div class="safety-item"><span class="s-label">Trades</span><span class="s-value" id="ba_total">—</span></div>
+          <div class="safety-item"><span class="s-label">Win Rate</span><span class="s-value" id="ba_wr">—</span></div>
+          <div class="safety-item"><span class="s-label">Expectancy</span><span class="s-value" id="ba_exp">—</span></div>
+          <div class="safety-item"><span class="s-label">Total Net P&amp;L</span><span class="s-value" id="ba_netpnl">—</span></div>
+          <div class="safety-item"><span class="s-label">Total Fees</span><span class="s-value" id="ba_fees">—</span></div>
+          <div class="safety-item"><span class="s-label">Avg Gross Win</span><span class="s-value" id="ba_agw">—</span></div>
+          <div class="safety-item"><span class="s-label">Avg Gross Loss</span><span class="s-value" id="ba_agl">—</span></div>
+          <div class="safety-item"><span class="s-label">Avg Net Win</span><span class="s-value" id="ba_anw">—</span></div>
+          <div class="safety-item"><span class="s-label">Avg Net Loss</span><span class="s-value" id="ba_anl">—</span></div>
+          <div class="safety-item"><span class="s-label">Avg Hold</span><span class="s-value" id="ba_hold">—</span></div>
+          <div class="safety-item"><span class="s-label">Avg Spread In</span><span class="s-value" id="ba_spin">—</span></div>
+          <div class="safety-item"><span class="s-label">Avg Spread Out</span><span class="s-value" id="ba_spout">—</span></div>
+        </div>
+      </div>
+
+      <!-- Two-column: exit reason + price band -->
+      <div class="grid-main" style="margin-bottom:12px;">
+        <div class="panel">
+          <div class="panel-header">By Exit Reason</div>
+          <div style="overflow-x:auto;">
+            <table class="trade-table" id="btcReasonTable">
+              <thead><tr><th>Reason</th><th>Count</th><th>Win%</th><th>Avg Net</th><th>Total Net</th><th>Fees</th></tr></thead>
+              <tbody id="btcReasonBody"><tr><td colspan="6" class="empty-state">No data yet</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">By Entry Price Band</div>
+          <div style="overflow-x:auto;">
+            <table class="trade-table" id="btcBandTable">
+              <thead><tr><th>Band</th><th>Count</th><th>Win%</th><th>Avg Net</th><th>Total Net</th></tr></thead>
+              <tbody id="btcBandBody"><tr><td colspan="5" class="empty-state">No data yet</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Daily summary -->
+      <div class="panel" style="margin-bottom:12px;">
+        <div class="panel-header">Daily Summary</div>
+        <div style="overflow-x:auto;max-height:220px;overflow-y:auto;">
+          <table class="trade-table" id="btcDailyTable">
+            <thead><tr><th>Date</th><th>Trades</th><th>Win%</th><th>Net P&amp;L</th><th>Fees</th></tr></thead>
+            <tbody id="btcDailyBody"><tr><td colspan="5" class="empty-state">No data yet</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Completed trades table -->
+      <div class="panel" style="margin-bottom:12px;">
+        <div class="panel-header">
+          Completed Trades
+          <span id="btcTradeCount" style="font-size:11px;color:#484f58;"></span>
+        </div>
+        <div style="overflow-x:auto;max-height:360px;overflow-y:auto;">
+          <table class="trade-table" id="btcFullTradeTable" style="font-size:11px;">
+            <thead>
+              <tr>
+                <th>Close</th>
+                <th>Dir</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>Shares</th>
+                <th>Hold</th>
+                <th>Spr In</th>
+                <th>Spr Out</th>
+                <th>Gross</th>
+                <th>Fees</th>
+                <th>Net</th>
+                <th>Exit Reason</th>
+                <th>Flip?</th>
+                <th>BTC sig</th>
+                <th>sLeft@E</th>
+              </tr>
+            </thead>
+            <tbody id="btcFullTradeBody"><tr><td colspan="15" class="empty-state">No completed BTC trades yet — deploy to VPS first</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
     <!-- BTC 15m momentum panel — visible only in BTC mode -->
     <div class="market-card" id="mc_btc" style="display:none;margin-bottom:12px;border-color:#58a6ff44;">
       <div class="mc-header" style="background:#0d1420;">

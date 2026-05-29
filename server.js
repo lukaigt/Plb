@@ -57,8 +57,10 @@ app.get('/api/errors',      (req, res) => {
   const errors = all.filter(a => errorTypes.some(t => a.type.includes(t)) || (a.message && /error|fail|null|timeout|cancel/i.test(a.message)));
   res.json(errors);
 });
-app.get('/api/trades',       (req, res) => res.json(logger.getTradeHistory(parseInt(req.query.limit) || 50)));
-app.get('/api/stats',        (req, res) => res.json(logger.getStats()));
+app.get('/api/trades',        (req, res) => res.json(logger.getTradeHistory(parseInt(req.query.limit) || 50)));
+app.get('/api/stats',         (req, res) => res.json(logger.getStats()));
+app.get('/api/btc-trades',    (req, res) => res.json(logger.getBtcTrades(parseInt(req.query.limit) || 200)));
+app.get('/api/btc-analytics', (req, res) => res.json(logger.getBtcAnalytics()));
 app.get('/api/safety',       (req, res) => res.json(safety.getStatus()));
 app.get('/api/redemptions',  (req, res) => res.json(redeemer.getRedemptionStatus()));
 app.get('/api/positions',    (req, res) => res.json(positionScanner.getScanResult()));

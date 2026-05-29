@@ -82,23 +82,26 @@ async function updateStatus() {
 
   // BTC mode: swap header title + show/hide panels
   const btcMode = status.mode === 'BTC';
-  const titleEl = document.getElementById('pageTitle');
-  const stratEl = document.getElementById('strategyBadge');
-  const btcCard = document.getElementById('mc_btc');
-  const soccerCard = document.getElementById('mc_soccer');
-  const soccerStatsBar = document.getElementById('soccerStatsBar');
+  const titleEl       = document.getElementById('pageTitle');
+  const stratEl       = document.getElementById('strategyBadge');
+  const btcCard       = document.getElementById('mc_btc');
+  const soccerCard    = document.getElementById('mc_soccer');
+  const soccerStatsBar     = document.getElementById('soccerStatsBar');
+  const btcAnalyticsSec    = document.getElementById('btcAnalyticsSection');
   if (btcMode) {
     if (titleEl) titleEl.innerHTML = '&#8383; BTC 15m Momentum Bot';
     if (stratEl) stratEl.textContent = 'BUY UP/DOWN — TAKE PROFIT AT $0.75 — STOP LOSS -18¢';
     if (btcCard) btcCard.style.display = '';
     if (soccerCard) soccerCard.closest('.market-grid').style.display = 'none';
     if (soccerStatsBar) soccerStatsBar.style.display = 'none';
+    if (btcAnalyticsSec) btcAnalyticsSec.style.display = '';
   } else {
     if (titleEl) titleEl.innerHTML = '&#9917; Soccer Bond Bot';
     if (stratEl) stratEl.textContent = 'BUY YES AT 95¢ — HOLD TO $1.00';
     if (btcCard) btcCard.style.display = 'none';
     if (soccerCard) soccerCard.closest('.market-grid').style.display = '';
     if (soccerStatsBar) soccerStatsBar.style.display = '';
+    if (btcAnalyticsSec) btcAnalyticsSec.style.display = 'none';
   }
 
   const safety = status.safety;
@@ -675,11 +678,133 @@ function clearErrorPanel() {
   setTimeout(() => { _errorPanelCleared = false; }, 30000);
 }
 
+function _pnlClass(n) { return n > 0 ? 'positive' : n < 0 ? 'negative' : ''; }
+function _pnlStr(n)   { return (n >= 0 ? '+' : '') + '$' + n.toFixed(4); }
+function _wrClass(n)  { return n >= 50 ? 'positive' : n < 40 ? 'negative' : 'warn'; }
+
+async function updateBtcAnalytics() {
+  const sec = document.getElementById('btcAnalyticsSection');
+  if (!sec || sec.style.display === 'none') return;
+
+  const data = await api('/btc-analytics');
+  if (!data) return;
+
+  const { summary: s, byExitReason, byPriceBand, dailySummary, trades } = data;
+
+  // ── Summary bar ──
+  const countEl = document.getElementById('btcAnalyticsCount');
+  if (countEl) countEl.textContent = `${s.total} completed trades`;
+
+  const set = (id, val, cls) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = val;
+    if (cls !== undefined) el.className = `s-value ${cls}`;
+  };
+
+  set('ba_total',  s.total,  '');
+  set('ba_wr',     s.total ? s.win_rate + '%' : '—', s.total ? _wrClass(s.win_rate) : '');
+  set('ba_exp',    s.total ? _pnlStr(s.expectancy)   : '—', s.total ? _pnlClass(s.expectancy)   : '');
+  set('ba_netpnl', s.total ? _pnlStr(s.total_net_pnl): '—', s.total ? _pnlClass(s.total_net_pnl): '');
+  set('ba_fees',   s.total ? '-$' + s.total_fees      : '—', s.total ? 'negative' : '');
+  set('ba_agw',    s.wins   ? _pnlStr(s.avg_gross_win) : '—', s.wins ? 'positive' : '');
+  set('ba_agl',    s.losses ? _pnlStr(s.avg_gross_loss): '—', s.losses ? 'negative' : '');
+  set('ba_anw',    s.wins   ? _pnlStr(s.avg_net_win)   : '—', s.wins ? 'positive' : '');
+  set('ba_anl',    s.losses ? _pnlStr(s.avg_net_loss)  : '—', s.losses ? 'negative' : '');
+  set('ba_hold',   s.avg_hold_secs ? Math.round(s.avg_hold_secs) + 's' : '—', '');
+  set('ba_spin',   s.avg_spread_in  ? (s.avg_spread_in  * 100).toFixed(1) + '¢' : '—', '');
+  set('ba_spout',  s.avg_spread_out ? (s.avg_spread_out * 100).toFixed(1) + '¢' : '—', '');
+
+  // ── Exit reason table ──
+  const rb = document.getElementById('btcReasonBody');
+  if (rb) {
+    rb.innerHTML = byExitReason.length ? byExitReason.map(r => `<tr>
+      <td>${r.reason}</td>
+      <td>${r.count}</td>
+      <td class="${_wrClass(r.win_rate)}">${r.win_rate}%</td>
+      <td class="${_pnlClass(r.avg_net)}">${_pnlStr(r.avg_net)}</td>
+      <td class="${_pnlClass(r.net_pnl)}">${_pnlStr(r.net_pnl)}</td>
+      <td class="negative">-$${r.fees.toFixed(4)}</td>
+    </tr>`).join('') : '<tr><td colspan="6" class="empty-state">No data yet</td></tr>';
+  }
+
+  // ── Price band table ──
+  const bb = document.getElementById('btcBandBody');
+  if (bb) {
+    bb.innerHTML = byPriceBand.length ? byPriceBand.map(b => `<tr>
+      <td>${b.band}</td>
+      <td>${b.count}</td>
+      <td class="${b.count ? _wrClass(b.win_rate) : ''}">${b.count ? b.win_rate + '%' : '—'}</td>
+      <td class="${b.count ? _pnlClass(b.avg_net) : ''}">${b.count ? _pnlStr(b.avg_net) : '—'}</td>
+      <td class="${b.count ? _pnlClass(b.net_pnl) : ''}">${b.count ? _pnlStr(b.net_pnl) : '—'}</td>
+    </tr>`).join('') : '<tr><td colspan="5" class="empty-state">No data yet</td></tr>';
+  }
+
+  // ── Daily summary table ──
+  const db = document.getElementById('btcDailyBody');
+  if (db) {
+    db.innerHTML = dailySummary.length ? dailySummary.map(d => `<tr>
+      <td>${d.date}</td>
+      <td>${d.trades}</td>
+      <td class="${_wrClass(d.win_rate)}">${d.win_rate}%</td>
+      <td class="${_pnlClass(d.net_pnl)}">${_pnlStr(d.net_pnl)}</td>
+      <td class="negative">-$${d.fees.toFixed(4)}</td>
+    </tr>`).join('') : '<tr><td colspan="5" class="empty-state">No daily data yet</td></tr>';
+  }
+
+  // ── Full trades table ──
+  const tc = document.getElementById('btcTradeCount');
+  if (tc) tc.textContent = `${trades.length} trades`;
+
+  const tb = document.getElementById('btcFullTradeBody');
+  if (!tb) return;
+
+  if (!trades.length) {
+    tb.innerHTML = '<tr><td colspan="15" class="empty-state">No completed BTC trades yet</td></tr>';
+    return;
+  }
+
+  tb.innerHTML = trades.map(t => {
+    const dir = t.direction === 'UP'
+      ? '<span class="badge" style="background:#1a3d1a;color:#3fb950;font-size:10px;padding:1px 5px;">▲ UP</span>'
+      : '<span class="badge" style="background:#3d1a1a;color:#f85149;font-size:10px;padding:1px 5px;">▼ DN</span>';
+    const res = t.result === 'win'
+      ? '<span class="badge badge-win" style="font-size:10px;">W</span>'
+      : '<span class="badge badge-loss" style="font-size:10px;">L</span>';
+    const hold  = t.hold_seconds != null ? t.hold_seconds + 's' : '—';
+    const spIn  = t.spread_at_entry != null ? (t.spread_at_entry * 100).toFixed(1) + '¢' : '—';
+    const spOut = t.spread_at_exit  != null ? (t.spread_at_exit  * 100).toFixed(1) + '¢' : '—';
+    const sig   = t.btc_signal_at_entry != null ? (t.btc_signal_at_entry >= 0 ? '+' : '') + t.btc_signal_at_entry.toFixed(2) + '%' : '—';
+    const sle   = t.seconds_left_at_entry != null ? t.seconds_left_at_entry + 's' : '—';
+    const closeTime = t.timestamp_close ? new Date(t.timestamp_close).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+    const gross = (t.gross_pnl || 0), fees = (t.estimated_fees || 0), net = (t.net_pnl || 0);
+
+    return `<tr>
+      <td style="white-space:nowrap;">${closeTime}</td>
+      <td>${dir}</td>
+      <td>$${(t.entry_price || 0).toFixed(3)}</td>
+      <td>$${(t.exit_price  || 0).toFixed(3)}</td>
+      <td>${(t.shares || 0).toFixed(2)}</td>
+      <td>${hold}</td>
+      <td>${spIn}</td>
+      <td>${spOut}</td>
+      <td class="${_pnlClass(gross)}">${_pnlStr(gross)}</td>
+      <td class="negative">-$${fees.toFixed(4)}</td>
+      <td class="${_pnlClass(net)}">${_pnlStr(net)}</td>
+      <td style="white-space:nowrap;">${t.exit_reason || '—'}</td>
+      <td>${t.was_flip_reentry ? '✓' : '—'}</td>
+      <td>${sig}</td>
+      <td>${sle}</td>
+    </tr>`;
+  }).join('');
+}
+
 async function refreshAll() {
   await Promise.all([
     updateStatus(),
     updateStats(),
     updateBtcPositions(),
+    updateBtcAnalytics(),
     updateSoccerPositions(),
     updateSoccerStats(),
     updateSoccerLog(),

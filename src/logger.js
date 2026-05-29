@@ -146,6 +146,105 @@ class Logger extends EventEmitter {
       exitReasons
     };
   }
+
+  getBtcTrades(limit = 200) {
+    return this.tradeHistory
+      .filter(t => t.strategy === 'btc_momentum')
+      .slice(0, limit);
+  }
+
+  getBtcAnalytics() {
+    const trades = this.tradeHistory.filter(
+      t => t.strategy === 'btc_momentum' && t.result !== 'pending'
+    );
+
+    const wins   = trades.filter(t => t.result === 'win');
+    const losses = trades.filter(t => t.result === 'loss');
+
+    const _sum = (arr, fn) => arr.reduce((s, t) => s + (fn(t) || 0), 0);
+    const _avg = (arr, fn) => arr.length ? _sum(arr, fn) / arr.length : 0;
+    const _f4  = n => parseFloat(n.toFixed(4));
+
+    const summary = {
+      total:          trades.length,
+      wins:           wins.length,
+      losses:         losses.length,
+      win_rate:       trades.length ? _f4(wins.length / trades.length * 100) : 0,
+      avg_gross_win:  _f4(_avg(wins,   t => t.gross_pnl)),
+      avg_gross_loss: _f4(_avg(losses, t => t.gross_pnl)),
+      avg_net_win:    _f4(_avg(wins,   t => t.net_pnl)),
+      avg_net_loss:   _f4(_avg(losses, t => t.net_pnl)),
+      total_fees:     _f4(_sum(trades, t => t.estimated_fees)),
+      total_net_pnl:  _f4(_sum(trades, t => t.net_pnl)),
+      expectancy:     trades.length ? _f4(_sum(trades, t => t.net_pnl) / trades.length) : 0,
+      avg_hold_secs:  _f4(_avg(trades.filter(t => t.hold_seconds), t => t.hold_seconds)),
+      avg_spread_in:  _f4(_avg(trades.filter(t => t.spread_at_entry != null), t => t.spread_at_entry)),
+      avg_spread_out: _f4(_avg(trades.filter(t => t.spread_at_exit  != null), t => t.spread_at_exit))
+    };
+
+    const reasonMap = {};
+    for (const t of trades) {
+      const r = t.exit_reason || t.exitReason || 'unknown';
+      if (!reasonMap[r]) reasonMap[r] = { count: 0, wins: 0, net_pnl: 0, fees: 0 };
+      reasonMap[r].count++;
+      if (t.result === 'win') reasonMap[r].wins++;
+      reasonMap[r].net_pnl += (t.net_pnl || 0);
+      reasonMap[r].fees    += (t.estimated_fees || 0);
+    }
+    const byExitReason = Object.entries(reasonMap).map(([reason, s]) => ({
+      reason,
+      count:    s.count,
+      wins:     s.wins,
+      win_rate: _f4(s.wins / s.count * 100),
+      net_pnl:  _f4(s.net_pnl),
+      avg_net:  _f4(s.net_pnl / s.count),
+      fees:     _f4(s.fees)
+    })).sort((a, b) => b.count - a.count);
+
+    const bands = [
+      { label: '0.18–0.30', min: 0.18, max: 0.30 },
+      { label: '0.30–0.45', min: 0.30, max: 0.45 },
+      { label: '0.45–0.60', min: 0.45, max: 0.60 },
+      { label: '0.60–0.82', min: 0.60, max: 0.83 }
+    ];
+    const byPriceBand = bands.map(b => {
+      const bt = trades.filter(t => {
+        const p = t.entry_price || t.entryPrice || 0;
+        return p >= b.min && p < b.max;
+      });
+      const bw = bt.filter(t => t.result === 'win');
+      return {
+        band:     b.label,
+        count:    bt.length,
+        wins:     bw.length,
+        win_rate: bt.length ? _f4(bw.length / bt.length * 100) : 0,
+        net_pnl:  _f4(_sum(bt, t => t.net_pnl)),
+        avg_net:  bt.length ? _f4(_sum(bt, t => t.net_pnl) / bt.length) : 0
+      };
+    });
+
+    const dayMap = {};
+    for (const t of trades) {
+      const d = (t.timestamp_close || t.timestamp || '').slice(0, 10);
+      if (!d) continue;
+      if (!dayMap[d]) dayMap[d] = { date: d, trades: 0, wins: 0, losses: 0, net_pnl: 0, fees: 0 };
+      dayMap[d].trades++;
+      if (t.result === 'win') dayMap[d].wins++;
+      else dayMap[d].losses++;
+      dayMap[d].net_pnl += (t.net_pnl || 0);
+      dayMap[d].fees    += (t.estimated_fees || 0);
+    }
+    const dailySummary = Object.values(dayMap)
+      .map(d => ({
+        ...d,
+        net_pnl:  _f4(d.net_pnl),
+        fees:     _f4(d.fees),
+        win_rate: _f4(d.wins / d.trades * 100)
+      }))
+      .sort((a, b) => b.date.localeCompare(a.date));
+
+    return { summary, byExitReason, byPriceBand, dailySummary, trades: trades.slice(0, 200) };
+  }
 }
 
 module.exports = new Logger();

@@ -267,6 +267,13 @@ class MomentumSession {
     this._lastMidDebugLog   = 0;
     this._lastTrailingLog   = 0;
     this._lastExitDebugLog  = 0;
+
+    this._entryTimestamp     = null;
+    this._spreadAtEntry      = null;
+    this._btcSignalAtEntry   = null;
+    this._secondsLeftAtEntry = null;
+    this._spreadAtExit       = null;
+    this._secondsLeftAtExit  = null;
   }
 
   get marketId()    { return this.market.id; }
@@ -444,6 +451,9 @@ class MomentumSession {
     }
 
     this._resetTradeLeg();
+    this._spreadAtEntry      = book ? book.spread : null;
+    this._btcSignalAtEntry   = this.btcChange3m;
+    this._secondsLeftAtEntry = Math.round(this.secondsLeft);
     this.signal     = side;
     this.tokenId    = tokenId;
     this.entryPrice = Math.round(mid * 100) / 100;
@@ -565,6 +575,7 @@ class MomentumSession {
       this.peakMid          = this.entryPrice;
       this.phase            = 'managing';
       this.estimatedBuyFee  = parseFloat((matched * this.entryPrice * ESTIMATED_FEE_RATE).toFixed(4));
+      this._entryTimestamp  = new Date().toISOString();
       logger.addActivity('mom_filled', {
         message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)}) | est. buy fee: $${this.estimatedBuyFee.toFixed(3)}`
       });
@@ -580,6 +591,7 @@ class MomentumSession {
       this.peakMid          = this.entryPrice;
       this.phase            = 'managing';
       this.estimatedBuyFee  = parseFloat((this.filledSize * this.entryPrice * ESTIMATED_FEE_RATE).toFixed(4));
+      this._entryTimestamp  = new Date().toISOString();
       logger.addActivity('mom_filled', {
         message: `[${this.market.coin}-${this.market.type}] BUY FILLED (status=MATCHED) — ${this.signal} ${this.filledSize} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)}) | est. buy fee: $${this.estimatedBuyFee.toFixed(3)}`
       });
@@ -702,12 +714,14 @@ class MomentumSession {
         return false;
       }
 
-      this.exitOrderId      = result.orderId;
-      this.exitPostedPrice  = exitPrice;
-      this.exitSize         = exitSize;
-      this.exitFilledSoFar  = 0;
-      this._lastExitReason  = reason;
-      this.phase            = 'exiting';
+      this.exitOrderId        = result.orderId;
+      this.exitPostedPrice    = exitPrice;
+      this.exitSize           = exitSize;
+      this.exitFilledSoFar    = 0;
+      this._lastExitReason    = reason;
+      this._secondsLeftAtExit = Math.round(this.secondsLeft);
+      fetchSpread(this.tokenId).then(bk => { this._spreadAtExit = bk ? bk.spread : null; }).catch(() => {});
+      this.phase              = 'exiting';
 
       logger.addActivity(activityType, {
         message: `[${this.market.coin}-${this.market.type}] Exit sell posted @ $${exitPrice} | orderId: ${result.orderId?.slice(0, 14)}... | waiting for fill`
@@ -771,25 +785,40 @@ class MomentumSession {
       });
 
       logger.addTrade({
-        strategy:      'btc_momentum',
-        coin:          this.market.coin,
-        marketType:    this.market.type,
-        question:      this.market.question,
-        direction:     this.signal,
-        entryPrice:    this.entryPrice,
-        exitPrice:     fillPrice,
-        sizeTokens:    exitQty,
-        grossPnl:      this.tradePnl,
-        estimatedFee:  tradeFeeTotal,
-        pnl:           this.tradeNetPnl,
-        result:        this.tradePnl >= 0 ? 'win' : 'loss',
-        exitReason:    this._lastExitReason || 'unknown',
-        isFlip:        this.flipCount > 0,
-        flipCount:     this.flipCount,
-        windowStart:   this.market.windowStartTs,
-        windowEnd:     this.market.windowEndTs,
-        entryOrderId:  this.entryOrderId,
-        exitOrderId:   this.exitOrderId
+        strategy:              'btc_momentum',
+        coin:                  this.market.coin,
+        marketType:            this.market.type,
+        question:              this.market.question,
+        market_slug:           this.market.slug || this.market.id || '',
+        contract_id:           this.market.conditionId || this.market.id || '',
+        token_id:              this.tokenId || '',
+        direction:             this.signal,
+        timestamp_open:        this._entryTimestamp,
+        timestamp_close:       new Date().toISOString(),
+        entry_price:           this.entryPrice,
+        exit_price:            fillPrice,
+        shares:                exitQty,
+        gross_pnl:             this.tradePnl,
+        estimated_fees:        tradeFeeTotal,
+        net_pnl:               this.tradeNetPnl,
+        spread_at_entry:       this._spreadAtEntry,
+        spread_at_exit:        this._spreadAtExit,
+        hold_seconds:          this._entryTimestamp
+                                 ? Math.round((Date.now() - new Date(this._entryTimestamp).getTime()) / 1000)
+                                 : null,
+        exit_reason:           this._lastExitReason || 'unknown',
+        was_flip_reentry:      this.flipCount > 0,
+        flip_count:            this.flipCount,
+        btc_signal_at_entry:   this._btcSignalAtEntry,
+        seconds_left_at_entry: this._secondsLeftAtEntry,
+        seconds_left_at_exit:  this._secondsLeftAtExit,
+        result:                this.tradePnl >= 0 ? 'win' : 'loss',
+        pnl:                   this.tradeNetPnl,
+        estimatedFee:          tradeFeeTotal,
+        exitReason:            this._lastExitReason || 'unknown',
+        entryPrice:            this.entryPrice,
+        entryOrderId:          this.entryOrderId,
+        exitOrderId:           this.exitOrderId
       });
       return;
     }
@@ -815,25 +844,40 @@ class MomentumSession {
       });
 
       logger.addTrade({
-        strategy:      'btc_momentum',
-        coin:          this.market.coin,
-        marketType:    this.market.type,
-        question:      this.market.question,
-        direction:     this.signal,
-        entryPrice:    this.entryPrice,
-        exitPrice:     fillPrice,
-        sizeTokens:    exitAmt,
-        grossPnl:      this.tradePnl,
-        estimatedFee:  tradeFeeTotal,
-        pnl:           this.tradeNetPnl,
-        result:        this.tradePnl >= 0 ? 'win' : 'loss',
-        exitReason:    this._lastExitReason || 'unknown',
-        isFlip:        this.flipCount > 0,
-        flipCount:     this.flipCount,
-        windowStart:   this.market.windowStartTs,
-        windowEnd:     this.market.windowEndTs,
-        entryOrderId:  this.entryOrderId,
-        exitOrderId:   this.exitOrderId
+        strategy:              'btc_momentum',
+        coin:                  this.market.coin,
+        marketType:            this.market.type,
+        question:              this.market.question,
+        market_slug:           this.market.slug || this.market.id || '',
+        contract_id:           this.market.conditionId || this.market.id || '',
+        token_id:              this.tokenId || '',
+        direction:             this.signal,
+        timestamp_open:        this._entryTimestamp,
+        timestamp_close:       new Date().toISOString(),
+        entry_price:           this.entryPrice,
+        exit_price:            fillPrice,
+        shares:                exitAmt,
+        gross_pnl:             this.tradePnl,
+        estimated_fees:        tradeFeeTotal,
+        net_pnl:               this.tradeNetPnl,
+        spread_at_entry:       this._spreadAtEntry,
+        spread_at_exit:        this._spreadAtExit,
+        hold_seconds:          this._entryTimestamp
+                                 ? Math.round((Date.now() - new Date(this._entryTimestamp).getTime()) / 1000)
+                                 : null,
+        exit_reason:           this._lastExitReason || 'unknown',
+        was_flip_reentry:      this.flipCount > 0,
+        flip_count:            this.flipCount,
+        btc_signal_at_entry:   this._btcSignalAtEntry,
+        seconds_left_at_entry: this._secondsLeftAtEntry,
+        seconds_left_at_exit:  this._secondsLeftAtExit,
+        result:                this.tradePnl >= 0 ? 'win' : 'loss',
+        pnl:                   this.tradeNetPnl,
+        estimatedFee:          tradeFeeTotal,
+        exitReason:            this._lastExitReason || 'unknown',
+        entryPrice:            this.entryPrice,
+        entryOrderId:          this.entryOrderId,
+        exitOrderId:           this.exitOrderId
       });
       return;
     }
