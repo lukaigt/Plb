@@ -364,10 +364,15 @@ async function updateBtcPositions() {
   countEl.textContent = active.length === 0 ? 'no active session' : `${active.length} session${active.length > 1 ? 's' : ''}`;
 
   const cfg = s.config || {};
-  statusEl.textContent = `TP $${(cfg.takeProfit || 0.75).toFixed(2)} | SL -${((cfg.stopLossCents || 0.18) * 100).toFixed(0)}¢ | spread max ${((cfg.maxSpread || 0.03) * 100).toFixed(0)}¢ | entry window ${cfg.entryWindowSeconds || 240}s`;
+  const sft = s.safety || {};
+  statusEl.textContent = `TP $${(cfg.takeProfit || 0.75).toFixed(2)} | SL -${((cfg.stopLossCents || 0.10) * 100).toFixed(0)}¢ | threshold ±${(cfg.momentumThreshold || 0.12)}% | spread max ${((cfg.maxSpread || 0.03) * 100).toFixed(0)}¢ | trades today ${sft.dailyTradeCount || 0}/${cfg.maxDailyTrades || 6} | streak ${sft.consecutiveLosses || 0}/${sft.losingStreakStop || 3}${sft.cooldownRemaining > 0 ? ` | cooldown ${sft.cooldownRemaining}s` : ''}`;
 
   if (active.length === 0) {
-    bodyEl.innerHTML = '<div class="empty-state" style="padding:16px 12px;">No active BTC sessions — waiting for next 15m window or entry signal</div>';
+    let waitMsg = 'No active BTC sessions — waiting for next 15m window or entry signal';
+    if (sft.cooldownRemaining > 0) waitMsg = `⏸ Loss cooldown active — ${sft.cooldownRemaining}s remaining before next entry allowed`;
+    else if ((sft.consecutiveLosses || 0) >= (sft.losingStreakStop || 3)) waitMsg = `🛑 Losing streak limit (${sft.consecutiveLosses}) reached — paused for this window`;
+    else if ((sft.dailyTradeCount || 0) >= (cfg.maxDailyTrades || 6)) waitMsg = `🛑 Daily trade limit (${sft.dailyTradeCount}/${cfg.maxDailyTrades}) reached — no more entries today`;
+    bodyEl.innerHTML = `<div class="empty-state" style="padding:16px 12px;">${waitMsg}</div>`;
     return;
   }
 
@@ -388,32 +393,57 @@ async function updateBtcPositions() {
       ? '<span class="badge" style="background:#3d1a1a;color:#f85149;border:1px solid #f8514944;">▼ DOWN</span>'
       : '';
 
+    // Regime badge
+    const regimeBadge = sess.regime === 'TREND'
+      ? '<span class="badge" style="background:#0d1f2d;color:#58a6ff;border:1px solid #58a6ff33;font-size:10px;">TREND</span>'
+      : sess.regime === 'MIXED'
+      ? '<span class="badge" style="background:#2d1a00;color:#d29922;border:1px solid #d2992233;font-size:10px;">MIXED</span>'
+      : '';
+
     let pnlStr = ''; let pnlCls = '';
     if (sess.unrealizedPnL != null) {
       pnlStr = (sess.unrealizedPnL >= 0 ? '+' : '') + `$${sess.unrealizedPnL.toFixed(3)}`;
       pnlCls = sess.unrealizedPnL >= 0 ? 'positive' : 'negative';
     }
 
-    const parts = [];
-    if (sess.entryPrice != null)    parts.push(`entry $${sess.entryPrice.toFixed(3)}`);
-    if (sess.lastMid != null)       parts.push(`mid $${sess.lastMid.toFixed(3)}`);
-    if (sess.takeProfitPrice != null) parts.push(`TP $${sess.takeProfitPrice.toFixed(2)}`);
-    if (sess.stopLossPrice != null) parts.push(`SL $${sess.stopLossPrice.toFixed(3)}`);
-    if (sess.trailingActive)        parts.push(`trail $${(sess.trailingStopLevel || 0).toFixed(3)}`);
-    parts.push(`${sess.secondsLeft}s left`);
-    if (sess.btcChange3m != null)   parts.push(`BTC 3m: ${sess.btcChange3m > 0 ? '+' : ''}${sess.btcChange3m.toFixed(3)}%`);
+    // Line 1: price/execution info
+    const priceparts = [];
+    if (sess.lastBid != null && sess.lastAsk != null) {
+      priceparts.push(`bid $${sess.lastBid.toFixed(3)} / ask $${sess.lastAsk.toFixed(3)}`);
+    }
+    if (sess.lastSpread != null) priceparts.push(`spread ${(sess.lastSpread * 100).toFixed(1)}¢`);
+    if (sess.lastAskDepth != null) priceparts.push(`depth $${sess.lastAskDepth.toFixed(0)}`);
 
-    const question = (sess.question || 'BTC 15m').slice(0, 52);
+    // Line 2: position/signal info
+    const parts = [];
+    if (sess.entryPrice != null)      parts.push(`entry $${sess.entryPrice.toFixed(3)} (ask)`);
+    if (sess.lastMid != null)         parts.push(`mid $${sess.lastMid.toFixed(3)}`);
+    if (sess.takeProfitPrice != null) parts.push(`TP $${sess.takeProfitPrice.toFixed(2)}`);
+    if (sess.stopLossPrice != null)   parts.push(`SL $${sess.stopLossPrice.toFixed(3)}`);
+    if (sess.trailingActive)          parts.push(`trail $${(sess.trailingStopLevel || 0).toFixed(3)}`);
+    parts.push(`${sess.secondsLeft}s left`);
+    if (sess.btcChange3m != null)     parts.push(`BTC 3m: ${sess.btcChange3m > 0 ? '+' : ''}${sess.btcChange3m.toFixed(3)}%`);
+
+    // Line 3: signal quality
+    const qualparts = [];
+    if (sess.confidence != null)    qualparts.push(`conf ${(sess.confidence * 100).toFixed(0)}%`);
+    if (sess.estimatedEdge != null) qualparts.push(`edge +${(sess.estimatedEdge * 100).toFixed(2)}¢/tok`);
+    if (sess.skipReason)            qualparts.push(`skip: ${sess.skipReason}`);
+
+    const question  = (sess.question || 'BTC 15m').slice(0, 52);
     const isHolding = sess.phase === 'managing';
 
     return `<div class="activity-item" style="flex-direction:column;align-items:flex-start;gap:4px;padding:8px 10px;${isHolding ? 'border-left:2px solid #3fb95066;' : ''}">
-      <div style="display:flex;align-items:center;gap:6px;width:100%;">
+      <div style="display:flex;align-items:center;gap:6px;width:100%;flex-wrap:wrap;">
         ${phaseBadge}
         ${dirBadge}
-        <span style="flex:1;font-size:12px;color:#e6edf3;line-height:1.3;">${question}</span>
+        ${regimeBadge}
+        <span style="flex:1;font-size:12px;color:#e6edf3;line-height:1.3;min-width:120px;">${question}</span>
         ${pnlStr ? `<span class="${pnlCls}" style="font-weight:700;font-size:13px;white-space:nowrap;">${pnlStr}</span>` : ''}
       </div>
+      ${priceparts.length ? `<div style="font-size:11px;color:#58a6ff;padding-left:2px;">${priceparts.join(' | ')}</div>` : ''}
       <div style="font-size:11px;color:#8b949e;padding-left:2px;">${parts.join(' | ')}</div>
+      ${qualparts.length ? `<div style="font-size:11px;color:#d29922;padding-left:2px;">${qualparts.join(' | ')}</div>` : ''}
     </div>`;
   }).join('');
 }

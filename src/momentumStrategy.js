@@ -1,6 +1,7 @@
 const { Side, OrderType } = require('@polymarket/clob-client-v2');
 const krakenFeed = require('./krakenFeed');
 const logger = require('./logger');
+const safety = require('./safety');
 const { placeSellOrder, buildClobAuthHeaders, getUsdcBalance } = require('./trader');
 
 const ESTIMATED_FEE_RATE = 0.02;
@@ -19,12 +20,10 @@ const _clobPreflightCache = new Map(); // tokenId -> { ts, reason }
 const PREFLIGHT_COOLDOWN_MS = 3 * 60 * 1000; // 3 min — suppress repeat logs
 
 async function safeGetTickSize(tokenId) {
-  // Guard 1: tokenId must be a non-empty string
   if (!tokenId || typeof tokenId !== 'string' || !tokenId.trim()) {
     return { ok: false, reason: 'invalid_token_id' };
   }
 
-  // Guard 2: cooldown — don't retry a failed token every 10s
   const cached = _clobPreflightCache.get(tokenId);
   if (cached && (Date.now() - cached.ts) < PREFLIGHT_COOLDOWN_MS) {
     return { ok: false, reason: cached.reason, cached: true };
@@ -54,27 +53,23 @@ async function safeGetTickSize(tokenId) {
       return { ok: false, reason: 'clob_lookup_failed' };
     }
 
-    // Guard 3: API error body (e.g. {"error":"market not found"})
     if (!data || data.error) {
       _clobPreflightCache.set(tokenId, { ts: Date.now(), reason: 'token_not_indexed' });
       return { ok: false, reason: 'token_not_indexed' };
     }
 
-    // Guard 4: minimum_tick_size field may be absent or null
     const raw = data.minimum_tick_size;
     if (raw === null || raw === undefined) {
       _clobPreflightCache.set(tokenId, { ts: Date.now(), reason: 'tick_size_missing' });
       return { ok: false, reason: 'tick_size_missing' };
     }
 
-    // Guard 5: safe String() conversion — never calls .toString() on unknown value
     const tickSize = String(raw);
     if (!tickSize || tickSize === 'undefined' || tickSize === 'null' || tickSize === 'NaN') {
       _clobPreflightCache.set(tokenId, { ts: Date.now(), reason: 'tick_size_missing' });
       return { ok: false, reason: 'tick_size_missing' };
     }
 
-    // Success — clear any stale cache entry so future failures are re-logged
     _clobPreflightCache.delete(tokenId);
     return { ok: true, tickSize };
 
@@ -82,13 +77,11 @@ async function safeGetTickSize(tokenId) {
     const isTimeout = err && err.name === 'AbortError';
     const reason = isTimeout ? 'clob_lookup_failed' : 'unexpected_exception';
     _clobPreflightCache.set(tokenId, { ts: Date.now(), reason });
-    // Safe string extraction — err.message may itself be undefined
     const detail = (err && err.message) ? String(err.message).slice(0, 80) : 'unknown';
     return { ok: false, reason, detail };
   }
 }
 
-// Human-readable descriptions for each preflight failure reason
 const PREFLIGHT_REASON_DESC = {
   invalid_token_id:      'invalid_token_id — tokenId is null/undefined/not a string',
   token_not_indexed:     'token_not_indexed — fresh BTC 15m token not yet registered on CLOB (normal, retrying in 3 min)',
@@ -105,22 +98,30 @@ function getMomentumConfig() {
     orderPct:           orderPctRaw,
     orderPctMin:        parseFloat(process.env.MOM_ORDER_PCT_MIN)       || 2,
     orderPctMax:        parseFloat(process.env.MOM_ORDER_PCT_MAX)       || 20,
-    trailingStop:       parseFloat(process.env.MOM_TRAILING_STOP)       || 0.05,
-    trailingActivate:   parseFloat(process.env.MOM_TRAILING_ACTIVATE)   || 0.10,
-    stopLossCents:      parseFloat(process.env.MOM_STOP_LOSS)           || 0.18,
+    trailingStop:       parseFloat(process.env.MOM_TRAILING_STOP)       || 0.03,
+    trailingActivate:   parseFloat(process.env.MOM_TRAILING_ACTIVATE)   || 0.08,
+    stopLossCents:      parseFloat(process.env.MOM_STOP_LOSS)           || 0.10,
     takeProfit:         parseFloat(process.env.MOM_TAKE_PROFIT)         || 0.75,
-    momentumThreshold:  parseFloat(process.env.MOM_THRESHOLD)           || 0.05,
-    midMin:             parseFloat(process.env.MOM_MID_MIN)             || 0.18,
-    midMax:             parseFloat(process.env.MOM_MID_MAX)             || 0.82,
+    momentumThreshold:  parseFloat(process.env.MOM_THRESHOLD)           || 0.12,
+    midMin:             parseFloat(process.env.MOM_MID_MIN)             || 0.25,
+    midMax:             parseFloat(process.env.MOM_MID_MAX)             || 0.75,
     entryAfterSeconds:  parseInt(process.env.MOM_ENTRY_AFTER_SECONDS)   || 30,
     closeSeconds:       parseInt(process.env.MOM_CLOSE_SECONDS)         || 240,
     entryWindowSeconds: parseInt(process.env.MOM_ENTRY_WINDOW_SECONDS)  || 240,
     maxSpread:          parseFloat(process.env.MOM_MAX_SPREAD)          || 0.03,
     refreshInterval:    parseInt(process.env.MM_REFRESH_INTERVAL)       || 10,
     marketType:         process.env.MOM_MARKET_TYPE                     || '15m',
-    maxFlips:           parseInt(process.env.MOM_MAX_FLIPS)             || 3,
+    maxFlips:           parseInt(process.env.MOM_MAX_FLIPS)             || 0,
     flipMinSeconds:     parseInt(process.env.MOM_FLIP_MIN_SECONDS)      || 45,
-    volFilter:          process.env.MOM_VOL_FILTER !== 'false'
+    volFilter:          process.env.MOM_VOL_FILTER !== 'false',
+    noTradeZoneMin:     parseFloat(process.env.MOM_NO_TRADE_MIN)        || 0.46,
+    noTradeZoneMax:     parseFloat(process.env.MOM_NO_TRADE_MAX)        || 0.54,
+    noTradeHighConf:    parseFloat(process.env.MOM_NO_TRADE_HCONF)      || 0.20,
+    minNetEdgeCents:    parseFloat(process.env.MOM_MIN_EDGE_CENTS)      || 0.05,
+    require5mConfirm:   process.env.MOM_REQUIRE_5M !== 'false',
+    minBookDepth:       parseFloat(process.env.MOM_MIN_DEPTH)           || 30,
+    maxDailyTrades:     parseInt(process.env.MOM_MAX_DAILY_TRADES)      || 6,
+    makerWaitSeconds:   parseInt(process.env.MOM_MAKER_WAIT_SECONDS)    || 20
   };
 }
 
@@ -138,7 +139,10 @@ async function fetchMidpoint(tokenId) {
   }
 }
 
-async function fetchSpread(tokenId) {
+// fetchBook: returns real bid, ask, spread, and top-of-book depth in USD.
+// Used for entry price determination and exit price determination.
+// Never uses midpoint as the tradable reference.
+async function fetchBook(tokenId) {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
@@ -146,12 +150,29 @@ async function fetchSpread(tokenId) {
     clearTimeout(timer);
     if (!res.ok) return null;
     const data = await res.json();
-    const bids = (data.bids || []).map(b => parseFloat(b.price)).filter(p => p > 0);
-    const asks = (data.asks || []).map(a => parseFloat(a.price)).filter(p => p > 0);
+    const bids = (data.bids || [])
+      .map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size || 0) }))
+      .filter(b => b.price > 0);
+    const asks = (data.asks || [])
+      .map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size || 0) }))
+      .filter(a => a.price > 0);
     if (bids.length === 0 || asks.length === 0) return null;
-    const bestBid = Math.max(...bids);
-    const bestAsk = Math.min(...asks);
-    return { bid: bestBid, ask: bestAsk, spread: parseFloat((bestAsk - bestBid).toFixed(4)) };
+    const bestBid = Math.max(...bids.map(b => b.price));
+    const bestAsk = Math.min(...asks.map(a => a.price));
+    const bidDepth = bids
+      .filter(b => b.price === bestBid)
+      .reduce((s, b) => s + b.size * b.price, 0);
+    const askDepth = asks
+      .filter(a => a.price === bestAsk)
+      .reduce((s, a) => s + a.size * a.price, 0);
+    return {
+      bid:      bestBid,
+      ask:      bestAsk,
+      spread:   parseFloat((bestAsk - bestBid).toFixed(4)),
+      mid:      parseFloat(((bestBid + bestAsk) / 2).toFixed(4)),
+      bidDepth: parseFloat(bidDepth.toFixed(2)),
+      askDepth: parseFloat(askDepth.toFixed(2))
+    };
   } catch {
     return null;
   }
@@ -238,6 +259,17 @@ class MomentumSession {
     this.tradeIds           = [];
     this.btcChange3m        = null;
     this.lastMid            = null;
+
+    // NEW: signal quality and book state for dashboard + logic
+    this.lastConfidence     = null;
+    this.lastSkipReason     = null;
+    this.lastBid            = null;
+    this.lastAsk            = null;
+    this.lastSpread         = null;
+    this.lastBidDepth       = null;
+    this.lastAskDepth       = null;
+    this.lastRegime         = null;
+    this.lastEstimatedEdge  = null;
   }
 
   _resetTradeLeg() {
@@ -290,14 +322,76 @@ class MomentumSession {
     return this.secondsLeft < (total - windowSeconds);
   }
 
+  // ---------------------------------------------------------------------------
+  // getSignal: returns 'UP' | 'DOWN' | null
+  // Requires 3m BTC change >= threshold AND 5m direction agreement (if enabled).
+  // Computes a confidence score 0-1 based on multi-timeframe agreement + strength.
+  // Sets this.lastConfidence, this.lastSkipReason, this.lastRegime.
+  // ---------------------------------------------------------------------------
   getSignal() {
     const ctx = krakenFeed.getPriceContext();
-    if (!ctx.available || !ctx.change3m) return null;
+    if (!ctx.available || !ctx.change3m) {
+      this.lastSkipReason = 'no_btc_data';
+      return null;
+    }
+
     const change3m = parseFloat(ctx.change3m.percent);
+    const change1m = ctx.change1m ? parseFloat(ctx.change1m.percent) : null;
+    const change5m = ctx.change5m ? parseFloat(ctx.change5m.percent) : null;
+
     this.btcChange3m = change3m;
-    if (change3m >= this.config.momentumThreshold)  return 'UP';
-    if (change3m <= -this.config.momentumThreshold) return 'DOWN';
-    return null;
+
+    let rawSignal = null;
+    if (change3m >= this.config.momentumThreshold)  rawSignal = 'UP';
+    if (change3m <= -this.config.momentumThreshold) rawSignal = 'DOWN';
+
+    if (!rawSignal) {
+      this.lastSkipReason = `weak_signal: 3m=${change3m.toFixed(3)}% (need ±${this.config.momentumThreshold}%)`;
+      this.lastConfidence = 0;
+      return null;
+    }
+
+    const sigDir = rawSignal === 'UP' ? 1 : -1;
+
+    // 5-minute confirmation: 5m trend must not oppose 3m signal
+    if (this.config.require5mConfirm && change5m !== null) {
+      const fiveDir = change5m > 0.01 ? 1 : change5m < -0.01 ? -1 : 0;
+      if (fiveDir !== 0 && fiveDir !== sigDir) {
+        this.lastSkipReason = `5m_disagrees: 3m=${change3m.toFixed(3)}% ${rawSignal} but 5m=${change5m.toFixed(3)}% opposes`;
+        this.lastConfidence = 0;
+        return null;
+      }
+    }
+
+    // Chop filter: 1m must agree with 3m
+    if (this.config.volFilter && krakenFeed.isChoppyMarket()) {
+      this.lastSkipReason = `choppy: 1m=${change1m?.toFixed(3) || '?'}% vs 3m=${change3m.toFixed(3)}% disagree`;
+      this.lastConfidence = 0;
+      return null;
+    }
+
+    // Confidence score: signal strength × timeframe agreement
+    let conf = Math.min(1.0, Math.abs(change3m) / (this.config.momentumThreshold * 4));
+
+    if (change1m !== null) {
+      const oneDir = change1m > 0.01 ? 1 : change1m < -0.01 ? -1 : 0;
+      if (oneDir === sigDir)      conf = Math.min(1.0, conf + 0.25);
+      else if (oneDir !== 0)      conf = Math.max(0, conf - 0.25);
+    }
+    if (change5m !== null) {
+      const fiveDir = change5m > 0.01 ? 1 : change5m < -0.01 ? -1 : 0;
+      if (fiveDir === sigDir)     conf = Math.min(1.0, conf + 0.15);
+    }
+
+    this.lastConfidence = parseFloat(conf.toFixed(3));
+    this.lastSkipReason = null;
+
+    // Regime classification for dashboard
+    const allAgree = (change1m === null || (change1m > 0) === (change3m > 0)) &&
+                     (change5m === null || (change5m > 0) === (change3m > 0));
+    this.lastRegime = allAgree ? 'TREND' : 'MIXED';
+
+    return rawSignal;
   }
 
   async attemptEntry(client) {
@@ -309,25 +403,51 @@ class MomentumSession {
       return;
     }
 
+    // Safety: daily trade limit
+    const safetyStatus = safety.getStatus();
+    if (safetyStatus.dailyTradeCount >= this.config.maxDailyTrades) {
+      const now = Date.now();
+      if (now - this.lastNoSignalLog >= 60000) {
+        this.lastNoSignalLog = now;
+        logger.addActivity('mom_skip', {
+          message: `[${this.market.coin}-${this.market.type}] Daily trade limit reached (${safetyStatus.dailyTradeCount}/${this.config.maxDailyTrades}) — no new entries today`
+        });
+      }
+      return;
+    }
+
+    // Safety: cooldown after a loss
+    const cooldown = safety.getCooldownRemaining();
+    if (cooldown > 0) {
+      const now = Date.now();
+      if (now - this.lastNoSignalLog >= 30000) {
+        this.lastNoSignalLog = now;
+        logger.addActivity('mom_skip', {
+          message: `[${this.market.coin}-${this.market.type}] Loss cooldown: ${Math.ceil(cooldown)}s remaining — skipping entry`
+        });
+      }
+      return;
+    }
+
+    // Safety: losing streak stop
+    if (safety.consecutiveLosses >= safety.losingStreakStop) {
+      const now = Date.now();
+      if (now - this.lastNoSignalLog >= 60000) {
+        this.lastNoSignalLog = now;
+        logger.addActivity('mom_skip', {
+          message: `[${this.market.coin}-${this.market.type}] Losing streak (${safety.consecutiveLosses}) hit limit (${safety.losingStreakStop}) — paused until next window`
+        });
+      }
+      return;
+    }
+
     const signal = this.getSignal();
     if (!signal) {
       const now = Date.now();
       if (now - this.lastNoSignalLog >= 60000) {
         const ctx = krakenFeed.getPriceContext();
         logger.addActivity('mom_skip', {
-          message: `[${this.market.coin}-${this.market.type}] No momentum signal — BTC 3m: ${ctx.change3m?.percent || '?'}% (need ±${this.config.momentumThreshold}%) | retrying every 10s | ${Math.round(this.secondsLeft)}s left`
-        });
-        this.lastNoSignalLog = now;
-      }
-      return;
-    }
-
-    if (this.config.volFilter && krakenFeed.isChoppyMarket()) {
-      const now = Date.now();
-      if (now - this.lastNoSignalLog >= 60000) {
-        const ctx = krakenFeed.getPriceContext();
-        logger.addActivity('mom_skip', {
-          message: `[${this.market.coin}-${this.market.type}] VOL FILTER: BTC choppy — 1m: ${ctx.change1m?.percent || '?'}% vs 3m: ${ctx.change3m?.percent || '?'}% disagree — skipping entry to avoid choppy market | ${Math.round(this.secondsLeft)}s left`
+          message: `[${this.market.coin}-${this.market.type}] No signal — ${this.lastSkipReason || `BTC 3m: ${ctx.change3m?.percent || '?'}%`} | conf=${this.lastConfidence ?? '?'} | ${Math.round(this.secondsLeft)}s left`
         });
         this.lastNoSignalLog = now;
       }
@@ -373,7 +493,6 @@ class MomentumSession {
   async _enterSide(client, side, reason) {
     const mkt = `${this.market.coin}-${this.market.type}`;
 
-    // Guard: tokenId must be a valid non-empty string before ANY further usage
     const tokenId = side === 'UP' ? this.market.upTokenId : this.market.downTokenId;
     if (!tokenId || typeof tokenId !== 'string') {
       logger.addActivity('mom_error', {
@@ -383,54 +502,80 @@ class MomentumSession {
       return;
     }
 
-    const mid = await fetchMidpoint(tokenId);
-
-    if (mid === null) {
-      logger.addActivity('mom_skip', {
-        message: `[${this.market.coin}-${this.market.type}] Could not fetch midpoint for ${side} — skipping`
-      });
-      this.phase = reason === 'flip' ? 'done' : 'waiting';
-      return;
-    }
-
-    this.lastMid = mid;
-
-    if (mid < this.config.midMin || mid > this.config.midMax) {
-      logger.addActivity('mom_skip', {
-        message: `[${this.market.coin}-${this.market.type}] ${side} mid=$${mid.toFixed(3)} outside [${this.config.midMin}–${this.config.midMax}] — ${reason === 'flip' ? 'skipping flip' : 'skipping entry'}`
-      });
-      this.phase = reason === 'flip' ? 'done' : 'waiting';
-      return;
-    }
-
-    // Spread / liquidity check — skip if orderbook spread is too wide
-    const book = await fetchSpread(tokenId);
+    // Fetch real orderbook — this is the ground truth for price, not midpoint
+    const book = await fetchBook(tokenId);
     if (!book) {
       logger.addActivity('mom_skip', {
-        message: `[${this.market.coin}-${this.market.type}] Cannot fetch orderbook spread — skipping entry | ${Math.round(this.secondsLeft)}s left`
-      });
-      this.phase = reason === 'flip' ? 'done' : 'waiting';
-      return;
-    }
-    logger.addActivity('mom_book', {
-      message: `[${this.market.coin}-${this.market.type}] Book: bid=$${book.bid.toFixed(3)} ask=$${book.ask.toFixed(3)} spread=${(book.spread * 100).toFixed(1)}¢ (max=${(this.config.maxSpread * 100).toFixed(0)}¢) | ${Math.round(this.secondsLeft)}s left`
-    });
-    if (book.spread > this.config.maxSpread) {
-      logger.addActivity('mom_skip', {
-        message: `[${mkt}] SPREAD ${(book.spread * 100).toFixed(1)}¢ > max ${(this.config.maxSpread * 100).toFixed(0)}¢ — skipping entry | ${Math.round(this.secondsLeft)}s left`
+        message: `[${mkt}] Cannot fetch orderbook — skipping | ${Math.round(this.secondsLeft)}s left`
       });
       this.phase = reason === 'flip' ? 'done' : 'waiting';
       return;
     }
 
-    // CLOB preflight — confirm token is indexed and retrieve tick size safely.
-    // This runs BEFORE any state mutation so a skip leaves the session untouched.
+    // Update session state for dashboard
+    this.lastBid      = book.bid;
+    this.lastAsk      = book.ask;
+    this.lastSpread   = book.spread;
+    this.lastBidDepth = book.bidDepth;
+    this.lastAskDepth = book.askDepth;
+    this.lastMid      = book.mid;
+
+    logger.addActivity('mom_book', {
+      message: `[${mkt}] Book: bid=$${book.bid.toFixed(3)} ask=$${book.ask.toFixed(3)} spread=${(book.spread * 100).toFixed(1)}¢ bidDepth=$${book.bidDepth.toFixed(1)} askDepth=$${book.askDepth.toFixed(1)} | ${Math.round(this.secondsLeft)}s left`
+    });
+
+    // Spread too wide — skip
+    if (book.spread > this.config.maxSpread) {
+      this.lastSkipReason = `spread_${(book.spread * 100).toFixed(1)}c_>_max_${(this.config.maxSpread * 100).toFixed(0)}c`;
+      logger.addActivity('mom_skip', {
+        message: `[${mkt}] SPREAD ${(book.spread * 100).toFixed(1)}¢ > max ${(this.config.maxSpread * 100).toFixed(0)}¢ — skipping | ${Math.round(this.secondsLeft)}s left`
+      });
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
+      return;
+    }
+
+    // Book depth check — skip if top-of-book is too thin
+    if (book.askDepth < this.config.minBookDepth) {
+      this.lastSkipReason = `thin_book_ask_depth_$${book.askDepth.toFixed(1)}_<_$${this.config.minBookDepth}`;
+      logger.addActivity('mom_skip', {
+        message: `[${mkt}] Ask depth $${book.askDepth.toFixed(1)} < min $${this.config.minBookDepth} — thin book, skipping | ${Math.round(this.secondsLeft)}s left`
+      });
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
+      return;
+    }
+
+    const mid = book.mid;
+
+    // Mid range check
+    if (mid < this.config.midMin || mid > this.config.midMax) {
+      this.lastSkipReason = `mid_${mid.toFixed(3)}_outside_[${this.config.midMin}-${this.config.midMax}]`;
+      logger.addActivity('mom_skip', {
+        message: `[${mkt}] ${side} mid=$${mid.toFixed(3)} outside [${this.config.midMin}–${this.config.midMax}] — ${reason === 'flip' ? 'skipping flip' : 'skipping entry'}`
+      });
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
+      return;
+    }
+
+    // No-trade zone: mid is near 50/50 — signal is weakest here
+    const inNoTradeZone = mid >= this.config.noTradeZoneMin && mid <= this.config.noTradeZoneMax;
+    if (inNoTradeZone) {
+      const needsHighConf = this.config.noTradeHighConf;
+      const conf = this.lastConfidence || 0;
+      if (conf < needsHighConf) {
+        this.lastSkipReason = `no_trade_zone_mid=${mid.toFixed(3)}_conf=${conf.toFixed(3)}_<_${needsHighConf}`;
+        logger.addActivity('mom_skip', {
+          message: `[${mkt}] NO-TRADE ZONE: mid=$${mid.toFixed(3)} in [${this.config.noTradeZoneMin}-${this.config.noTradeZoneMax}] | conf=${conf.toFixed(3)} < required ${needsHighConf} — skipping weak 50/50 setup`
+        });
+        this.phase = reason === 'flip' ? 'done' : 'waiting';
+        return;
+      }
+    }
+
+    // CLOB preflight
     const preflight = await safeGetTickSize(tokenId);
     if (!preflight.ok) {
       if (!preflight.cached) {
-        const desc = PREFLIGHT_REASON_DESC[preflight.reason]
-          || preflight.reason
-          + (preflight.detail ? ` — ${preflight.detail}` : '');
+        const desc = PREFLIGHT_REASON_DESC[preflight.reason] || preflight.reason + (preflight.detail ? ` — ${preflight.detail}` : '');
         logger.addActivity('mom_skip', {
           message: `[${mkt}] Preflight skip (${preflight.reason}): ${desc} | token ${tokenId.slice(0, 14)}…`
         });
@@ -442,21 +587,22 @@ class MomentumSession {
       message: `[${mkt}] Preflight OK — tick_size=${preflight.tickSize} | token ${tokenId.slice(0, 14)}… | proceeding to order`
     });
 
-    // Write into the SDK's internal tickSizes cache so createAndPostOrder's
-    // internal getTickSize() call finds it immediately and never hits the API.
-    // Without this, the SDK makes its own separate API call and crashes on
-    // result.minimum_tick_size.toString() when the response is an error object.
     if (client && client.tickSizes) {
       client.tickSizes[tokenId] = preflight.tickSize;
     }
 
     this._resetTradeLeg();
-    this._spreadAtEntry      = book ? book.spread : null;
+    this._spreadAtEntry      = book.spread;
     this._btcSignalAtEntry   = this.btcChange3m;
     this._secondsLeftAtEntry = Math.round(this.secondsLeft);
     this.signal     = side;
     this.tokenId    = tokenId;
-    this.entryPrice = Math.round(mid * 100) / 100;
+
+    // Use the real ASK price (not midpoint) as entry — ensures we know exactly
+    // what we're paying and the order is genuinely executable at this level.
+    // Round up to nearest cent to guarantee taker fill.
+    const entryAsk  = Math.ceil(book.ask * 100) / 100;
+    this.entryPrice = Math.min(0.97, entryAsk);
 
     let orderSize = this.config.orderSize;
     if (this.config.orderPct) {
@@ -466,36 +612,53 @@ class MomentumSession {
           const pctSize = parseFloat((balance * this.config.orderPct).toFixed(2));
           orderSize = Math.min(this.config.orderPctMax, Math.max(this.config.orderPctMin, pctSize));
           logger.addActivity('mom_entry', {
-            message: `[${this.market.coin}-${this.market.type}] Dynamic sizing: balance=$${balance.toFixed(2)} × ${(this.config.orderPct * 100).toFixed(0)}% → $${orderSize.toFixed(2)} (min $${this.config.orderPctMin} / max $${this.config.orderPctMax})`
+            message: `[${mkt}] Dynamic sizing: balance=$${balance.toFixed(2)} × ${(this.config.orderPct * 100).toFixed(0)}% → $${orderSize.toFixed(2)}`
           });
         } else {
           logger.addActivity('mom_entry', {
-            message: `[${this.market.coin}-${this.market.type}] Dynamic sizing: balance fetch failed or zero — falling back to fixed $${orderSize}`
+            message: `[${mkt}] Dynamic sizing: balance fetch failed — using fixed $${orderSize}`
           });
         }
       } catch (err) {
         logger.addActivity('mom_entry', {
-          message: `[${this.market.coin}-${this.market.type}] Dynamic sizing error: ${err.message?.slice(0, 60)} — using fixed $${orderSize}`
+          message: `[${mkt}] Dynamic sizing error: ${err.message?.slice(0, 60)} — using fixed $${orderSize}`
         });
       }
     }
 
-    this.entrySizeTokens = parseFloat((orderSize / this.entryPrice).toFixed(2));
+    this.entrySizeTokens   = parseFloat((orderSize / this.entryPrice).toFixed(2));
     this._currentOrderSize = orderSize;
 
+    // Fee-aware edge check: estimated net edge per token after round-trip fees
+    const estBuyFee    = this.entryPrice * ESTIMATED_FEE_RATE;
+    const estSellFee   = this.config.takeProfit * ESTIMATED_FEE_RATE;
+    const estGrossEdge = this.config.takeProfit - this.entryPrice;
+    const estNetEdge   = estGrossEdge - estBuyFee - estSellFee;
+    this.lastEstimatedEdge = parseFloat(estNetEdge.toFixed(4));
+
+    if (estNetEdge < this.config.minNetEdgeCents) {
+      this.lastSkipReason = `edge_${estNetEdge.toFixed(4)}_<_min_${this.config.minNetEdgeCents}`;
+      logger.addActivity('mom_skip', {
+        message: `[${mkt}] FEE CHECK FAILED: estimated net edge ${(estNetEdge * 100).toFixed(2)}¢/token < min ${(this.config.minNetEdgeCents * 100).toFixed(2)}¢ — ask=$${this.entryPrice} TP=$${this.config.takeProfit} fees≈${((estBuyFee + estSellFee) * 100).toFixed(2)}¢ — skipping`
+      });
+      this.phase = reason === 'flip' ? 'done' : 'waiting';
+      return;
+    }
+
+    const conf = this.lastConfidence !== null ? this.lastConfidence : '?';
     if (reason === 'flip') {
       logger.addActivity('mom_flip', {
-        message: `[${this.market.coin}-${this.market.type}] FLIP attempt → ${side} | mid=$${mid.toFixed(3)} | ${Math.round(this.secondsLeft)}s left | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+        message: `[${mkt}] FLIP → ${side} | ask=$${this.entryPrice} mid=$${mid.toFixed(3)} | conf=${conf} | edge=+${(estNetEdge * 100).toFixed(2)}¢/tok | ${Math.round(this.secondsLeft)}s left`
       });
     } else {
       const ctx = krakenFeed.getPriceContext();
       logger.addActivity('mom_signal', {
-        message: `[${this.market.coin}-${this.market.type}] SIGNAL: ${side} | BTC 3m: ${ctx.change3m?.percent || '?'}% | mid=$${mid.toFixed(3)} | ${Math.round(this.secondsLeft)}s left`
+        message: `[${mkt}] SIGNAL: ${side} | BTC 3m: ${ctx.change3m?.percent || '?'}% | regime=${this.lastRegime || '?'} | conf=${conf} | edge=+${(estNetEdge * 100).toFixed(2)}¢/tok | ask=$${this.entryPrice} (was mid=$${mid.toFixed(3)}) | ${Math.round(this.secondsLeft)}s left`
       });
     }
 
     logger.addActivity('mom_entry', {
-      message: `[${this.market.coin}-${this.market.type}] BUY ${side} @ $${this.entryPrice} | ${this.entrySizeTokens} tokens | trailing stop: ${(this.config.trailingStop * 100).toFixed(0)}¢ below peak (activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry) | SL: -${(this.config.stopLossCents * 100).toFixed(0)}¢`
+      message: `[${mkt}] BUY ${side} @ $${this.entryPrice} (ask) | ${this.entrySizeTokens} tokens | SL: -${(this.config.stopLossCents * 100).toFixed(0)}¢ | TP: $${this.config.takeProfit} | trail: ${(this.config.trailingStop * 100).toFixed(0)}¢ (activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry)`
     });
 
     this.phase = 'entering';
@@ -515,26 +678,27 @@ class MomentumSession {
       if (order && order.orderID) {
         this.entryOrderId = order.orderID;
         this.totalSpent  += this._currentOrderSize || this.config.orderSize;
+        safety.recordTrade(this._currentOrderSize || this.config.orderSize);
         if (reason === 'flip') {
           this.flipCount++;
           logger.addActivity('mom_flip', {
-            message: `[${this.market.coin}-${this.market.type}] FLIP #${this.flipCount} CONFIRMED → ${side} BUY posted | orderId: ${order.orderID.slice(0, 14)}...`
+            message: `[${mkt}] FLIP #${this.flipCount} posted | orderId: ${order.orderID.slice(0, 14)}...`
           });
         } else {
           logger.addActivity('mom_entry', {
-            message: `[${this.market.coin}-${this.market.type}] BUY order posted | orderId: ${order.orderID.slice(0, 14)}...`
+            message: `[${mkt}] BUY order posted | orderId: ${order.orderID.slice(0, 14)}...`
           });
         }
       } else {
         const err = order?.errorMsg || order?.error || JSON.stringify(order)?.slice(0, 60);
         logger.addActivity('mom_error', {
-          message: `[${this.market.coin}-${this.market.type}] BUY failed: ${err}`
+          message: `[${mkt}] BUY failed: ${err}`
         });
         this.phase = reason === 'flip' ? 'done' : 'waiting';
       }
     } catch (err) {
       logger.addActivity('mom_error', {
-        message: `[${this.market.coin}-${this.market.type}] BUY error: ${err.message?.slice(0, 80)}`
+        message: `[${mkt}] BUY error: ${err.message?.slice(0, 80)}`
       });
       this.phase = reason === 'flip' ? 'done' : 'waiting';
     }
@@ -577,7 +741,7 @@ class MomentumSession {
       this.estimatedBuyFee  = parseFloat((matched * this.entryPrice * ESTIMATED_FEE_RATE).toFixed(4));
       this._entryTimestamp  = new Date().toISOString();
       logger.addActivity('mom_filled', {
-        message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)}) | est. buy fee: $${this.estimatedBuyFee.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] BUY FILLED — ${this.signal} ${matched} tokens @ $${this.entryPrice} | trail activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry | est. fee: $${this.estimatedBuyFee.toFixed(3)}`
       });
     } else if (orderStatus === 'CANCELED' || orderStatus === 'CANCELLED') {
       logger.addActivity('mom_error', {
@@ -593,7 +757,7 @@ class MomentumSession {
       this.estimatedBuyFee  = parseFloat((this.filledSize * this.entryPrice * ESTIMATED_FEE_RATE).toFixed(4));
       this._entryTimestamp  = new Date().toISOString();
       logger.addActivity('mom_filled', {
-        message: `[${this.market.coin}-${this.market.type}] BUY FILLED (status=MATCHED) — ${this.signal} ${this.filledSize} tokens @ $${this.entryPrice} | trailing stop activates ${(this.config.trailingActivate * 100).toFixed(0)}¢ above entry ($${(this.entryPrice + this.config.trailingActivate).toFixed(3)}) | est. buy fee: $${this.estimatedBuyFee.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] BUY FILLED (MATCHED) — ${this.signal} ${this.filledSize} tokens @ $${this.entryPrice} | est. fee: $${this.estimatedBuyFee.toFixed(3)}`
       });
     }
   }
@@ -608,7 +772,7 @@ class MomentumSession {
       if (!this._lastMidDebugLog || now - this._lastMidDebugLog >= 15000) {
         this._lastMidDebugLog = now;
         logger.addActivity('fill_debug', {
-          message: `[${this.market.coin}-${this.market.type}] Trailing stop — midpoint fetch returned NULL | tokenId=${this.tokenId?.slice(0, 14)}... | ${Math.round(this.secondsLeft)}s left`
+          message: `[${this.market.coin}-${this.market.type}] Trailing stop — midpoint fetch returned NULL | ${Math.round(this.secondsLeft)}s left`
         });
       }
       return;
@@ -618,7 +782,7 @@ class MomentumSession {
 
     if (mid >= this.config.takeProfit) {
       logger.addActivity('mom_tp_target', {
-        message: `[${this.market.coin}-${this.market.type}] TAKE PROFIT HIT — mid=$${mid.toFixed(3)} >= target=$${this.config.takeProfit.toFixed(2)} | entry=$${this.entryPrice.toFixed(3)} | cashing out NOW`
+        message: `[${this.market.coin}-${this.market.type}] TAKE PROFIT HIT — mid=$${mid.toFixed(3)} >= $${this.config.takeProfit} | entry=$${this.entryPrice} — cashing out`
       });
       await this._postExitSell(client, mid, 'take_profit');
       return;
@@ -629,7 +793,7 @@ class MomentumSession {
       this._lastTrailingLog = now3;
       const stopLoss = Math.max(0.02, this.entryPrice - this.config.stopLossCents);
       logger.addActivity('fill_debug', {
-        message: `[${this.market.coin}-${this.market.type}] Trailing monitor — mid=$${mid.toFixed(3)} | entry=$${this.entryPrice} | peak=$${(this.peakMid || 0).toFixed(3)} | active=${this.trailingActive} | stop=${(this.trailingStopLevel || 0).toFixed(3)} | SL=$${stopLoss.toFixed(3)} | TP=$${this.config.takeProfit.toFixed(2)} | ${Math.round(this.secondsLeft)}s left`
+        message: `[${this.market.coin}-${this.market.type}] Monitor — mid=$${mid.toFixed(3)} entry=$${this.entryPrice} peak=$${(this.peakMid || 0).toFixed(3)} trailActive=${this.trailingActive} stop=$${(this.trailingStopLevel || 0).toFixed(3)} SL=$${stopLoss.toFixed(3)} TP=$${this.config.takeProfit} | ${Math.round(this.secondsLeft)}s left`
       });
     }
 
@@ -640,14 +804,14 @@ class MomentumSession {
       this.peakMid           = mid;
       this.trailingStopLevel = Math.max(this.entryPrice, mid - this.config.trailingStop);
       logger.addActivity('mom_trailing', {
-        message: `[${this.market.coin}-${this.market.type}] Profit protection ACTIVATED | peak=$${mid.toFixed(3)} | stop=$${this.trailingStopLevel.toFixed(3)} (floor = entry $${this.entryPrice.toFixed(3)})`
+        message: `[${this.market.coin}-${this.market.type}] Profit protection ACTIVATED | peak=$${mid.toFixed(3)} | stop=$${this.trailingStopLevel.toFixed(3)} (floor=entry $${this.entryPrice})`
       });
     } else if (this.trailingActive) {
       if (mid > this.peakMid) {
         this.peakMid           = mid;
         this.trailingStopLevel = Math.max(this.entryPrice, mid - this.config.trailingStop);
         logger.addActivity('mom_peak', {
-          message: `[${this.market.coin}-${this.market.type}] New peak=$${mid.toFixed(3)} | trailing stop=$${this.trailingStopLevel.toFixed(3)} | unrealized: +$${((mid - this.entryPrice) * (this.filledSize || this.entrySizeTokens)).toFixed(3)}`
+          message: `[${this.market.coin}-${this.market.type}] New peak=$${mid.toFixed(3)} | trail stop=$${this.trailingStopLevel.toFixed(3)} | unrealized: +$${((mid - this.entryPrice) * (this.filledSize || this.entrySizeTokens)).toFixed(3)}`
         });
       }
 
@@ -662,26 +826,58 @@ class MomentumSession {
       return;
     }
 
-    // Signal-flip fast exit: BTC reversed strongly while we're below entry — cut position early
+    // Signal-flip fast exit: BTC reversed while we're below entry
     if (!this.trailingActive && mid < this.entryPrice) {
       const liveSignal = this.getSignal();
       if (liveSignal && liveSignal !== this.signal) {
         logger.addActivity('mom_flip_exit', {
-          message: `[${this.market.coin}-${this.market.type}] SIGNAL FLIP — entered ${this.signal} but BTC now strongly ${liveSignal} | mid=$${mid.toFixed(3)} < entry=$${this.entryPrice.toFixed(3)} | cutting position`
+          message: `[${this.market.coin}-${this.market.type}] SIGNAL FLIP — entered ${this.signal} but BTC now ${liveSignal} | mid=$${mid.toFixed(3)} < entry=$${this.entryPrice} — cutting`
         });
         await this._postExitSell(client, mid, 'signal_flip');
       }
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // _postExitSell: posts the exit sell order.
+  // For defensive exits (stop_loss, trailing_stop, signal_flip):
+  //   → fetches real orderbook and posts at best BID to guarantee immediate fill.
+  //   → Never lets a stop-loss order rest unfilled while price keeps dropping.
+  // For profit exits (take_profit, closing_cashout):
+  //   → posts at mid (can afford to wait as a maker).
+  // ---------------------------------------------------------------------------
   async _postExitSell(client, mid, reason) {
     if (this.phase !== 'managing' || !this.holdingToken || this.exitOrderId || this._exitInFlight) return false;
 
     this._exitInFlight = true;
 
     try {
-      const exitSize  = this.filledSize || this.entrySizeTokens;
-      const exitPrice = Math.max(0.02, Math.min(0.97, Math.round(mid * 100) / 100));
+      const exitSize = this.filledSize || this.entrySizeTokens;
+
+      let exitPrice;
+      const defensiveExit = reason === 'stop_loss' || reason === 'trailing_stop' || reason === 'signal_flip';
+
+      if (defensiveExit) {
+        // For stop/loss exits: use real best BID from orderbook to guarantee fill.
+        // Posting at mid on a falling market means the order never fills.
+        const exitBook = await fetchBook(this.tokenId);
+        if (exitBook && exitBook.bid > 0) {
+          // Post at best bid — crosses the book immediately as a taker
+          exitPrice = Math.max(0.02, exitBook.bid);
+          this._spreadAtExit = exitBook.spread;
+          logger.addActivity('mom_book', {
+            message: `[${this.market.coin}-${this.market.type}] Exit book: bid=$${exitBook.bid.toFixed(3)} ask=$${exitBook.ask.toFixed(3)} — using bid for guaranteed fill`
+          });
+        } else {
+          // Fallback: use mid if book fetch fails
+          exitPrice = Math.max(0.02, Math.min(0.97, Math.round(mid * 100) / 100));
+          fetchBook(this.tokenId).then(bk => { if (bk) this._spreadAtExit = bk.spread; }).catch(() => {});
+        }
+      } else {
+        // Profit exit: post at rounded mid (maker-friendly, we're winning)
+        exitPrice = Math.max(0.02, Math.min(0.97, Math.round(mid * 100) / 100));
+        fetchBook(this.tokenId).then(bk => { if (bk) this._spreadAtExit = bk.spread; }).catch(() => {});
+      }
 
       const labels = {
         trailing_stop:   'TRAILING STOP',
@@ -694,9 +890,10 @@ class MomentumSession {
       const label = labels[reason] || reason.toUpperCase();
       const peakStr = this.peakMid ? ` | peak was $${this.peakMid.toFixed(3)}` : '';
       const activityType = (reason === 'stop_loss') ? 'mom_sl' : 'mom_tp_hit';
+      const fillMode = defensiveExit ? 'TAKER (bid)' : 'MAKER (mid)';
 
       logger.addActivity(activityType, {
-        message: `[${this.market.coin}-${this.market.type}] ${label} TRIGGERED | ${this.signal} mid=$${mid.toFixed(3)}${peakStr} | posting sell @ $${exitPrice}`
+        message: `[${this.market.coin}-${this.market.type}] ${label} | ${this.signal} mid=$${mid.toFixed(3)}${peakStr} | posting sell @ $${exitPrice.toFixed(3)} [${fillMode}]`
       });
 
       const result = await placeSellOrder(
@@ -709,7 +906,7 @@ class MomentumSession {
 
       if (!result.success) {
         logger.addActivity('mom_error', {
-          message: `[${this.market.coin}-${this.market.type}] Exit sell POST failed: ${result.error?.slice(0, 80)} — will retry next tick`
+          message: `[${this.market.coin}-${this.market.type}] Exit sell POST failed: ${result.error?.slice(0, 80)} — will retry`
         });
         return false;
       }
@@ -720,16 +917,68 @@ class MomentumSession {
       this.exitFilledSoFar    = 0;
       this._lastExitReason    = reason;
       this._secondsLeftAtExit = Math.round(this.secondsLeft);
-      fetchSpread(this.tokenId).then(bk => { this._spreadAtExit = bk ? bk.spread : null; }).catch(() => {});
       this.phase              = 'exiting';
 
       logger.addActivity(activityType, {
-        message: `[${this.market.coin}-${this.market.type}] Exit sell posted @ $${exitPrice} | orderId: ${result.orderId?.slice(0, 14)}... | waiting for fill`
+        message: `[${this.market.coin}-${this.market.type}] Exit sell posted @ $${exitPrice.toFixed(3)} | orderId: ${result.orderId?.slice(0, 14)}... | waiting for fill`
       });
       return true;
     } finally {
       this._exitInFlight = false;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // _recordTradeClose: called when exit is fully filled.
+  // Wires into safety system for real loss/win tracking.
+  // ---------------------------------------------------------------------------
+  _recordTradeClose(fillPrice, exitQty, tradePnl, tradeNetPnl, tradeFeeTotal) {
+    const mkt = `${this.market.coin}-${this.market.type}`;
+    if (tradeNetPnl < 0) {
+      safety.recordLoss(Math.abs(tradeNetPnl));
+    } else {
+      safety.recordWin(tradeNetPnl);
+    }
+
+    logger.addTrade({
+      strategy:              'btc_momentum',
+      coin:                  this.market.coin,
+      marketType:            this.market.type,
+      question:              this.market.question,
+      market_slug:           this.market.slug || this.market.id || '',
+      contract_id:           this.market.conditionId || this.market.id || '',
+      token_id:              this.tokenId || '',
+      direction:             this.signal,
+      timestamp_open:        this._entryTimestamp,
+      timestamp_close:       new Date().toISOString(),
+      entry_price:           this.entryPrice,
+      exit_price:            fillPrice,
+      shares:                exitQty,
+      gross_pnl:             tradePnl,
+      estimated_fees:        tradeFeeTotal,
+      net_pnl:               tradeNetPnl,
+      spread_at_entry:       this._spreadAtEntry,
+      spread_at_exit:        this._spreadAtExit,
+      hold_seconds:          this._entryTimestamp
+                               ? Math.round((Date.now() - new Date(this._entryTimestamp).getTime()) / 1000)
+                               : null,
+      exit_reason:           this._lastExitReason || 'unknown',
+      was_flip_reentry:      this.flipCount > 0,
+      flip_count:            this.flipCount,
+      btc_signal_at_entry:   this._btcSignalAtEntry,
+      seconds_left_at_entry: this._secondsLeftAtEntry,
+      seconds_left_at_exit:  this._secondsLeftAtExit,
+      confidence_at_entry:   this.lastConfidence,
+      regime_at_entry:       this.lastRegime,
+      estimated_edge:        this.lastEstimatedEdge,
+      result:                tradePnl >= 0 ? 'win' : 'loss',
+      pnl:                   tradeNetPnl,
+      estimatedFee:          tradeFeeTotal,
+      exitReason:            this._lastExitReason || 'unknown',
+      entryPrice:            this.entryPrice,
+      entryOrderId:          this.entryOrderId,
+      exitOrderId:           this.exitOrderId
+    });
   }
 
   async checkExitFill(client) {
@@ -766,125 +1015,55 @@ class MomentumSession {
     }
 
     if (fullyFilled) {
-      const fillPrice          = this.exitPostedPrice;
-      const exitQty            = this.exitFilledSoFar;
-      const estimatedSellFee   = parseFloat((exitQty * fillPrice * ESTIMATED_FEE_RATE).toFixed(4));
-      const tradeFeeTotal      = parseFloat((this.estimatedBuyFee + estimatedSellFee).toFixed(4));
-      this.holdingToken        = false;
-      this.exitPrice           = fillPrice;
-      this.tradePnl            = parseFloat(((fillPrice - this.entryPrice) * exitQty).toFixed(4));
-      this.tradeNetPnl         = parseFloat((this.tradePnl - tradeFeeTotal).toFixed(4));
-      this.cumulativePnl       = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
-      this.cumulativeFees      = parseFloat((this.cumulativeFees + tradeFeeTotal).toFixed(4));
-      this.cumulativeNetPnl    = parseFloat((this.cumulativeNetPnl + this.tradeNetPnl).toFixed(4));
-      this.exitOrderId         = null;
-      this.phase               = this.tradePnl > 0 ? 'flipping' : 'done';
+      const fillPrice        = this.exitPostedPrice;
+      const exitQty          = this.exitFilledSoFar;
+      const estimatedSellFee = parseFloat((exitQty * fillPrice * ESTIMATED_FEE_RATE).toFixed(4));
+      const tradeFeeTotal    = parseFloat((this.estimatedBuyFee + estimatedSellFee).toFixed(4));
+      this.holdingToken      = false;
+      this.exitPrice         = fillPrice;
+      this.tradePnl          = parseFloat(((fillPrice - this.entryPrice) * exitQty).toFixed(4));
+      this.tradeNetPnl       = parseFloat((this.tradePnl - tradeFeeTotal).toFixed(4));
+      this.cumulativePnl     = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
+      this.cumulativeFees    = parseFloat((this.cumulativeFees + tradeFeeTotal).toFixed(4));
+      this.cumulativeNetPnl  = parseFloat((this.cumulativeNetPnl + this.tradeNetPnl).toFixed(4));
+      this.exitOrderId       = null;
+      this.phase             = this.tradePnl > 0 && this.config.maxFlips > 0 ? 'flipping' : 'done';
 
       logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] Exit FULLY FILLED — sold ${exitQty} ${this.signal} @ $${fillPrice.toFixed(3)} | gross P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | fees: -$${tradeFeeTotal.toFixed(3)} | net P&L: ${this.tradeNetPnl >= 0 ? '+' : ''}$${this.tradeNetPnl.toFixed(3)} | window net: ${this.cumulativeNetPnl >= 0 ? '+' : ''}$${this.cumulativeNetPnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
+        message: `[${this.market.coin}-${this.market.type}] Exit FILLED — sold ${exitQty} ${this.signal} @ $${fillPrice.toFixed(3)} | gross: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | fees: -$${tradeFeeTotal.toFixed(3)} | net: ${this.tradeNetPnl >= 0 ? '+' : ''}$${this.tradeNetPnl.toFixed(3)} | window net: ${this.cumulativeNetPnl >= 0 ? '+' : ''}$${this.cumulativeNetPnl.toFixed(3)}`
       });
 
-      logger.addTrade({
-        strategy:              'btc_momentum',
-        coin:                  this.market.coin,
-        marketType:            this.market.type,
-        question:              this.market.question,
-        market_slug:           this.market.slug || this.market.id || '',
-        contract_id:           this.market.conditionId || this.market.id || '',
-        token_id:              this.tokenId || '',
-        direction:             this.signal,
-        timestamp_open:        this._entryTimestamp,
-        timestamp_close:       new Date().toISOString(),
-        entry_price:           this.entryPrice,
-        exit_price:            fillPrice,
-        shares:                exitQty,
-        gross_pnl:             this.tradePnl,
-        estimated_fees:        tradeFeeTotal,
-        net_pnl:               this.tradeNetPnl,
-        spread_at_entry:       this._spreadAtEntry,
-        spread_at_exit:        this._spreadAtExit,
-        hold_seconds:          this._entryTimestamp
-                                 ? Math.round((Date.now() - new Date(this._entryTimestamp).getTime()) / 1000)
-                                 : null,
-        exit_reason:           this._lastExitReason || 'unknown',
-        was_flip_reentry:      this.flipCount > 0,
-        flip_count:            this.flipCount,
-        btc_signal_at_entry:   this._btcSignalAtEntry,
-        seconds_left_at_entry: this._secondsLeftAtEntry,
-        seconds_left_at_exit:  this._secondsLeftAtExit,
-        result:                this.tradePnl >= 0 ? 'win' : 'loss',
-        pnl:                   this.tradeNetPnl,
-        estimatedFee:          tradeFeeTotal,
-        exitReason:            this._lastExitReason || 'unknown',
-        entryPrice:            this.entryPrice,
-        entryOrderId:          this.entryOrderId,
-        exitOrderId:           this.exitOrderId
-      });
+      this._recordTradeClose(fillPrice, exitQty, this.tradePnl, this.tradeNetPnl, tradeFeeTotal);
       return;
     }
 
     if (exitStatus === 'MATCHED') {
-      const fillPrice          = this.exitPostedPrice;
-      const exitAmt            = this.exitSize || totalMatched || this.filledSize || this.entrySizeTokens;
-      this.exitFilledSoFar     = exitAmt;
-      const estimatedSellFee   = parseFloat((exitAmt * fillPrice * ESTIMATED_FEE_RATE).toFixed(4));
-      const tradeFeeTotal      = parseFloat((this.estimatedBuyFee + estimatedSellFee).toFixed(4));
-      this.holdingToken        = false;
-      this.exitPrice           = fillPrice;
-      this.tradePnl            = parseFloat(((fillPrice - this.entryPrice) * exitAmt).toFixed(4));
-      this.tradeNetPnl         = parseFloat((this.tradePnl - tradeFeeTotal).toFixed(4));
-      this.cumulativePnl       = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
-      this.cumulativeFees      = parseFloat((this.cumulativeFees + tradeFeeTotal).toFixed(4));
-      this.cumulativeNetPnl    = parseFloat((this.cumulativeNetPnl + this.tradeNetPnl).toFixed(4));
-      this.exitOrderId         = null;
-      this.phase               = this.tradePnl > 0 ? 'flipping' : 'done';
+      const fillPrice        = this.exitPostedPrice;
+      const exitAmt          = this.exitSize || totalMatched || this.filledSize || this.entrySizeTokens;
+      this.exitFilledSoFar   = exitAmt;
+      const estimatedSellFee = parseFloat((exitAmt * fillPrice * ESTIMATED_FEE_RATE).toFixed(4));
+      const tradeFeeTotal    = parseFloat((this.estimatedBuyFee + estimatedSellFee).toFixed(4));
+      this.holdingToken      = false;
+      this.exitPrice         = fillPrice;
+      this.tradePnl          = parseFloat(((fillPrice - this.entryPrice) * exitAmt).toFixed(4));
+      this.tradeNetPnl       = parseFloat((this.tradePnl - tradeFeeTotal).toFixed(4));
+      this.cumulativePnl     = parseFloat((this.cumulativePnl + this.tradePnl).toFixed(4));
+      this.cumulativeFees    = parseFloat((this.cumulativeFees + tradeFeeTotal).toFixed(4));
+      this.cumulativeNetPnl  = parseFloat((this.cumulativeNetPnl + this.tradeNetPnl).toFixed(4));
+      this.exitOrderId       = null;
+      this.phase             = this.tradePnl > 0 && this.config.maxFlips > 0 ? 'flipping' : 'done';
 
       logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] Exit FILLED (status=MATCHED) — sold ${exitAmt} ${this.signal} @ $${fillPrice.toFixed(3)} | gross P&L: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | fees: -$${tradeFeeTotal.toFixed(3)} | net P&L: ${this.tradeNetPnl >= 0 ? '+' : ''}$${this.tradeNetPnl.toFixed(3)} | window net: ${this.cumulativeNetPnl >= 0 ? '+' : ''}$${this.cumulativeNetPnl.toFixed(3)}${this.tradePnl <= 0 ? ' | NOT re-entering (loss)' : ''}`
+        message: `[${this.market.coin}-${this.market.type}] Exit FILLED (MATCHED) — sold ${exitAmt} ${this.signal} @ $${fillPrice.toFixed(3)} | gross: ${this.tradePnl >= 0 ? '+' : ''}$${this.tradePnl.toFixed(3)} | fees: -$${tradeFeeTotal.toFixed(3)} | net: ${this.tradeNetPnl >= 0 ? '+' : ''}$${this.tradeNetPnl.toFixed(3)}`
       });
 
-      logger.addTrade({
-        strategy:              'btc_momentum',
-        coin:                  this.market.coin,
-        marketType:            this.market.type,
-        question:              this.market.question,
-        market_slug:           this.market.slug || this.market.id || '',
-        contract_id:           this.market.conditionId || this.market.id || '',
-        token_id:              this.tokenId || '',
-        direction:             this.signal,
-        timestamp_open:        this._entryTimestamp,
-        timestamp_close:       new Date().toISOString(),
-        entry_price:           this.entryPrice,
-        exit_price:            fillPrice,
-        shares:                exitAmt,
-        gross_pnl:             this.tradePnl,
-        estimated_fees:        tradeFeeTotal,
-        net_pnl:               this.tradeNetPnl,
-        spread_at_entry:       this._spreadAtEntry,
-        spread_at_exit:        this._spreadAtExit,
-        hold_seconds:          this._entryTimestamp
-                                 ? Math.round((Date.now() - new Date(this._entryTimestamp).getTime()) / 1000)
-                                 : null,
-        exit_reason:           this._lastExitReason || 'unknown',
-        was_flip_reentry:      this.flipCount > 0,
-        flip_count:            this.flipCount,
-        btc_signal_at_entry:   this._btcSignalAtEntry,
-        seconds_left_at_entry: this._secondsLeftAtEntry,
-        seconds_left_at_exit:  this._secondsLeftAtExit,
-        result:                this.tradePnl >= 0 ? 'win' : 'loss',
-        pnl:                   this.tradeNetPnl,
-        estimatedFee:          tradeFeeTotal,
-        exitReason:            this._lastExitReason || 'unknown',
-        entryPrice:            this.entryPrice,
-        entryOrderId:          this.entryOrderId,
-        exitOrderId:           this.exitOrderId
-      });
+      this._recordTradeClose(fillPrice, exitAmt, this.tradePnl, this.tradeNetPnl, tradeFeeTotal);
       return;
     }
 
     if (this.exitFilledSoFar > 0 && remaining > 0.01) {
       logger.addActivity('mom_tp_hit', {
-        message: `[${this.market.coin}-${this.market.type}] Partial exit: ${this.exitFilledSoFar.toFixed(2)}/${this.exitSize?.toFixed(2)} tokens filled — ${remaining.toFixed(2)} remaining, waiting for full fill`
+        message: `[${this.market.coin}-${this.market.type}] Partial exit: ${this.exitFilledSoFar.toFixed(2)}/${this.exitSize?.toFixed(2)} filled — ${remaining.toFixed(2)} remaining`
       });
       return;
     }
@@ -893,7 +1072,7 @@ class MomentumSession {
       this.exitOrderId = null;
       this.phase       = 'managing';
       logger.addActivity('mom_error', {
-        message: `[${this.market.coin}-${this.market.type}] Exit order cancelled externally — returning to managing to retry exit`
+        message: `[${this.market.coin}-${this.market.type}] Exit order cancelled — returning to managing to retry`
       });
     }
   }
@@ -921,7 +1100,7 @@ class MomentumSession {
       const mid = await fetchMidpoint(this.tokenId);
       if (mid !== null && mid > this.entryPrice) {
         logger.addActivity('mom_close', {
-          message: `[${this.market.coin}-${this.market.type}] Closing — in profit, selling ${this.signal} at mid=$${mid.toFixed(3)} | entry=$${this.entryPrice.toFixed(3)} | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+          message: `[${this.market.coin}-${this.market.type}] Closing — in profit, selling @ mid=$${mid.toFixed(3)} | entry=$${this.entryPrice}`
         });
         const sold = await this._postExitSell(client, mid, 'closing_cashout');
         if (!sold) {
@@ -931,12 +1110,12 @@ class MomentumSession {
         }
       } else {
         logger.addActivity('mom_close', {
-          message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} to resolution | entry=$${this.entryPrice.toFixed(3)} | mid=${mid !== null ? '$' + mid.toFixed(3) : 'N/A'}`
+          message: `[${this.market.coin}-${this.market.type}] Closing — holding ${this.signal} to resolution | entry=$${this.entryPrice} mid=${mid !== null ? '$' + mid.toFixed(3) : 'N/A'}`
         });
       }
     } else if (this.entryFilled && this.holdingToken) {
       logger.addActivity('mom_close', {
-        message: `[${this.market.coin}-${this.market.type}] Closing — phase=${this.phase}, letting exit complete | cumP&L: ${this.cumulativePnl >= 0 ? '+' : ''}$${this.cumulativePnl.toFixed(3)}`
+        message: `[${this.market.coin}-${this.market.type}] Closing — phase=${this.phase}, letting exit complete`
       });
     }
   }
@@ -954,7 +1133,16 @@ class MomentumSession {
       phase:             this.phase,
       signal:            this.signal,
       lastMid:           this.lastMid,
+      lastBid:           this.lastBid,
+      lastAsk:           this.lastAsk,
+      lastSpread:        this.lastSpread,
+      lastBidDepth:      this.lastBidDepth,
+      lastAskDepth:      this.lastAskDepth,
       btcChange3m:       this.btcChange3m,
+      confidence:        this.lastConfidence,
+      skipReason:        this.lastSkipReason,
+      regime:            this.lastRegime,
+      estimatedEdge:     this.lastEstimatedEdge,
       entryPrice:        this.entryPrice,
       peakMid:           this.peakMid,
       trailingStopLevel: this.trailingStopLevel,
