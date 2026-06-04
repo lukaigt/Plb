@@ -120,7 +120,6 @@ function getMomentumConfig() {
     minNetEdgeCents:    parseFloat(process.env.MOM_MIN_EDGE_CENTS)      || 0.05,
     require5mConfirm:   process.env.MOM_REQUIRE_5M !== 'false',
     minBookDepth:       parseFloat(process.env.MOM_MIN_DEPTH)           || 30,
-    maxDailyTrades:     parseInt(process.env.MOM_MAX_DAILY_TRADES)      || 6,
     makerWaitSeconds:   parseInt(process.env.MOM_MAKER_WAIT_SECONDS)    || 20
   };
 }
@@ -400,19 +399,6 @@ class MomentumSession {
         message: `[${this.market.coin}-${this.market.type}] No CLOB client — set WALLET_PRIVATE_KEY + POLY_API_KEY`
       });
       this.phase = 'done';
-      return;
-    }
-
-    // Safety: daily trade limit
-    const safetyStatus = safety.getStatus();
-    if (safetyStatus.dailyTradeCount >= this.config.maxDailyTrades) {
-      const now = Date.now();
-      if (now - this.lastNoSignalLog >= 60000) {
-        this.lastNoSignalLog = now;
-        logger.addActivity('mom_skip', {
-          message: `[${this.market.coin}-${this.market.type}] Daily trade limit reached (${safetyStatus.dailyTradeCount}/${this.config.maxDailyTrades}) — no new entries today`
-        });
-      }
       return;
     }
 

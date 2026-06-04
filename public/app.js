@@ -365,13 +365,12 @@ async function updateBtcPositions() {
 
   const cfg = s.config || {};
   const sft = s.safety || {};
-  statusEl.textContent = `TP $${(cfg.takeProfit || 0.75).toFixed(2)} | SL -${((cfg.stopLossCents || 0.10) * 100).toFixed(0)}¢ | threshold ±${(cfg.momentumThreshold || 0.12)}% | spread max ${((cfg.maxSpread || 0.03) * 100).toFixed(0)}¢ | trades today ${sft.dailyTradeCount || 0}/${cfg.maxDailyTrades || 6} | streak ${sft.consecutiveLosses || 0}/${sft.losingStreakStop || 3}${sft.cooldownRemaining > 0 ? ` | cooldown ${sft.cooldownRemaining}s` : ''}`;
+  statusEl.textContent = `TP $${(cfg.takeProfit || 0.75).toFixed(2)} | SL -${((cfg.stopLossCents || 0.10) * 100).toFixed(0)}¢ | threshold ±${(cfg.momentumThreshold || 0.12)}% | spread max ${((cfg.maxSpread || 0.03) * 100).toFixed(0)}¢ | streak ${sft.consecutiveLosses || 0}/${sft.losingStreakStop || 3}${sft.cooldownRemaining > 0 ? ` | cooldown ${sft.cooldownRemaining}s` : ''}`;
 
   if (active.length === 0) {
     let waitMsg = 'No active BTC sessions — waiting for next 15m window or entry signal';
     if (sft.cooldownRemaining > 0) waitMsg = `⏸ Loss cooldown active — ${sft.cooldownRemaining}s remaining before next entry allowed`;
     else if ((sft.consecutiveLosses || 0) >= (sft.losingStreakStop || 3)) waitMsg = `🛑 Losing streak limit (${sft.consecutiveLosses}) reached — paused for this window`;
-    else if ((sft.dailyTradeCount || 0) >= (cfg.maxDailyTrades || 6)) waitMsg = `🛑 Daily trade limit (${sft.dailyTradeCount}/${cfg.maxDailyTrades}) reached — no more entries today`;
     bodyEl.innerHTML = `<div class="empty-state" style="padding:16px 12px;">${waitMsg}</div>`;
     return;
   }
